@@ -7,10 +7,12 @@
 //! - [`settings`]: `settings.json` in Application Support.
 //! - [`codes`]: the code catalog the UI's translations are checked against.
 //! - [`window`]: the main window's size and position across launches.
+//! - [`dock`]: the Dock badge (devices being prepared or flashed).
 
 pub mod codes;
 pub mod commands;
 pub mod core;
+pub mod dock;
 pub mod forward;
 pub mod locale;
 pub mod logging;
@@ -21,9 +23,11 @@ pub mod views;
 pub mod window;
 
 use crate::core::{AppCore, Paths};
+use crate::dock::{DockTracker, DockUpdate};
 use crate::forward::{forward_events, Forwarded, CLOSE_REQUESTED, ENGINE_EVENT, ENGINE_LAGGED};
 use ni_assets::HttpConfig;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, WebviewWindow, WindowEvent};
@@ -178,6 +182,36 @@ fn restore_window(w: &WebviewWindow, saved: &settings::WindowGeometry) {
     }
 }
 
+/// Show `update` on the Dock tile: the badge, and one informational bounce
+/// for a finished device while the app is in the background.
+fn apply_dock(app: &AppHandle, update: DockUpdate) {
+    let Some(w) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    if let Some(label) = update.badge {
+        #[cfg(target_os = "macos")]
+        if let Err(e) = w.set_badge_label(label) {
+            tracing::warn!("cannot set the Dock badge: {e}");
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = label;
+    }
+    // Only ask the window for its focus when it matters (events are many).
+    if update.finished && dock::should_bounce(true, w.is_focused().unwrap_or(true)) {
+        let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+}
+
+/// Recount the busy devices from a snapshot (after missed events or an
+/// engine replacement).
+async fn resync_dock(app: AppHandle, dock: Arc<Mutex<DockTracker>>) {
+    let core = app.state::<AppCore>();
+    if let Ok(Ok(s)) = tokio::time::timeout(QUIT_ENGINE_WAIT, core.snapshot()).await {
+        let update = dock.lock().unwrap().resync(&s.devices);
+        apply_dock(&app, update);
+    }
+}
+
 /// Quit for good: stop the engine first, then exit.
 pub(crate) async fn quit_now(app: AppHandle) {
     app.state::<CloseGuard>().allow();
@@ -284,11 +318,24 @@ pub fn run() {
                     restore_window(&w, &saved);
                 }
             }
+            // A regular app: in the Dock and the app switcher while it
+            // runs (the default; set explicitly so it stays that way).
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
             let handle = app.handle().clone();
+            let dock = Arc::new(Mutex::new(DockTracker::default()));
             tauri::async_runtime::spawn(forward_events(engines, move |f| {
                 let _ = match f {
-                    Forwarded::Event(e) => handle.emit(ENGINE_EVENT, e),
-                    Forwarded::Lagged(n) => handle.emit(ENGINE_LAGGED, n),
+                    Forwarded::Event(e) => {
+                        let update = dock.lock().unwrap().on_event(&e);
+                        apply_dock(&handle, update);
+                        handle.emit(ENGINE_EVENT, e)
+                    }
+                    Forwarded::Lagged(n) => {
+                        let resync = resync_dock(handle.clone(), dock.clone());
+                        tauri::async_runtime::spawn(resync);
+                        handle.emit(ENGINE_LAGGED, n)
+                    }
                 };
             }));
             // Without the guard the app still works; only Dock Quit and

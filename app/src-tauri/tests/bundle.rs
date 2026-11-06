@@ -235,4 +235,10 @@ fn the_app_is_a_regular_dock_app() {
     for key in ["LSUIElement", "LSBackgroundOnly"] {
         assert!(!plist.contains(key), "Info.plist sets {key}");
     }
+    let lib = read("src/lib.rs");
+    assert!(lib.contains("set_activation_policy(tauri::ActivationPolicy::Regular)"));
+    assert!(
+        !lib.contains("ActivationPolicy::Accessory")
+            && !lib.contains("ActivationPolicy::Prohibited")
+    );
 }
