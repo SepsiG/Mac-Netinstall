@@ -1,7 +1,16 @@
 //! Boot kernels and RouterOS packages for mac-netinstall.
 //!
 //! Nothing from MikroTik is bundled: everything is downloaded at runtime
-//! from `download.mikrotik.com`, verified and cached.
+//! from `download.mikrotik.com` (see [`urls`]), verified and cached.
+//!
+//! - [`Assets::latest`] / [`Assets::resolve`]: channel → version.
+//! - [`Assets::ensure_kernels`]: boot kernels per [`ni_bootp::BootArch`],
+//!   carved out of the official `netinstall-cli` ([`extract_kernels`]).
+//! - [`Assets::available_packages`] / [`Assets::ensure_packages`]: `.npk`
+//!   files per [`PkgArch`], ready for [`ni_proto::InstallPlan`].
+//! - [`Assets::register_local_file`]: user-supplied `.npk` / `.rsc`.
+//!
+//! Errors carry stable codes ([`AssetError::code`]) for UI translation.
 
 pub mod arch;
 pub mod archive;
@@ -20,7 +29,9 @@ mod testutil;
 
 pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;
-pub use assets::{default_cache_root, kernel_file_name, Assets, BUNDLE_ID};
+pub use assets::{
+    default_cache_root, kernel_file_name, Assets, LocalFile, LocalKind, BUNDLE_ID, MAX_SCRIPT_SIZE,
+};
 pub use cache::{Entry, Index};
 pub use error::AssetError;
 pub use events::{AssetEvent, EventSink, PROGRESS_STEP};

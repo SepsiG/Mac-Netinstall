@@ -15,7 +15,10 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
 
+mod local;
 mod packages;
+
+pub use local::{LocalFile, LocalKind, MAX_SCRIPT_SIZE};
 
 /// Cache directory name under `~/Library/Caches`.
 pub const BUNDLE_ID: &str = "io.github.sepsig.mac-netinstall";
