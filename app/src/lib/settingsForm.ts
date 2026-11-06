@@ -10,8 +10,6 @@ export const LIMITS = {
 
 export interface SettingsForm {
   language: string; // "" = follow macOS
-  server_ip: string;
-  netmask: string;
   pool_start: string;
   pool_end: string;
   max_parallel: string;
@@ -24,8 +22,6 @@ export type FieldError = { key: string; values?: Record<string, number> };
 export function toSettingsForm(s: Settings): SettingsForm {
   return {
     language: s.language ?? "",
-    server_ip: s.server_ip ?? "",
-    netmask: s.netmask ?? "",
     pool_start: s.pool_start ?? "",
     pool_end: s.pool_end ?? "",
     max_parallel: String(s.max_parallel),
@@ -43,7 +39,7 @@ function int(s: string, [min, max]: readonly [number, number]): number | null {
 /** Problems by field name (message key + values). */
 export function settingsErrors(f: SettingsForm): Record<string, FieldError> {
   const out: Record<string, FieldError> = {};
-  for (const k of ["server_ip", "netmask", "pool_start", "pool_end"] as const) {
+  for (const k of ["pool_start", "pool_end"] as const) {
     if (f[k].trim() !== "" && !isIpv4(f[k].trim())) out[k] = { key: "settings.err_ip" };
   }
   if ((f.pool_start.trim() === "") !== (f.pool_end.trim() === "")) {
@@ -62,8 +58,6 @@ export function fromSettingsForm(f: SettingsForm, base: Settings): Settings {
   return {
     ...base,
     language: f.language === "" ? null : f.language,
-    server_ip: ip(f.server_ip),
-    netmask: ip(f.netmask),
     pool_start: ip(f.pool_start),
     pool_end: ip(f.pool_end),
     max_parallel: Number(f.max_parallel.trim()),

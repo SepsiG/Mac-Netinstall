@@ -41,6 +41,10 @@
   let attempted = $state(false);
   let logOpen = $state(true);
   let ready = $state(false);
+  /** Bumped while stopped so the adapter list and the preflight follow
+   *  changes in macOS (a cable, the adapter's TCP/IP settings). */
+  let refreshTick = $state(0);
+  const REFRESH_MS = 5_000;
 
   async function attempt<T>(action: () => Promise<T>): Promise<T | undefined> {
     try {
@@ -108,7 +112,15 @@
       await Promise.all([loadInterfaces(), loadProfiles(), resync()]);
       ready = true;
     })();
-    return () => unlisten.forEach((u) => u());
+    const timer = setInterval(() => {
+      if (ready && !engine.running) {
+        void loadInterfaces().then(() => refreshTick++);
+      }
+    }, REFRESH_MS);
+    return () => {
+      clearInterval(timer);
+      unlisten.forEach((u) => u());
+    };
   });
 
   function request(): StartRequest | null {
@@ -117,14 +129,19 @@
 
   // Preflight whenever the choice changes while stopped.
   let checkSeq = 0;
+  let checkedKey = "";
   $effect(() => {
     const req = request();
+    void refreshTick;
     if (!ready || engine.running || !req) {
       report = null;
       return;
     }
     const mine = ++checkSeq;
-    attempted = false;
+    // A new choice starts over; a periodic re-check keeps the tone.
+    const key = JSON.stringify(req);
+    if (key !== checkedKey) attempted = false;
+    checkedKey = key;
     checking = true;
     backend.preflight(req).then(
       (r) => {

@@ -17,7 +17,13 @@ pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
 /// Version of the `settings.json` layout, written as `version`. Files
 /// without it are older: their `max_parallel` of 4 was the default then
 /// (now 1) and is migrated to 1 when loaded.
-pub const SETTINGS_VERSION: u32 = 1;
+///
+/// Version 2 dropped `server_ip`, `netmask` (the address now comes from the
+/// adapter's manual IPv4 in macOS) and `show_all_interfaces` (only
+/// interfaces that can netinstall are listed); older files lose them.
+pub const SETTINGS_VERSION: u32 = 2;
+/// Keys of older versions that are dropped without complaint.
+const RETIRED_FIELDS: &[&str] = &["server_ip", "netmask", "show_all_interfaces"];
 /// The `max_parallel` default of unversioned files.
 const OLD_DEFAULT_MAX_PARALLEL: usize = 4;
 
@@ -32,13 +38,8 @@ pub struct Settings {
     /// `"en"` or `"hu"`; `None` follows the macOS language.
     pub language: Option<String>,
     pub last_interface: Option<String>,
-    /// Also list Wi-Fi, bridges, tunnels, ... in the interface picker.
-    pub show_all_interfaces: bool,
-    /// Server IP to use while the interface has no address (no cable
-    /// yet); default: the interface's address.
-    pub server_ip: Option<Ipv4Addr>,
-    pub netmask: Option<Ipv4Addr>,
-    /// BOOTP pool (both or neither); default: the subnet.
+    /// BOOTP pool (both or neither); default: the subnet of the adapter's
+    /// address (the server's own address is skipped).
     pub pool_start: Option<Ipv4Addr>,
     pub pool_end: Option<Ipv4Addr>,
     /// Devices flashed at the same time; 1 unless chosen in Settings.
@@ -56,9 +57,6 @@ impl Default for Settings {
             version: SETTINGS_VERSION,
             language: None,
             last_interface: None,
-            show_all_interfaces: false,
-            server_ip: None,
-            netmask: None,
             pool_start: None,
             pool_end: None,
             max_parallel: 1,
@@ -81,12 +79,6 @@ impl Settings {
         if let Some(lang) = &self.language {
             if !LANGUAGES.contains(&lang.as_str()) {
                 return Err(invalid("language"));
-            }
-        }
-        if let Some(mask) = self.netmask {
-            let m = u32::from(mask);
-            if m.leading_ones() + m.trailing_zeros() != 32 || m.leading_ones() < 8 {
-                return Err(invalid("netmask"));
             }
         }
         match (self.pool_start, self.pool_end) {
@@ -127,9 +119,6 @@ impl Settings {
 const FIELDS: &[&str] = &[
     "language",
     "last_interface",
-    "show_all_interfaces",
-    "server_ip",
-    "netmask",
     "pool",
     "max_parallel",
     "cooldown_secs",
@@ -165,9 +154,6 @@ fn set_field(
     match field {
         "language" => get(obj, field, &mut s.language),
         "last_interface" => get(obj, field, &mut s.last_interface),
-        "show_all_interfaces" => get(obj, field, &mut s.show_all_interfaces),
-        "server_ip" => get(obj, field, &mut s.server_ip),
-        "netmask" => get(obj, field, &mut s.netmask),
         "pool" => {
             let (mut a, mut b) = (s.pool_start, s.pool_end);
             let ok = get(obj, "pool_start", &mut a) && get(obj, "pool_end", &mut b);
@@ -259,20 +245,26 @@ impl SettingsStore {
                 loaded.problems.push(field.to_string());
             }
         }
-        let known =
-            |k: &str| FIELDS.contains(&k) || ["pool_start", "pool_end", "version"].contains(&k);
+        let known = |k: &str| {
+            FIELDS.contains(&k)
+                || ["pool_start", "pool_end", "version"].contains(&k)
+                || RETIRED_FIELDS.contains(&k)
+        };
         loaded
             .problems
             .extend(obj.keys().filter(|k| !known(k)).cloned());
         if !loaded.problems.is_empty() {
             self.keep_backup(&data, &loaded.problems);
         }
-        if !obj.contains_key("version") {
+        let version = obj.get("version").and_then(|v| v.as_u64());
+        if version.is_none_or(|v| v < u64::from(SETTINGS_VERSION)) {
             // Older than versioned settings: 4 was the default then, not a
-            // choice. Store the migrated, versioned file at once.
-            if loaded.settings.max_parallel == OLD_DEFAULT_MAX_PARALLEL {
+            // choice.
+            if version.is_none() && loaded.settings.max_parallel == OLD_DEFAULT_MAX_PARALLEL {
                 loaded.settings.max_parallel = Settings::default().max_parallel;
             }
+            // Retired fields are simply not written again. Store the
+            // migrated file at once.
             tracing::info!("migrating settings to version {SETTINGS_VERSION}");
             if let Err(f) = self.save(&loaded.settings) {
                 tracing::warn!("cannot store migrated settings: {f}");
@@ -363,6 +355,36 @@ mod tests {
     }
 
     #[test]
+    fn version_1_files_lose_server_ip_netmask_and_show_all() {
+        let dir = tempdir("settings-v1");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 1, "max_parallel": 4, "server_ip": "192.168.88.1",
+                "netmask": "255.255.255.0", "show_all_interfaces": true,
+                "pool_start": "192.168.88.10", "pool_end": "192.168.88.20"}"#,
+        )
+        .unwrap();
+        let loaded = SettingsStore::new(&path).load_checked();
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert_eq!(
+            loaded.settings.max_parallel, 4,
+            "chosen in a versioned file"
+        );
+        assert_eq!(
+            loaded.settings.pool_start,
+            Some(Ipv4Addr::new(192, 168, 88, 10))
+        );
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["version"], 2);
+        for gone in ["server_ip", "netmask", "show_all_interfaces"] {
+            assert!(stored.get(gone).is_none(), "{gone} is still stored");
+        }
+        assert!(!SettingsStore::new(&path).backup_path().exists());
+    }
+
+    #[test]
     fn an_explicit_four_in_a_versioned_file_stays() {
         let dir = tempdir("settings-four");
         let store = SettingsStore::new(dir.join("settings.json"));
@@ -386,7 +408,8 @@ mod tests {
         assert_eq!(partial.language.as_deref(), Some("hu"));
         assert_eq!(partial.max_parallel, 1);
         let v = serde_json::to_value(&s).unwrap();
-        assert_eq!(v["server_ip"], json!(null));
+        assert_eq!(v["pool_start"], json!(null));
+        assert!(v.get("server_ip").is_none(), "comes from macOS now");
         assert_eq!(v["download_timeout_secs"], 1800);
     }
 
@@ -405,9 +428,6 @@ mod tests {
             ("invalid_setting".into(), Some("language".into()))
         );
         s.language = Some("hu".into());
-        s.netmask = Some(Ipv4Addr::new(255, 0, 255, 0));
-        assert_eq!(field(&s).1.as_deref(), Some("netmask"));
-        s.netmask = Some(Ipv4Addr::new(255, 255, 255, 0));
         s.pool_start = Some(Ipv4Addr::new(192, 168, 88, 100));
         assert_eq!(field(&s).1.as_deref(), Some("pool"));
         s.pool_end = Some(Ipv4Addr::new(192, 168, 88, 50));
@@ -444,7 +464,8 @@ mod tests {
         let s = Settings {
             language: Some("hu".into()),
             last_interface: Some("en7".into()),
-            server_ip: Some(Ipv4Addr::new(192, 168, 88, 1)),
+            pool_start: Some(Ipv4Addr::new(192, 168, 88, 10)),
+            pool_end: Some(Ipv4Addr::new(192, 168, 88, 20)),
             auto_repeat: true,
             ..Settings::default()
         };

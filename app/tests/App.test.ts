@@ -310,4 +310,18 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByLabelText(/Ignore a flashed device/)).toHaveValue("600");
   });
+
+  it("checks the adapter again periodically while stopped (macOS settings may change)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const backend = await start();
+      const lists = vi.mocked(backend.listInterfaces).mock.calls.length;
+      const checks = vi.mocked(backend.preflight).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await waitFor(() => expect(vi.mocked(backend.preflight).mock.calls.length).toBeGreaterThan(checks));
+      expect(vi.mocked(backend.listInterfaces).mock.calls.length).toBeGreaterThan(lists);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -31,9 +31,10 @@ export function describe(lang: Lang, f: Failure): string {
   return format(lang, key, values(lang, f.params));
 }
 
-/** What to do about it, if there is advice for this code. */
-export function hint(lang: Lang, code: string): string | null {
-  return has(`hint.${code}`) ? format(lang, `hint.${code}`) : null;
+/** What to do about it, if there is advice for this code (`params`
+ *  fill in names such as the adapter's). */
+export function hint(lang: Lang, code: string, params?: Params): string | null {
+  return has(`hint.${code}`) ? format(lang, `hint.${code}`, values(lang, params)) : null;
 }
 
 /** A device state as a short status text. */

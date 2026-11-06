@@ -32,8 +32,10 @@
     onretry?: () => void;
   } = $props();
 
-  function tone(severity: "error" | "warning"): string {
-    if (severity === "warning") return "warning";
+  function tone(f: { severity: "error" | "warning"; code: string }): string {
+    // No cable yet is fine: Start works, serving waits for the link.
+    if (f.code === "link_down") return "info";
+    if (f.severity === "warning") return "warning";
     return attempted ? "error" : "todo";
   }
 
@@ -82,14 +84,14 @@
     {/if}
   </div>
   {#each findings as f (f.code + JSON.stringify(f.params ?? {}))}
-    {@const advice = hint($locale, f.code)}
-    {@const kind = tone(f.severity)}
+    {@const kind = tone(f)}
+    {@const advice = kind === "info" ? null : hint($locale, f.code, f.params)}
     <div class="finding {kind}">
-      <span class="icon">{kind === "error" ? "⛔" : kind === "todo" ? "→" : "⚠️"}</span>
+      <span class="icon">{kind === "error" ? "⛔" : kind === "todo" ? "→" : kind === "info" ? "ℹ️" : "⚠️"}</span>
       <div>
         <div>
           {#if kind === "todo"}<strong class="todo-label">{$t("status.todo")}</strong>{/if}
-          {describe($locale, f)}
+          {kind === "info" ? $t("status.waiting_for_link") : describe($locale, f)}
         </div>
         {#if advice}<div class="hint">{advice}</div>{/if}
       </div>
@@ -131,6 +133,9 @@
   }
   .finding.error {
     color: var(--danger);
+  }
+  .finding.info {
+    color: var(--secondary);
   }
   .finding.todo {
     color: var(--label);

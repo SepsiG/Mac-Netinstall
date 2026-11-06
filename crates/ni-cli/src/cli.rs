@@ -187,9 +187,9 @@ pub struct NetArgs {
     /// Interface the routers are connected to, e.g. en7.
     #[arg(long)]
     pub iface: String,
-    /// Our IPv4 address on it [default: its first one]. Give it to start
-    /// before the cable is plugged in (macOS removes a manual address while
-    /// there is no link).
+    /// Advanced override of our IPv4 address on it. By default it is the
+    /// adapter's manual IPv4 from macOS (System Settings → Network → TCP/IP;
+    /// known even before the cable is plugged in), else its first address.
     #[arg(long)]
     pub server_ip: Option<Ipv4Addr>,
     /// Netmask for --server-ip while it is not on the interface [default: 255.255.255.0].

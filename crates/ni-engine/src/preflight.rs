@@ -79,7 +79,11 @@ impl PreflightReport {
 /// server IP a missing address is only this warning: macOS removes a
 /// manual address while there is no carrier), `unsuitable_interface`
 /// (`kind`: loopback; for tests). Error: `interface_not_ethernet`
-/// (`interface`, `kind`): see [`not_ethernet`].
+/// (`interface`, `kind`): see [`not_ethernet`]; `no_manual_ipv4` /
+/// `ipv4_dhcp` (`interface`, `service`: the adapter's name in System
+/// Settings) instead of `no_ipv4` when no address can be had: macOS is not
+/// configured with a manual IPv4 for the adapter (`ipv4_dhcp` is only a
+/// warning while it has a DHCP address).
 /// `interface_not_ethernet` (`interface`, `kind`) unless `iface` can
 /// netinstall a RouterBOARD ([`ni_net::Interface::is_netinstall_capable`]:
 /// a real wired Ethernet NIC). Loopback is let through: tests and the
@@ -129,13 +133,40 @@ pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>,
                 .with("kind", iface.kind.as_str()),
         ));
     }
+    let method = iface.configured_ipv4.as_ref().map(|c| c.method.clone());
+    let dhcp = || {
+        Failure::new("ipv4_dhcp")
+            .with("interface", &iface.name)
+            .with(
+                "service",
+                iface.display_name.as_deref().unwrap_or(&iface.name),
+            )
+    };
     let plan = match resolved {
         Ok(plan) => plan,
+        // No address to serve with: say what to set up in macOS.
+        Err(f) if f.code == "no_ipv4" && cfg.server_ip.is_none() => {
+            out.push(Finding::error(match method {
+                Some(ni_net::Ipv4Method::Dhcp) => dhcp(),
+                _ => Failure::new("no_manual_ipv4")
+                    .with("interface", &iface.name)
+                    .with(
+                        "service",
+                        iface.display_name.as_deref().unwrap_or(&iface.name),
+                    ),
+            }));
+            return (out, None);
+        }
         Err(f) => {
             out.push(Finding::error(f));
             return (out, None);
         }
     };
+    if cfg.server_ip.is_none() && method == Some(ni_net::Ipv4Method::Dhcp) {
+        // An address from someone else's DHCP server: works, but the
+        // network is probably not a separate one for flashing.
+        out.push(Finding::warning(dhcp()));
+    }
     let mask = u32::from(plan.netmask);
     if mask.leading_ones() + mask.trailing_zeros() != 32 {
         out.push(Finding::error(
@@ -358,12 +389,53 @@ mod tests {
             [
                 ("interface_down", Severity::Error),
                 ("interface_not_ethernet", Severity::Error),
-                ("no_ipv4", Severity::Error)
+                ("no_manual_ipv4", Severity::Error)
             ]
         );
         assert_eq!(plan, None);
         let (findings, _) = check_network(&[], &EngineConfig::new("en9"));
         assert_eq!(codes(&findings), [("unknown_interface", Severity::Error)]);
+    }
+
+    fn configured(method: ni_net::Ipv4Method) -> Option<ni_net::ConfiguredIpv4> {
+        let manual = method == ni_net::Ipv4Method::Manual;
+        Some(ni_net::ConfiguredIpv4 {
+            method,
+            address: manual.then_some(ip(1)),
+            netmask: manual.then_some(MASK24),
+        })
+    }
+
+    #[test]
+    fn missing_manual_ipv4_is_explained_by_how_macos_is_configured() {
+        let mut en7 = iface("en7", &[], Some(MAC));
+        en7.display_name = Some("USB 10/100/1000 LAN".into());
+        let cfg = EngineConfig::new("en7");
+        // Nothing configured.
+        let (findings, plan) = check_network(&[en7.clone()], &cfg);
+        assert_eq!(codes(&findings), [("no_manual_ipv4", Severity::Error)]);
+        assert_eq!(
+            findings[0].failure.param("service"),
+            Some("USB 10/100/1000 LAN")
+        );
+        assert_eq!(plan, None);
+        // DHCP.
+        en7.configured_ipv4 = configured(ni_net::Ipv4Method::Dhcp);
+        let (findings, _) = check_network(&[en7.clone()], &cfg);
+        assert_eq!(codes(&findings), [("ipv4_dhcp", Severity::Error)]);
+        // DHCP with an address (from someone's DHCP server): a warning.
+        en7.ipv4 = vec![(ip(50), MASK24)];
+        let (findings, plan) = check_network(&[en7.clone()], &cfg);
+        assert_eq!(codes(&findings), [("ipv4_dhcp", Severity::Warning)]);
+        assert!(plan.is_some());
+        // Manual, cable out: start is possible, the link is only awaited.
+        en7.ipv4.clear();
+        en7.is_running = false;
+        en7.configured_ipv4 = configured(ni_net::Ipv4Method::Manual);
+        let (findings, plan) = check_network(&[en7], &cfg);
+        assert_eq!(codes(&findings), [("link_down", Severity::Warning)]);
+        assert_eq!(findings[0].failure.param("reason"), Some("no_ip"));
+        assert_eq!(plan.unwrap().server_ip, ip(1));
     }
 
     #[test]
@@ -404,7 +476,7 @@ mod tests {
             codes(&findings),
             [
                 ("link_down", Severity::Warning),
-                ("no_ipv4", Severity::Error)
+                ("no_manual_ipv4", Severity::Error)
             ]
         );
         assert_eq!(plan, None);

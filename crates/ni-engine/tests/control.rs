@@ -710,3 +710,35 @@ async fn start_refuses_an_interface_that_cannot_netinstall() {
     );
     assert!(!engine.snapshot().await.unwrap().running);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_uses_the_configured_manual_address_without_link() {
+    let cache = ni_assets::testutil::tempdir("control-configured");
+    let engine = EngineHandle::spawn(cache.join("cache"), offline_http()).unwrap();
+    let mut events = engine.subscribe();
+    let lan = ni_sim::lan::SimLan::bind().await.unwrap();
+    // lo0 without its live address, but configured (as macOS keeps a
+    // manual address while the cable is out).
+    let mut lo = real_lo0();
+    let live = lo.ipv4[0];
+    lo.ipv4.clear();
+    lo.configured_ipv4 = Some(ni_net::ConfiguredIpv4 {
+        method: ni_net::Ipv4Method::Manual,
+        address: Some(live.0),
+        netmask: Some(live.1),
+    });
+    let (source, _cell) = fake_interfaces(Some(lo));
+    let mut cfg = config(&lan);
+    cfg.interfaces = source;
+    let info = engine.start(cfg).await.unwrap();
+    assert_eq!(info.server_ip, live.0);
+    let e = next(
+        &mut events,
+        |e| matches!(e, EngineEvent::Warning(f) if f.code == "link_down"),
+    )
+    .await;
+    let EngineEvent::Warning(f) = e else {
+        unreachable!()
+    };
+    assert_eq!(f.param("reason"), Some("no_ip"));
+}

@@ -14,6 +14,7 @@
 //! `IFT_ETHER`). The UI uses it to hide interfaces that cannot boot a router.
 
 use crate::error::NetError;
+use crate::ipconfig::{configured_ipv4_all, ConfiguredIpv4};
 use crate::link::{controller_classes, hardware_addresses, known_mac};
 use ni_proto::Mac;
 use nix::ifaddrs::getifaddrs;
@@ -203,6 +204,9 @@ pub struct Interface {
     /// Localized name from System Settings (e.g. `USB 10/100/1000 LAN`),
     /// if SystemConfiguration knows the interface.
     pub display_name: Option<String>,
+    /// What its network service is configured to use (System Settings →
+    /// TCP/IP); there even without link. `None` without a service.
+    pub configured_ipv4: Option<ConfiguredIpv4>,
 }
 
 impl Interface {
@@ -230,6 +234,7 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
                 is_loopback: false,
                 kind: InterfaceKind::Other,
                 display_name: None,
+                configured_ipv4: None,
             });
         entry.is_up |= ifa.flags.contains(InterfaceFlags::IFF_UP);
         entry.is_running |= ifa.flags.contains(InterfaceFlags::IFF_RUNNING);
@@ -256,6 +261,7 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
     let sc = system_configuration_info();
     let mut hardware: Option<HashMap<String, Mac>> = None;
     let controllers = controller_classes();
+    let mut configured = configured_ipv4_all();
     for iface in &mut out {
         let (wifi, display) = match sc.get(&iface.name) {
             Some((wifi, display)) => (*wifi, Some(display.clone()).filter(|d| !d.is_empty())),
@@ -273,6 +279,7 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
             &classes,
         );
         iface.display_name = display;
+        iface.configured_ipv4 = configured.remove(&iface.name);
         if iface.mac.is_none() && iface.kind != InterfaceKind::WiFi {
             // Masked (or missing): the hardware address is the one in use
             // except for Wi-Fi with a private address, which stays unknown.
@@ -466,6 +473,7 @@ mod tests {
             is_loopback: false,
             kind: InterfaceKind::Ethernet,
             display_name: None,
+            configured_ipv4: None,
         };
         assert!(i.is_netinstall_capable());
         for kind in [

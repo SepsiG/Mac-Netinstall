@@ -161,9 +161,6 @@ export interface Settings {
   version: number;
   language: string | null;
   last_interface: string | null;
-  show_all_interfaces: boolean;
-  server_ip: string | null;
-  netmask: string | null;
   pool_start: string | null;
   pool_end: string | null;
   max_parallel: number;

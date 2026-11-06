@@ -27,6 +27,8 @@
   let cleared = $state(false);
 
   const errors = $derived(settingsErrors(form));
+  // Open when a value in it was changed from the default.
+  const advancedOpen = base.pool_start !== null || base.download_timeout_secs !== 30 * 60;
 
   onMount(() => {
     void loadCache();
@@ -74,29 +76,6 @@
       {#each LANGS as l (l)}<option value={l}>{$t(`lang.${l}`)}</option>{/each}
     </select>
 
-    <h3>{$t("settings.network")}</h3>
-    <label for="s-ip">{$t("settings.server_ip")}</label>
-    <div>
-      <input id="s-ip" type="text" bind:value={form.server_ip} placeholder="192.168.88.1" />
-      {@render fieldError(errors.server_ip)}
-      <div class="help">{$t("settings.server_ip_help")}</div>
-    </div>
-    <label for="s-mask">{$t("settings.netmask")}</label>
-    <div>
-      <input id="s-mask" type="text" bind:value={form.netmask} placeholder="255.255.255.0" />
-      {@render fieldError(errors.netmask)}
-    </div>
-    <label for="s-pool">{$t("settings.pool")}</label>
-    <div>
-      <div class="row">
-        <input id="s-pool" type="text" bind:value={form.pool_start} placeholder="192.168.88.10" aria-label={`${$t("settings.pool")} 1`} />
-        –
-        <input type="text" bind:value={form.pool_end} placeholder="192.168.88.254" aria-label={`${$t("settings.pool")} 2`} />
-      </div>
-      {@render fieldError(errors.pool_start ?? errors.pool_end)}
-      <div class="help">{$t("settings.pool_help")}</div>
-    </div>
-
     <h3>{$t("settings.flashing")}</h3>
     <label for="s-par">{$t("settings.max_parallel")}</label>
     <div>
@@ -108,11 +87,28 @@
       <input id="s-cool" type="text" inputmode="numeric" size="6" bind:value={form.cooldown_secs} />
       {@render fieldError(errors.cooldown_secs)}
     </div>
-    <label for="s-dl">{$t("settings.download_timeout")}</label>
-    <div>
-      <input id="s-dl" type="text" inputmode="numeric" size="6" bind:value={form.download_timeout_min} />
-      {@render fieldError(errors.download_timeout_min)}
-    </div>
+
+    <details class="advanced" open={advancedOpen}>
+      <summary>{$t("settings.advanced")}</summary>
+      <div class="grid">
+        <label for="s-pool">{$t("settings.pool")}</label>
+        <div>
+          <div class="row">
+            <input id="s-pool" type="text" bind:value={form.pool_start} placeholder="192.168.88.10" aria-label={`${$t("settings.pool")} 1`} />
+            –
+            <input type="text" bind:value={form.pool_end} placeholder="192.168.88.254" aria-label={`${$t("settings.pool")} 2`} />
+          </div>
+          {@render fieldError(errors.pool_start ?? errors.pool_end)}
+          <div class="help">{$t("settings.pool_help")}</div>
+        </div>
+        <label for="s-dl">{$t("settings.download_timeout")}</label>
+        <div>
+          <input id="s-dl" type="text" inputmode="numeric" size="6" bind:value={form.download_timeout_min} />
+          {@render fieldError(errors.download_timeout_min)}
+          <div class="help">{$t("settings.download_timeout_help")}</div>
+        </div>
+      </div>
+    </details>
 
     <h3>{$t("settings.cache")}</h3>
     <span></span>
@@ -149,6 +145,19 @@
     text-align: right;
     color: var(--secondary);
     padding-top: 3px;
+  }
+  .advanced {
+    grid-column: 1 / -1;
+  }
+  .advanced summary {
+    cursor: default;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--secondary);
+    margin: 8px 0 6px;
+  }
+  .advanced .grid {
+    margin-top: 6px;
   }
   h3 {
     grid-column: 1 / -1;

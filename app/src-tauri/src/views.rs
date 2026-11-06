@@ -137,6 +137,7 @@ mod tests {
             is_loopback: false,
             kind: InterfaceKind::Ethernet,
             display_name: Some("USB 10/100/1000 LAN".into()),
+            configured_ipv4: None,
         };
         let routed: BTreeSet<String> = ["en7".to_string()].into();
         let v = serde_json::to_value(InterfaceView::new(&i, &routed)).unwrap();

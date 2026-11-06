@@ -267,10 +267,28 @@ pub(crate) fn resolve_addresses(
         .find(|i| i.name == cfg.interface)
         .ok_or_else(|| Failure::new("unknown_interface").with("interface", &cfg.interface))?;
     let (server_ip, netmask) = match cfg.server_ip {
-        None => *iface
-            .ipv4
-            .first()
-            .ok_or_else(|| Failure::new("no_ipv4").with("interface", &iface.name))?,
+        // The address macOS is configured with (System Settings → TCP/IP →
+        // Manually); there without link, when macOS has removed it from
+        // the interface. Else the live address.
+        None => match iface.configured_ipv4.as_ref().and_then(|c| c.manual()) {
+            Some((ip, mask))
+                if iface.ipv4.is_empty()
+                    || !iface.is_up
+                    || !iface.is_running
+                    || iface.ipv4.iter().any(|(a, _)| *a == ip) =>
+            {
+                iface
+                    .ipv4
+                    .iter()
+                    .copied()
+                    .find(|(a, _)| *a == ip)
+                    .unwrap_or((ip, mask))
+            }
+            _ => *iface
+                .ipv4
+                .first()
+                .ok_or_else(|| Failure::new("no_ipv4").with("interface", &iface.name))?,
+        },
         Some(ip) => match iface.ipv4.iter().find(|(a, _)| *a == ip) {
             Some(found) => *found,
             None if iface.ipv4.is_empty() || !iface.is_up || !iface.is_running => {
@@ -368,6 +386,7 @@ pub(crate) fn test_iface(name: &str, ipv4: &[(Ipv4Addr, Ipv4Addr)], mac: Option<
         is_loopback: false,
         kind: ni_net::InterfaceKind::Ethernet,
         display_name: None,
+        configured_ipv4: None,
     }
 }
 
@@ -543,6 +562,41 @@ mod tests {
             link_status(&[en7], "en7", ip(1)),
             LinkStatus::Down("interface_down")
         );
+    }
+
+    fn manual(addr: Ipv4Addr, mask: Ipv4Addr) -> Option<ni_net::ConfiguredIpv4> {
+        Some(ni_net::ConfiguredIpv4 {
+            method: ni_net::Ipv4Method::Manual,
+            address: Some(addr),
+            netmask: Some(mask),
+        })
+    }
+
+    #[test]
+    fn the_configured_manual_address_serves_without_link() {
+        // No cable: macOS removed the manual address from the interface,
+        // but the service still has it.
+        let mut en7 = iface("en7", &[], Some(MAC));
+        en7.is_running = false;
+        en7.configured_ipv4 = manual(ip(1), MASK24);
+        let plan = resolve_network(&[en7.clone()], &EngineConfig::new("en7")).unwrap();
+        assert_eq!((plan.server_ip, plan.netmask), (ip(1), MASK24));
+        // The subnet (the BOOTP pool skips the server's own address).
+        assert_eq!((plan.pool_start, plan.pool_end), (ip(1), ip(254)));
+        // With link, the live address is the same one.
+        en7.is_running = true;
+        en7.ipv4 = vec![(ip(1), MASK24)];
+        let plan = resolve_network(&[en7.clone()], &EngineConfig::new("en7")).unwrap();
+        assert_eq!(plan.server_ip, ip(1));
+        // DHCP-configured, no address: nothing to serve with.
+        en7.ipv4.clear();
+        en7.configured_ipv4 = Some(ni_net::ConfiguredIpv4 {
+            method: ni_net::Ipv4Method::Dhcp,
+            address: None,
+            netmask: None,
+        });
+        let err = resolve_network(&[en7], &EngineConfig::new("en7")).unwrap_err();
+        assert_eq!(err.code, "no_ipv4");
     }
 
     #[test]

@@ -78,9 +78,12 @@ fn chained_keys(src: &str) -> Vec<String> {
                     i += 1;
                 }
             }
-            b'.' if depth == 0 && src[i..].starts_with(".with(\"") => {
-                let rest = &src[i + ".with(\"".len()..];
-                keys.push(rest[..rest.find('"').unwrap()].to_string());
+            b'.' if depth == 0 && src[i..].starts_with(".with(") => {
+                // rustfmt may break the line after `(`.
+                let rest = src[i + ".with(".len()..].trim_start();
+                if let Some(rest) = rest.strip_prefix('"') {
+                    keys.push(rest[..rest.find('"').unwrap()].to_string());
+                }
             }
             _ => {}
         }

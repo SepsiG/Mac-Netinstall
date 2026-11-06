@@ -256,8 +256,7 @@ impl AppCore {
     pub fn engine_config(&self, req: &StartRequest) -> Result<EngineConfig, Failure> {
         let s = self.settings();
         let mut cfg = EngineConfig::new(&req.interface);
-        cfg.server_ip = s.server_ip;
-        cfg.netmask = s.netmask;
+        // Server IP and netmask: the adapter's manual IPv4 in macOS.
         cfg.pool = s.pool_start.zip(s.pool_end);
         cfg.max_parallel = s.max_parallel;
         cfg.cooldown = Duration::from_secs(s.cooldown_secs);

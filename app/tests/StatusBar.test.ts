@@ -34,7 +34,7 @@ describe("StatusBar", () => {
     });
     expect(screen.getByText("Port 67 (BOOTP) is used by another program.")).toBeInTheDocument();
     expect(screen.getByText(/most likely Internet Sharing/)).toBeInTheDocument();
-    expect(screen.getByText("en7: no link (no IPv4 address (no cable?)).")).toBeInTheDocument();
+    expect(screen.getByText(/Cable not connected or the device is off/)).toBeInTheDocument();
     expect(screen.queryByText(/Ready to start/)).toBeNull();
   });
 
@@ -88,6 +88,44 @@ describe("StatusBar", () => {
     rerender({ ...base, report, attempted: true });
     expect(finding()).toHaveClass("error");
     expect(finding()).not.toHaveTextContent("To do:");
+  });
+
+  it("gives exact steps when the adapter has no manual IPv4 in macOS", () => {
+    const report: PreflightReport = {
+      network: null,
+      findings: [{ severity: "error", code: "no_manual_ipv4", params: { interface: "en7", service: "USB 10/100/1000 LAN" } }],
+    };
+    render(StatusBar, { props: { ...base, report } });
+    const finding = screen.getByText(/has no manual IPv4 address/).closest(".finding")!;
+    expect(finding).toHaveClass("todo");
+    expect(finding).toHaveTextContent(
+      "System Settings → Network → USB 10/100/1000 LAN → Details → TCP/IP, set Configure IPv4 to Manually, IP address 192.168.88.1, subnet mask 255.255.255.0",
+    );
+    expect(finding).not.toHaveTextContent(/server IP/);
+  });
+
+  it("asks to switch a DHCP adapter to a manual address, in Hungarian too", () => {
+    locale.set("hu");
+    const report: PreflightReport = {
+      network: null,
+      findings: [{ severity: "error", code: "ipv4_dhcp", params: { interface: "en7", service: "USB LAN" } }],
+    };
+    render(StatusBar, { props: { ...base, report } });
+    const finding = screen.getByText(/DHCP-n keresztül kap IPv4-címet/).closest(".finding")!;
+    expect(finding).toHaveTextContent("Teendő:");
+    expect(finding).toHaveTextContent("IPv4 konfigurálása: Kézzel");
+  });
+
+  it("shows a missing link as information: Start is possible", () => {
+    const report: PreflightReport = {
+      network: null,
+      findings: [{ severity: "warning", code: "link_down", params: { interface: "en7", reason: "no_ip" } }],
+    };
+    render(StatusBar, { props: { ...base, report } });
+    const finding = screen.getByText(/Cable not connected or the device is off/).closest(".finding")!;
+    expect(finding).toHaveClass("info");
+    expect(finding).not.toHaveClass("warning");
+    expect(finding).toHaveTextContent(/you can start now/);
   });
 
   it("explains missing kernels", () => {
