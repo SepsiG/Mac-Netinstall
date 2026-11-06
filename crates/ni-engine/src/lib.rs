@@ -4,11 +4,13 @@
 //!   many devices at once), driven by commands, reporting [`EngineEvent`]s.
 //! - [`Profile`] / [`ProfileStore`]: install recipes as JSON files.
 //! - [`preflight`]: what to check before starting.
+//! - [`codes`]: every stable code, for translation checks.
 //!
 //! All errors and events carry stable codes ([`Failure`]); nothing here
 //! returns localized text. Logging uses `tracing` macros only; installing a
 //! subscriber is up to the binary.
 
+pub mod codes;
 pub mod config;
 pub mod engine;
 pub mod event;
