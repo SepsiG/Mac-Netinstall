@@ -15,8 +15,11 @@
 //!   → empty → FILE\n → TERM
 //! ```
 //!
-//! Anything else (wrong order, wrong `ack`, oversized chunks, more data than
-//! announced) is answered with `NACK` and recorded in
+//! Once the server's MAC is known (from `OFFR`), frames from other sources
+//! are ignored, as are stale frames older than the last one accepted.
+//! Anything else out of line (wrong order, wrong `ack`, oversized chunks,
+//! non-final chunks shorter than `MAX_CHUNK`, more data than announced) is
+//! answered with `NACK` and recorded in
 //! [`DeviceSim::violations`], so step-order regressions fail tests. Whether a
 //! file is a package or the configuration script is decided by its name
 //! ([`message::CONFIG_SCRIPT_NAME`]).
@@ -203,6 +206,14 @@ impl DeviceSim {
         if self.state == State::Terminated || frame.dst != me || frame.src == me {
             return;
         }
+        if self.server.is_some_and(|server| frame.src != server) {
+            // Another netinstall server on the segment: not ours.
+            return;
+        }
+        if self.last_seq.is_some_and(|last| frame.seq < last) {
+            // Stale or delayed duplicate of an older frame.
+            return;
+        }
         if frame.ack != frame.seq.wrapping_sub(1) {
             self.violation(format!(
                 "frame seq {} carries ack {}, expected {}",
@@ -298,6 +309,12 @@ impl DeviceSim {
                     ))
                 } else if payload.is_empty() && size > 0 {
                     Some("empty chunk while receiving".to_string())
+                } else if ((data.len() + payload.len()) as u64) < size && payload.len() != MAX_CHUNK
+                {
+                    Some(format!(
+                        "non-final chunk of {} bytes, expected {MAX_CHUNK}",
+                        payload.len()
+                    ))
                 } else if (data.len() + payload.len()) as u64 > size {
                     Some(format!(
                         "{name}: {} bytes received, only {size} announced",
@@ -587,6 +604,47 @@ mod tests {
     }
 
     #[test]
+    fn stale_frames_are_ignored_silently() {
+        let (mut sim, now) = sim_with(|_| {});
+        let mut seq = 0;
+        feed(&mut sim, &mut seq, &[message::OFFR, b"", b""], now);
+        // A delayed duplicate of an older frame.
+        sim.handle_frame(&Frame::new(SERVER, DEVICE, 1, 0, message::OFFR), now);
+        assert_eq!(sim.poll_transmit(), None);
+        assert!(sim.violations().is_empty());
+    }
+
+    #[test]
+    fn frames_from_other_servers_are_ignored_once_offered() {
+        let (mut sim, now) = sim_with(|_| {});
+        let mut seq = 0;
+        feed(&mut sim, &mut seq, &[message::OFFR], now);
+        let other = Mac([0x02, 0, 0, 0, 0, 0x99]);
+        sim.handle_frame(&Frame::new(other, DEVICE, 2, 1, &b""[..]), now);
+        sim.handle_frame(&Frame::new(other, DEVICE, 7, 3, &b"junk"[..]), now);
+        assert_eq!(sim.poll_transmit(), None);
+        assert!(sim.violations().is_empty());
+        // The real server continues normally.
+        let r = feed(&mut sim, &mut seq, &[b""], now);
+        assert_eq!(r, [message::STRT.to_vec()]);
+    }
+
+    #[test]
+    fn short_non_final_chunk_is_a_violation() {
+        let (mut sim, now) = sim_with(|_| {});
+        let mut seq = 0;
+        let h1 = header("a.npk", 2000);
+        let r = feed(
+            &mut sim,
+            &mut seq,
+            &[message::OFFR, b"", b"", &h1, &[1u8; 1000]],
+            now,
+        );
+        assert_eq!(r.last().unwrap().as_slice(), message::NACK);
+        assert_eq!(sim.violations().len(), 1, "{:?}", sim.violations());
+    }
+
+    #[test]
     fn single_final_retr_when_configured() {
         let (mut sim, now) = sim_with(|c| c.double_final_retr = false);
         let mut seq = 0;
@@ -606,17 +664,22 @@ mod tests {
         for dedup in [true, false] {
             let (mut sim, now) = sim_with(|c| c.dedup = dedup);
             let mut seq = 0;
-            let h1 = header("a.npk", 4);
+            let h1 = header("a.npk", 2 * MAX_CHUNK as u64);
+            let chunk = vec![7u8; MAX_CHUNK];
             feed(
                 &mut sim,
                 &mut seq,
-                &[message::OFFR, b"", b"", &h1, b"ab"],
+                &[message::OFFR, b"", b"", &h1, &chunk],
                 now,
             );
             // Re-send the chunk with the same seq.
-            sim.handle_frame(&Frame::new(SERVER, DEVICE, seq, seq - 1, &b"ab"[..]), now);
+            sim.handle_frame(
+                &Frame::new(SERVER, DEVICE, seq, seq - 1, chunk.clone()),
+                now,
+            );
             while sim.poll_transmit().is_some() {}
-            let expected: &[u8] = if dedup { b"" } else { b"abab" };
+            let twice = [chunk.clone(), chunk.clone()].concat();
+            let expected: &[u8] = if dedup { b"" } else { &twice };
             let got: Vec<u8> = sim
                 .received_files()
                 .first()

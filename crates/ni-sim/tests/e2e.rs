@@ -437,6 +437,36 @@ fn single_final_retr_completes_via_device_resend() {
     assert_no_violations(&sim);
 }
 
+#[test]
+fn single_final_retr_without_device_resends_completes_via_retransmit() {
+    let mut sim_cfg = SimConfig::new(DEVICE, "hAP", "mipsbe");
+    sim_cfg.double_final_retr = false;
+    // The device never re-sends on its own; our retransmit of the last chunk
+    // draws its (de-duplicated) second reply.
+    sim_cfg.resend_interval = Duration::from_secs(3600);
+    let plan = InstallPlan {
+        packages: vec![PlanFile {
+            name: "routeros.npk".into(),
+            data: npk(1500, 18),
+        }],
+        config_script: Some(Bytes::from_static(b":log info hi\n")),
+    };
+    let (mut server, mut sim, now) = setup(sim_cfg, &plan);
+
+    pump(
+        &mut server,
+        &mut sim,
+        now,
+        Duration::from_secs(300),
+        |_, _| true,
+    );
+
+    assert_eq!(events(&mut server).last(), Some(&Event::Done));
+    assert_eq!(sim.received_files()[0].data, npk(1500, 18).to_vec());
+    assert!(sim.is_terminated());
+    assert_no_violations(&sim);
+}
+
 /// Documents a risk rather than desired behaviour: the session retransmits
 /// unanswered frames with the same seq, assuming the device de-duplicates
 /// them (pyNetinstall never retransmits). If a device does not, a lost reply
