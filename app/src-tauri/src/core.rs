@@ -5,10 +5,13 @@
 
 use crate::settings::{Settings, SettingsStore};
 use crate::views::{
-    without_paths, BrokenProfile, CacheInfo, InterfaceView, PackagesView, ProfilesView, ScriptView,
+    without_paths, BrokenProfile, CacheView, InterfaceView, PackagesView, ProfilesView, ScriptView,
     StartRequest,
 };
-use ni_assets::{default_cache_root, AssetError, HttpConfig, LocalKind, PkgArch, VersionSpec};
+use ni_assets::{
+    default_cache_root, item_version, AssetError, DeleteScope, HttpConfig, LocalKind, PkgArch,
+    Version, VersionSpec,
+};
 use ni_engine::{
     default_profiles_root, preflight, EngineConfig, EngineHandle, Failure, PreflightReport,
     Profile, ProfileStore, Snapshot, StartInfo,
@@ -85,22 +88,6 @@ pub fn display_path(path: &Path) -> String {
         Some(rest) => format!("~/{}", rest.display()),
         None => path.display().to_string(),
     }
-}
-
-/// Total size of the regular files under `dir` (0 if it is missing).
-fn dir_size(dir: &Path) -> u64 {
-    let mut total = 0;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-            match entry.file_type() {
-                Ok(t) if t.is_dir() => stack.push(entry.path()),
-                Ok(t) if t.is_file() => total += entry.metadata().map_or(0, |m| m.len()),
-                _ => {}
-            }
-        }
-    }
-    total
 }
 
 fn asset_cause(code: &str, e: &AssetError) -> Failure {
@@ -461,27 +448,52 @@ impl AppCore {
 
     // ------------------------------------------------------------ cache, log
 
-    pub async fn cache_info(&self) -> CacheInfo {
-        let root = self.paths.cache.clone();
-        let bytes = tokio::task::spawn_blocking(move || dir_size(&root))
+    /// What is in the download cache. Error: `cache_failed` (`cause`).
+    pub async fn cache_inventory(&self) -> Result<CacheView, Failure> {
+        let inventory = self
+            .engine()
+            .assets()
+            .cached_inventory()
             .await
-            .unwrap_or(0);
-        CacheInfo {
+            .map_err(|e| asset_cause("cache_failed", &e))?;
+        Ok(CacheView {
             location: display_path(&self.paths.cache),
-            bytes,
-        }
+            inventory,
+        })
     }
 
-    /// Delete downloaded versions (registered scripts are kept). Errors:
-    /// `engine_running`, `cache_failed` (`cause`).
-    pub async fn clear_cache(&self) -> Result<(), Failure> {
+    /// Delete part of the download cache; returns the bytes freed. Allowed
+    /// while running, except for a version the engine needs
+    /// ([`EngineHandle::versions_in_use`]). Errors: `asset_in_use`
+    /// (`version`), `cache_failed` (`cause`: `invalid_item`, `busy` while
+    /// it is being downloaded, `io`).
+    pub async fn delete_cached(&self, scope: DeleteScope) -> Result<u64, Failure> {
         let engine = self.engine();
-        if engine.snapshot().await?.running {
-            return Err(Failure::new("engine_running"));
+        let assets = engine.assets();
+        let in_use = engine.versions_in_use().await?;
+        if !in_use.is_empty() {
+            let targets: Vec<Version> = match &scope {
+                DeleteScope::Item { id } => item_version(id).into_iter().collect(),
+                DeleteScope::Version { version } => Version::parse(version).into_iter().collect(),
+                DeleteScope::All | DeleteScope::Damaged => {
+                    let inv = assets
+                        .cached_inventory()
+                        .await
+                        .map_err(|e| asset_cause("cache_failed", &e))?;
+                    let damaged_only = scope == DeleteScope::Damaged;
+                    inv.versions
+                        .iter()
+                        .filter(|v| !damaged_only || v.items.iter().any(|i| i.integrity.damaged()))
+                        .filter_map(|v| Version::parse(&v.version).ok())
+                        .collect()
+                }
+            };
+            if let Some(v) = targets.iter().find(|v| in_use.contains(v)) {
+                return Err(Failure::new("asset_in_use").with("version", v));
+            }
         }
-        engine
-            .assets()
-            .clear_downloads()
+        assets
+            .delete_cached(scope)
             .await
             .map_err(|e| asset_cause("cache_failed", &e))
     }
@@ -529,15 +541,5 @@ mod tests {
             "~/Library/Caches/x"
         );
         assert_eq!(display_path(Path::new("/tmp/x")), "/tmp/x");
-    }
-
-    #[test]
-    fn dir_size_counts_files_recursively() {
-        let dir = ni_assets::testutil::tempdir("dirsize");
-        std::fs::create_dir_all(dir.join("a/b")).unwrap();
-        std::fs::write(dir.join("a/one"), [0u8; 10]).unwrap();
-        std::fs::write(dir.join("a/b/two"), [0u8; 5]).unwrap();
-        assert_eq!(dir_size(&dir), 15);
-        assert_eq!(dir_size(&dir.join("missing")), 0);
     }
 }

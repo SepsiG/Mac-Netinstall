@@ -742,3 +742,18 @@ async fn start_uses_the_configured_manual_address_without_link() {
     };
     assert_eq!(f.param("reason"), Some("no_ip"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_versions_in_use_are_the_served_ones() {
+    let rig = rig(|_| {}).await;
+    let in_use = rig.engine.versions_in_use().await.unwrap();
+    assert_eq!(
+        in_use
+            .into_iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>(),
+        ["7.25.1"]
+    );
+    rig.engine.stop().await.unwrap();
+    assert!(rig.engine.versions_in_use().await.unwrap().is_empty());
+}

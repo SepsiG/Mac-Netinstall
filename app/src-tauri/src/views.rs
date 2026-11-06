@@ -98,12 +98,13 @@ pub struct ScriptView {
     pub size: u64,
 }
 
-/// The download cache, for the settings view.
+/// The download cache, for the settings view: what is in it, by
+/// path-free ids ([`ni_assets::Inventory`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CacheInfo {
+pub struct CacheView {
     /// For display only, with `~` for the home folder.
     pub location: String,
-    pub bytes: u64,
+    pub inventory: ni_assets::Inventory,
 }
 
 /// A failure's parameters without the ones that hold paths.

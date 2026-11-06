@@ -92,7 +92,9 @@
     "local_too_large",
     "local_not_file",
     "local_missing",
-    "local_corrupt"
+    "local_corrupt",
+    "invalid_item",
+    "busy"
   ],
   "ignored_reasons": [
     "awaiting_bootp",
@@ -155,9 +157,9 @@
     "netinstall"
   ],
   "app_failures": [
+    "asset_in_use",
     "cache_failed",
     "dialog_failed",
-    "engine_running",
     "invalid_mac",
     "invalid_setting",
     "log_io",

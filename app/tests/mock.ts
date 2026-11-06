@@ -2,7 +2,7 @@
 // and `emit*` drive the event callbacks.
 import { vi } from "vitest";
 import type { Backend } from "../src/lib/api";
-import type { EngineEvent, Settings, Snapshot } from "../src/lib/types";
+import type { CacheView, EngineEvent, Settings, Snapshot } from "../src/lib/types";
 
 export const SETTINGS: Settings = {
   version: 1,
@@ -15,6 +15,42 @@ export const SETTINGS: Settings = {
   auto_repeat: false,
   last_profile: null,
   download_timeout_secs: 1800,
+};
+
+export const CACHE: CacheView = {
+  location: "~/Library/Caches/x",
+  inventory: {
+    versions: [
+      {
+        version: "7.25.1",
+        size: 1_500_000,
+        items: [
+          { id: "7.25.1/kernels", kind: "kernels", name: "kernels", arch: null, size: 1_000_000, integrity: "verified", files: 8 },
+          {
+            id: "7.25.1/routeros-7.25.1-arm64.npk",
+            kind: "package",
+            name: "routeros-7.25.1-arm64.npk",
+            arch: "arm64",
+            size: 400_000,
+            integrity: "verified",
+            files: 1,
+          },
+          {
+            id: "7.25.1/wireless-7.25.1-arm64.npk",
+            kind: "package",
+            name: "wireless-7.25.1-arm64.npk",
+            arch: "arm64",
+            size: 100_000,
+            integrity: "corrupt",
+            files: 1,
+          },
+        ],
+      },
+    ],
+    partial: [],
+    local: [{ id: "local/setup.rsc", kind: "local", name: "setup.rsc", arch: null, size: 30, integrity: "unpublished", files: 1 }],
+    total: 1_500_030,
+  },
 };
 
 export const IDLE: Snapshot = {
@@ -101,8 +137,8 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
     pickScript: vi.fn(async () => ({ name: "setup.rsc", size: 30 })),
     getSettings: vi.fn(async () => ({ ...SETTINGS })),
     setSettings: vi.fn(async (s: Settings) => s),
-    cacheInfo: vi.fn(async () => ({ location: "~/Library/Caches/x", bytes: 1_500_000 })),
-    clearCache: ok(),
+    cacheInventory: vi.fn(async () => structuredClone(CACHE)),
+    deleteCached: vi.fn(async () => 1_000_000),
     exportLog: vi.fn(async () => true),
     preferredLanguages: vi.fn(async () => ["en-US"]),
     quit: ok(),

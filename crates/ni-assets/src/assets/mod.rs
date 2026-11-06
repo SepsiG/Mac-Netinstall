@@ -31,8 +31,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+mod inventory;
 mod local;
 mod packages;
+
+pub use inventory::{
+    item_version, CachedItem, CachedVersion, DeleteScope, Integrity, Inventory, ItemKind,
+};
+pub(crate) use local::LOCAL_DIR;
 
 pub use local::{LocalFile, LocalKind, MAX_LOCAL_NAME, MAX_SCRIPT_SIZE};
 

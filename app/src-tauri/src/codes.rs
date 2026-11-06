@@ -5,9 +5,9 @@ use serde::Serialize;
 
 /// Codes the bridge reports itself (besides the engine's).
 pub const APP_FAILURES: &[&str] = &[
+    "asset_in_use",
     "cache_failed",
     "dialog_failed",
-    "engine_running",
     "invalid_mac",
     "invalid_setting",
     "log_io",

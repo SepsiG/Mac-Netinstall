@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { untrack } from "svelte";
   import { toFailure } from "../lib/api";
   import { useBackend } from "../lib/context";
-  import { bytes } from "../lib/format";
   import { LANGS, locale, t } from "../lib/i18n";
   import { describe, hint } from "../lib/messages";
   import { fromSettingsForm, settingsErrors, toSettingsForm, type FieldError } from "../lib/settingsForm";
-  import type { CacheInfo, Failure, Settings } from "../lib/types";
+  import type { Failure, Settings } from "../lib/types";
+  import CachePanel from "./CachePanel.svelte";
   import Modal from "./Modal.svelte";
 
   let {
@@ -23,35 +23,10 @@
   let form = $state(toSettingsForm(base));
   let tried = $state(false);
   let error = $state<Failure | null>(null);
-  let cache = $state<CacheInfo | null>(null);
-  let cleared = $state(false);
 
   const errors = $derived(settingsErrors(form));
   // Open when a value in it was changed from the default.
   const advancedOpen = base.pool_start !== null || base.download_timeout_secs !== 30 * 60;
-
-  onMount(() => {
-    void loadCache();
-  });
-
-  async function loadCache() {
-    try {
-      cache = await backend.cacheInfo();
-    } catch (e) {
-      error = toFailure(e);
-    }
-  }
-
-  async function clearCache() {
-    error = null;
-    try {
-      await backend.clearCache();
-      cleared = true;
-      await loadCache();
-    } catch (e) {
-      error = toFailure(e);
-    }
-  }
 
   async function save() {
     tried = true;
@@ -110,17 +85,7 @@
       </div>
     </details>
 
-    <h3>{$t("settings.cache")}</h3>
-    <span></span>
-    <div>
-      {#if cache}
-        <div class="help">{$t("settings.cache_info", { size: bytes(cache.bytes, $locale), location: cache.location })}</div>
-      {/if}
-      <div class="row">
-        <button type="button" class="small" onclick={clearCache}>{$t("settings.clear_cache")}</button>
-        {#if cleared}<span class="ok-text">{$t("settings.cache_cleared")}</span>{/if}
-      </div>
-    </div>
+    <CachePanel />
   </form>
   {#if error}
     <div class="save-error" role="alert">

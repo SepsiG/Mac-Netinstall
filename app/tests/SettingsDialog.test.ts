@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsDialog from "../src/components/SettingsDialog.svelte";
@@ -58,16 +58,72 @@ describe("SettingsDialog", () => {
     expect(backend.setSettings).not.toHaveBeenCalled();
   });
 
-  it("shows the cache and clears it, or says why not", async () => {
-    const backend = mockBackend();
+  it("lists the downloaded files by version with their state", async () => {
+    open();
+    expect(await screen.findByText("RouterOS 7.25.1")).toBeInTheDocument();
+    const section = screen.getByRole("region", { name: "Downloaded RouterOS files" });
+    expect(section).toHaveTextContent("kept on this Mac, so they are not downloaded again for every flash");
+    expect(section).toHaveTextContent("1.5 MB in ~/Library/Caches/x");
+    const row = (name: string) => within(section).getByText(name).closest("tr")!;
+    expect(row("Boot kernels (8)")).toHaveTextContent("1 MB");
+    expect(row("Boot kernels (8)")).toHaveTextContent("✓ verified");
+    expect(row("wireless-7.25.1-arm64.npk")).toHaveTextContent("arm64");
+    expect(within(row("wireless-7.25.1-arm64.npk")).getByText("damaged")).toHaveClass("badge-warning");
+    expect(within(section).getByText("Your files (scripts, packages)")).toBeInTheDocument();
+    expect(row("setup.rsc")).toBeInTheDocument();
+  });
+
+  it("deletes one file after confirming, then shows the new list", async () => {
+    const { backend } = open();
+    const name = "wireless-7.25.1-arm64.npk";
+    await userEvent.click(await screen.findByRole("button", { name: `Delete ${name}` }));
+    let dialog = screen.getAllByRole("dialog").at(-1)!;
+    expect(dialog).toHaveTextContent(`Delete ${name}?`);
+    expect(dialog).toHaveTextContent("100 KB will be freed");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(backend.deleteCached).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: `Delete ${name}` }));
+    dialog = screen.getAllByRole("dialog").at(-1)!;
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(backend.deleteCached).toHaveBeenCalledWith({ scope: "item", id: `7.25.1/${name}` });
+    expect(await screen.findByText("1 MB freed.")).toBeInTheDocument();
+    expect(backend.cacheInventory).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["Delete version", { scope: "version", version: "7.25.1" }, "RouterOS 7.25.1"],
+    ["Delete damaged files", { scope: "damaged" }, "the damaged files"],
+    ["Delete all", { scope: "all" }, "all downloaded files"],
+  ])("%s asks first", async (button, scope, what) => {
+    const { backend } = open();
+    await userEvent.click(await screen.findByRole("button", { name: button }));
+    const dialog = screen.getAllByRole("dialog").at(-1)!;
+    expect(dialog).toHaveTextContent(`Delete ${what}?`);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(backend.deleteCached).toHaveBeenCalledWith(scope);
+  });
+
+  it("says why a file cannot be deleted", async () => {
+    const backend = mockBackend({
+      deleteCached: vi.fn(async () => Promise.reject({ code: "asset_in_use", params: { version: "7.25.1" } })),
+    });
     open(backend);
-    expect(await screen.findByText("1.5 MB in ~/Library/Caches/x")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Clear downloads" }));
-    expect(backend.clearCache).toHaveBeenCalled();
-    expect(await screen.findByText("Downloads cleared.")).toBeInTheDocument();
-    vi.mocked(backend.clearCache).mockRejectedValueOnce({ code: "engine_running" });
-    await userEvent.click(screen.getByRole("button", { name: "Clear downloads" }));
-    expect(await screen.findByText("Stop first.")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Delete all" }));
+    await userEvent.click(within(screen.getAllByRole("dialog").at(-1)!).getByRole("button", { name: "Delete" }));
+    expect(await screen.findByText(/RouterOS 7.25.1 is in use right now/)).toBeInTheDocument();
+  });
+
+  it("has nothing to delete when nothing is downloaded", async () => {
+    const backend = mockBackend({
+      cacheInventory: vi.fn(async () => ({
+        location: "~/x",
+        inventory: { versions: [], partial: [], local: [], total: 0 },
+      })),
+    });
+    open(backend);
+    expect(await screen.findByText("Nothing downloaded yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete all" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Delete damaged files" })).toBeNull();
   });
 
   it("reports backend validation", async () => {

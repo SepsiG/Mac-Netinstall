@@ -23,9 +23,10 @@ use crate::config::{EngineConfig, NetPlan};
 use crate::event::{DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo};
 use crate::prepare::asset_failure;
 use crate::profile::Profile;
-use ni_assets::{AssetEvent, Assets, HttpConfig};
+use ni_assets::{AssetEvent, Assets, HttpConfig, Version};
 use ni_proto::Mac;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -101,6 +102,7 @@ pub(crate) enum Command {
     MaxParallel(usize, Reply<()>),
     Cooldown(Duration, Reply<()>),
     Snapshot(oneshot::Sender<Snapshot>),
+    InUse(oneshot::Sender<BTreeSet<Version>>),
     /// Makes the engine task panic (tests of `engine_gone`).
     #[cfg(test)]
     Panic,
@@ -331,6 +333,14 @@ impl EngineHandle {
 
     pub async fn snapshot(&self) -> Result<Snapshot, Failure> {
         self.call(Command::Snapshot).await
+    }
+
+    /// RouterOS versions the engine needs in the cache right now: the boot
+    /// kernels it serves or is fetching, and the versions of devices being
+    /// prepared or flashed (empty while stopped). A UI must not delete
+    /// these.
+    pub async fn versions_in_use(&self) -> Result<BTreeSet<Version>, Failure> {
+        self.call(Command::InUse).await
     }
 }
 

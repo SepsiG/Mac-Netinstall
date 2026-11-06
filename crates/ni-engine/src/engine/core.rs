@@ -308,6 +308,9 @@ impl Core {
             Command::Snapshot(reply) => {
                 let _ = reply.send(self.snapshot());
             }
+            Command::InUse(reply) => {
+                let _ = reply.send(self.versions_in_use());
+            }
             #[cfg(test)]
             Command::Panic => panic!("engine task panic requested by a test"),
         }
@@ -650,6 +653,23 @@ impl Core {
         check_cooldown(cooldown, run.cfg.min_cooldown)?;
         run.cfg.cooldown = cooldown;
         Ok(())
+    }
+
+    fn versions_in_use(&self) -> std::collections::BTreeSet<Version> {
+        let Some(run) = &self.run else {
+            return Default::default();
+        };
+        run.kernel_version
+            .iter()
+            .chain(&run.kernel_resolved)
+            .chain(
+                run.devices
+                    .values()
+                    .filter(|d| d.is_active())
+                    .flat_map(|d| d.version.iter().chain(&d.kernel)),
+            )
+            .cloned()
+            .collect()
     }
 
     fn snapshot(&self) -> Snapshot {

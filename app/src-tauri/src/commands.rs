@@ -7,8 +7,9 @@
 use crate::core::{self, AppCore};
 use crate::settings::Settings;
 use crate::views::{
-    CacheInfo, InterfaceView, PackagesView, ProfilesView, ScriptView, StartRequest,
+    CacheView, InterfaceView, PackagesView, ProfilesView, ScriptView, StartRequest,
 };
+use ni_assets::DeleteScope;
 use ni_engine::{Failure, PreflightReport, Profile, Snapshot, StartInfo};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -140,13 +141,15 @@ pub async fn set_settings(core: State<'_, AppCore>, settings: Settings) -> R<Set
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn cache_info(core: State<'_, AppCore>) -> R<CacheInfo> {
-    Ok(core.cache_info().await)
+pub async fn cache_inventory(core: State<'_, AppCore>) -> R<CacheView> {
+    core.cache_inventory().await
 }
 
+/// `scope`: `{"scope": "item", "id": ...}`, `{"scope": "version",
+/// "version": ...}`, `{"scope": "all"}` or `{"scope": "damaged"}`.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn clear_cache(core: State<'_, AppCore>) -> R<()> {
-    core.clear_cache().await
+pub async fn delete_cached(core: State<'_, AppCore>, scope: DeleteScope) -> R<u64> {
+    core.delete_cached(scope).await
 }
 
 /// Let the user choose where to save `text` (the window's log); `false`

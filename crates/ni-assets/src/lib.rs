@@ -36,7 +36,8 @@ pub mod testutil;
 pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;
 pub use assets::{
-    default_cache_root, kernel_file_name, Assets, LocalFile, LocalKind, BUNDLE_ID, CHANNELS_FILE,
+    default_cache_root, item_version, kernel_file_name, Assets, CachedItem, CachedVersion,
+    DeleteScope, Integrity, Inventory, ItemKind, LocalFile, LocalKind, BUNDLE_ID, CHANNELS_FILE,
     MAX_LOCAL_NAME, MAX_SCRIPT_SIZE, STALE_PART_AGE,
 };
 pub use cache::{Entry, Index};

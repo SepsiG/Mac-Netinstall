@@ -3,7 +3,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  CacheInfo,
+  CacheView,
+  DeleteScope,
   EngineEvent,
   Failure,
   InterfaceView,
@@ -43,8 +44,9 @@ export interface Backend {
   pickScript(): Promise<ScriptView | null>;
   getSettings(): Promise<Settings>;
   setSettings(settings: Settings): Promise<Settings>;
-  cacheInfo(): Promise<CacheInfo>;
-  clearCache(): Promise<void>;
+  cacheInventory(): Promise<CacheView>;
+  /** Bytes freed. */
+  deleteCached(scope: DeleteScope): Promise<number>;
   /** Opens a save dialog (in Rust); `false` if cancelled. */
   exportLog(text: string): Promise<boolean>;
   preferredLanguages(): Promise<string[]>;
@@ -93,8 +95,8 @@ export function tauriBackend(): Backend {
     pickScript: () => invoke("pick_script"),
     getSettings: () => invoke("get_settings"),
     setSettings: (settings) => invoke("set_settings", { settings }),
-    cacheInfo: () => invoke("cache_info"),
-    clearCache: () => invoke("clear_cache"),
+    cacheInventory: () => invoke("cache_inventory"),
+    deleteCached: (scope) => invoke("delete_cached", { scope }),
     exportLog: (text) => invoke("export_log", { text }),
     preferredLanguages: () => invoke("preferred_languages"),
     quit: () => invoke("quit"),

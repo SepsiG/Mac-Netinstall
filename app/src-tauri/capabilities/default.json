@@ -29,8 +29,8 @@
     "allow-pick-script",
     "allow-get-settings",
     "allow-set-settings",
-    "allow-cache-info",
-    "allow-clear-cache",
+    "allow-cache-inventory",
+    "allow-delete-cached",
     "allow-export-log",
     "allow-preferred-languages",
     "allow-quit"

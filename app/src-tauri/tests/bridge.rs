@@ -7,7 +7,7 @@ use mac_netinstall_app::forward::{forward_events, Forwarded};
 use mac_netinstall_app::settings::Settings;
 use mac_netinstall_app::views::StartRequest;
 use ni_assets::testutil::{mirror, tempdir, TempDir, TestServer};
-use ni_assets::{Channel, HttpConfig, VersionSpec};
+use ni_assets::{Channel, DeleteScope, HttpConfig, VersionSpec};
 use ni_engine::{EngineEvent, Ports, Profile};
 use ni_proto::{Mac, SessionConfig};
 use ni_sim::lan::{tftp_get, SimLan};
@@ -225,8 +225,19 @@ async fn runtime_controls_reach_the_engine_and_are_remembered() {
     );
     rig.core.set_active_profile(None).await.unwrap();
     assert_eq!(rig.core.settings().last_profile, None);
-    let err = rig.core.clear_cache().await.unwrap_err();
-    assert_eq!(err.code, "engine_running");
+    // What the running engine serves cannot be deleted; the rest can.
+    let version = DeleteScope::Version {
+        version: "7.25.1".into(),
+    };
+    let err = rig.core.delete_cached(version.clone()).await.unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("version")),
+        ("asset_in_use", Some("7.25.1"))
+    );
+    let err = rig.core.delete_cached(DeleteScope::All).await.unwrap_err();
+    assert_eq!(err.code, "asset_in_use");
+    rig.core.stop().await.unwrap();
+    rig.core.delete_cached(version).await.unwrap();
     rig.core.cancel(&A.to_string()).await.unwrap_err();
 }
 
@@ -414,10 +425,23 @@ async fn packages_scripts_cache_and_log() {
         "not_a_script"
     );
 
-    let info = rig.core.cache_info().await;
-    assert!(info.bytes > 0, "packages were cached");
-    rig.core.clear_cache().await.unwrap();
-    assert!(rig.core.cache_info().await.bytes < info.bytes);
+    let view = rig.core.cache_inventory().await.unwrap();
+    assert!(view.inventory.total > 0, "packages were cached");
+    assert!(view.location.starts_with('/') || view.location.starts_with('~'));
+    assert_eq!(view.inventory.local.len(), 1, "the script");
+    rig.core.delete_cached(DeleteScope::All).await.unwrap();
+    let after = rig.core.cache_inventory().await.unwrap();
+    assert!(after.inventory.versions.is_empty());
+    assert_eq!(after.inventory.local.len(), 1, "local files are kept");
+    let err = rig
+        .core
+        .delete_cached(DeleteScope::Item { id: "../x".into() })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("cause")),
+        ("cache_failed", Some("invalid_item"))
+    );
 
     let log = rig.dir.join("out.txt");
     rig.core.write_log(&log, "line 1\n").unwrap();

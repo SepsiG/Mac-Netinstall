@@ -145,9 +145,44 @@ export interface ScriptView {
   size: number;
 }
 
-export interface CacheInfo {
+export type Integrity = "verified" | "unpublished" | "corrupt" | "missing" | "partial";
+
+/** One cached item (`ni_assets::CachedItem`); `id` is path-free. */
+export interface CachedItem {
+  id: string;
+  kind: "kernels" | "package" | "other" | "partial" | "local";
+  name: string;
+  arch: string | null;
+  size: number;
+  integrity: Integrity;
+  files: number;
+}
+
+export interface CachedVersion {
+  version: string;
+  size: number;
+  items: CachedItem[];
+}
+
+export interface CacheView {
+  /** For display only (`~/…`). */
   location: string;
-  bytes: number;
+  inventory: {
+    versions: CachedVersion[];
+    partial: CachedItem[];
+    local: CachedItem[];
+    total: number;
+  };
+}
+
+export type DeleteScope =
+  | { scope: "item"; id: string }
+  | { scope: "version"; version: string }
+  | { scope: "all" }
+  | { scope: "damaged" };
+
+export function damaged(i: CachedItem): boolean {
+  return i.integrity === "corrupt" || i.integrity === "missing" || i.integrity === "partial";
 }
 
 export interface StartRequest {

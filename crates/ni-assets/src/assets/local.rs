@@ -16,7 +16,7 @@ pub const MAX_LOCAL_NAME: usize = 200;
 /// Largest local `.rsc` script accepted.
 pub const MAX_SCRIPT_SIZE: u64 = 1 << 20;
 /// Cache subdirectory for user-supplied files.
-const LOCAL_DIR: &str = "local";
+pub(crate) const LOCAL_DIR: &str = "local";
 
 /// Kind of a user-supplied file, from its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
