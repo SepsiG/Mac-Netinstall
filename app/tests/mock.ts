@@ -5,6 +5,7 @@ import type { Backend } from "../src/lib/api";
 import type { EngineEvent, Settings, Snapshot } from "../src/lib/types";
 
 export const SETTINGS: Settings = {
+  version: 1,
   language: "en",
   last_interface: null,
   show_all_interfaces: false,
@@ -12,7 +13,7 @@ export const SETTINGS: Settings = {
   netmask: null,
   pool_start: null,
   pool_end: null,
-  max_parallel: 4,
+  max_parallel: 1,
   cooldown_secs: 300,
   auto_repeat: false,
   last_profile: null,

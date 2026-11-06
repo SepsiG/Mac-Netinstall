@@ -244,8 +244,8 @@ pub struct FlashArgs {
     /// Serve only this device (MAC address).
     #[arg(long)]
     pub only_mac: Option<Mac>,
-    /// Devices flashed at the same time.
-    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
+    /// Devices flashed at the same time (more than one only on request).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=64))]
     pub max_parallel: u16,
     /// Seconds a finished device is ignored (it reboots); at least 30.
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(30..))]
@@ -281,6 +281,19 @@ mod tests {
     #[test]
     fn definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn one_device_at_a_time_by_default() {
+        let cli = parse(&["flash", "--iface", "en7", "--version", "stable"]).unwrap();
+        let Command::Flash(f) = cli.command else {
+            panic!("flash expected")
+        };
+        assert_eq!(f.max_parallel, 1);
+        let mut cmd = Cli::command();
+        let flash = cmd.find_subcommand_mut("flash").unwrap();
+        let help = flash.render_long_help().to_string();
+        assert!(help.contains("[default: 1]"), "{help}");
     }
 
     #[test]

@@ -170,7 +170,7 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    /// Defaults for `interface`: 4 in parallel, 5 min cooldown, no
+    /// Defaults for `interface`: one device at a time, 5 min cooldown, no
     /// profile, auto-repeat off.
     pub fn new(interface: &str) -> Self {
         EngineConfig {
@@ -182,7 +182,7 @@ impl EngineConfig {
             profile: None,
             auto_repeat: false,
             only_mac: None,
-            max_parallel: 4,
+            max_parallel: 1,
             cooldown: Duration::from_secs(5 * 60),
             min_cooldown: MIN_COOLDOWN,
             session: SessionConfig::default(),
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn defaults() {
         let cfg = EngineConfig::new("en7");
-        assert_eq!(cfg.max_parallel, 4);
+        assert_eq!(cfg.max_parallel, 1, "one at a time unless chosen");
         assert_eq!(cfg.cooldown, Duration::from_secs(300));
         assert!(!cfg.auto_repeat);
         assert_eq!(cfg.ports.bootp_reply_to.to_string(), "255.255.255.255:68");

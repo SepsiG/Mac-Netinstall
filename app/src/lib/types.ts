@@ -157,6 +157,8 @@ export interface StartRequest {
 }
 
 export interface Settings {
+  /** Layout version of `settings.json` (Rust writes the current one). */
+  version: number;
   language: string | null;
   last_interface: string | null;
   show_all_interfaces: boolean;

@@ -14,12 +14,21 @@ pub const LANGUAGES: &[&str] = &["en", "hu"];
 pub const MIN_DOWNLOAD_TIMEOUT: u64 = 60;
 /// Longest download timeout accepted (seconds; a day).
 pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
+/// Version of the `settings.json` layout, written as `version`. Files
+/// without it are older: their `max_parallel` of 4 was the default then
+/// (now 1) and is migrated to 1 when loaded.
+pub const SETTINGS_VERSION: u32 = 1;
+/// The `max_parallel` default of unversioned files.
+const OLD_DEFAULT_MAX_PARALLEL: usize = 4;
 
 /// What the app remembers between runs. Missing fields take their
 /// defaults, so older files keep working.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Layout version ([`SETTINGS_VERSION`]); always written as the current
+    /// one.
+    pub version: u32,
     /// `"en"` or `"hu"`; `None` follows the macOS language.
     pub language: Option<String>,
     pub last_interface: Option<String>,
@@ -32,6 +41,7 @@ pub struct Settings {
     /// BOOTP pool (both or neither); default: the subnet.
     pub pool_start: Option<Ipv4Addr>,
     pub pool_end: Option<Ipv4Addr>,
+    /// Devices flashed at the same time; 1 unless chosen in Settings.
     pub max_parallel: usize,
     pub cooldown_secs: u64,
     pub auto_repeat: bool,
@@ -43,6 +53,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            version: SETTINGS_VERSION,
             language: None,
             last_interface: None,
             show_all_interfaces: false,
@@ -50,7 +61,7 @@ impl Default for Settings {
             netmask: None,
             pool_start: None,
             pool_end: None,
-            max_parallel: 4,
+            max_parallel: 1,
             cooldown_secs: 300,
             auto_repeat: false,
             last_profile: None,
@@ -248,13 +259,26 @@ impl SettingsStore {
                 loaded.problems.push(field.to_string());
             }
         }
-        let known = |k: &str| FIELDS.contains(&k) || k == "pool_start" || k == "pool_end";
+        let known =
+            |k: &str| FIELDS.contains(&k) || ["pool_start", "pool_end", "version"].contains(&k);
         loaded
             .problems
             .extend(obj.keys().filter(|k| !known(k)).cloned());
         if !loaded.problems.is_empty() {
             self.keep_backup(&data, &loaded.problems);
         }
+        if !obj.contains_key("version") {
+            // Older than versioned settings: 4 was the default then, not a
+            // choice. Store the migrated, versioned file at once.
+            if loaded.settings.max_parallel == OLD_DEFAULT_MAX_PARALLEL {
+                loaded.settings.max_parallel = Settings::default().max_parallel;
+            }
+            tracing::info!("migrating settings to version {SETTINGS_VERSION}");
+            if let Err(f) = self.save(&loaded.settings) {
+                tracing::warn!("cannot store migrated settings: {f}");
+            }
+        }
+        loaded.settings.version = SETTINGS_VERSION;
         loaded
     }
 
@@ -275,6 +299,10 @@ impl SettingsStore {
     /// then renamed over the old one (never a half-written file).
     pub fn save(&self, settings: &Settings) -> Result<(), Failure> {
         settings.validate()?;
+        let settings = &Settings {
+            version: SETTINGS_VERSION,
+            ..settings.clone()
+        };
         let dir = self.path.parent().unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).map_err(|e| io_failure("mkdir", e))?;
         let mut json = serde_json::to_vec_pretty(settings).expect("settings serialize");
@@ -307,14 +335,56 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn old_files_with_the_old_default_flash_one_at_a_time() {
+        let dir = tempdir("settings-migrate");
+        let path = dir.join("settings.json");
+        // Written before settings had a version: 4 was the default then.
+        std::fs::write(
+            &path,
+            r#"{"max_parallel": 4, "language": "hu", "cooldown_secs": 120}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(&path);
+        let loaded = store.load_checked();
+        assert_eq!(loaded.settings.max_parallel, 1);
+        assert_eq!(loaded.settings.version, SETTINGS_VERSION);
+        assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+        assert_eq!(loaded.settings.cooldown_secs, 120);
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        // Written back, versioned, at once.
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["max_parallel"], 1);
+        assert_eq!(stored["version"], SETTINGS_VERSION);
+        assert_eq!(stored["cooldown_secs"], 120);
+        // Another old value was a choice: kept.
+        std::fs::write(&path, r#"{"max_parallel": 3}"#).unwrap();
+        assert_eq!(store.load().max_parallel, 3);
+    }
+
+    #[test]
+    fn an_explicit_four_in_a_versioned_file_stays() {
+        let dir = tempdir("settings-four");
+        let store = SettingsStore::new(dir.join("settings.json"));
+        let s = Settings {
+            max_parallel: 4,
+            ..Settings::default()
+        };
+        store.save(&s).unwrap();
+        assert_eq!(store.load().max_parallel, 4);
+        assert_eq!(store.load().max_parallel, 4, "and again");
+    }
+
+    #[test]
     fn defaults_and_partial_files() {
         let s = Settings::default();
-        assert_eq!((s.max_parallel, s.cooldown_secs), (4, 300));
+        assert_eq!((s.max_parallel, s.cooldown_secs), (1, 300));
+        assert_eq!(s.version, SETTINGS_VERSION);
         assert_eq!(s.download_timeout(), Duration::from_secs(1800));
         assert!(s.validate().is_ok());
         let partial: Settings = serde_json::from_value(json!({"language": "hu"})).unwrap();
         assert_eq!(partial.language.as_deref(), Some("hu"));
-        assert_eq!(partial.max_parallel, 4);
+        assert_eq!(partial.max_parallel, 1);
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["server_ip"], json!(null));
         assert_eq!(v["download_timeout_secs"], 1800);
@@ -464,7 +534,7 @@ mod tests {
         let s = loaded.settings;
         assert_eq!(s.language, None);
         assert_eq!(s.last_interface.as_deref(), Some("en7"));
-        assert_eq!((s.max_parallel, s.cooldown_secs), (4, 300));
+        assert_eq!((s.max_parallel, s.cooldown_secs), (1, 300));
         assert_eq!((s.pool_start, s.pool_end), (None, None));
         assert_eq!((s.download_timeout_secs, s.auto_repeat), (900, true));
         assert_eq!(

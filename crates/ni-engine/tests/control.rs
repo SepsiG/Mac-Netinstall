@@ -64,7 +64,7 @@ async fn kernel_state_goes_from_downloading_to_ready() {
     let snap = engine.snapshot().await.unwrap();
     assert_eq!(snap.kernels, *states.last().unwrap());
     assert_eq!(snap.kernel_version.as_deref(), Some("7.25.1"));
-    assert_eq!((snap.max_parallel, snap.cooldown_secs), (4, 300));
+    assert_eq!((snap.max_parallel, snap.cooldown_secs), (1, 300));
     assert_eq!((snap.only_mac, snap.link_down), (None, None));
     engine.stop().await.unwrap();
     assert_eq!(engine.snapshot().await.unwrap().kernels, KernelState::Idle);

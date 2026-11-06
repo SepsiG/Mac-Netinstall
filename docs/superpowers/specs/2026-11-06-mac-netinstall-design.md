@@ -93,7 +93,7 @@ mac-netinstall/
   mipsbe, mmips, smips, tile, ppc, x86. ni-assets picks NPKs matching the device's arch for the
   profile's version.
 - **Multi-device:** one session per MAC, independent state machines. Configurable IP pool (default
-  `192.168.88.0/24`, excluding host IP). Configurable concurrency limit (default 4) since TFTP and
+  `192.168.88.0/24`, excluding host IP). Configurable concurrency limit (default 1: one device at a time unless chosen in Settings or with `--max-parallel`) since TFTP and
   uploads share bandwidth.
 - **Auto-repeat:** each newly discovered MAC gets the active profile automatically. Finished MACs are
   ignored for a configurable cooldown (default 5 min) to avoid re-flashing after reboot.
