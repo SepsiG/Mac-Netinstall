@@ -39,7 +39,8 @@
     "copyright": "GPL-3.0-only",
     "license": "GPL-3.0-only",
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-"
     }
   }
 }

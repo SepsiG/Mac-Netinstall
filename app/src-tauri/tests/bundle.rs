@@ -22,6 +22,9 @@ fn bundle_identity_and_platform() {
     assert_eq!(conf["bundle"]["macOS"]["minimumSystemVersion"], "13.0");
     assert_eq!(conf["bundle"]["targets"], serde_json::json!(["app", "dmg"]));
     assert_eq!(conf["version"], env!("CARGO_PKG_VERSION"));
+    // Ad-hoc signing with the bundle id: macOS then reports real MAC
+    // addresses to the app (a linker-signed bundle gets 02:00:00:00:00:00).
+    assert_eq!(conf["bundle"]["macOS"]["signingIdentity"], "-");
 }
 
 #[test]
