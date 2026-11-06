@@ -117,6 +117,10 @@ export interface InterfaceView {
   default_route: boolean;
   /** A real wired Ethernet NIC: the only interfaces offered. */
   netinstall_capable: boolean;
+  /** How macOS is set up to address it (System Settings → TCP/IP). */
+  configured_ipv4: { method: string; address: string | null; prefix: number | null } | null;
+  /** The automatic DHCP pool for its manual address. */
+  auto_pool: { start: string; end: string } | null;
 }
 
 export type ConfigMode = { mode: "default" } | { mode: "custom_script"; local_name: string };

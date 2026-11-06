@@ -5,13 +5,28 @@ import SettingsDialog from "../src/components/SettingsDialog.svelte";
 import { backendContext } from "../src/lib/context";
 import { locale } from "../src/lib/i18n";
 import { fromSettingsForm, settingsErrors, toSettingsForm } from "../src/lib/settingsForm";
+import type { InterfaceView, Settings } from "../src/lib/types";
 import { CACHE, mockBackend, SETTINGS } from "./mock";
 
 beforeEach(() => locale.set("en"));
 
-function open(backend = mockBackend()) {
+const EN6: InterfaceView = {
+  name: "en6",
+  display_name: "USB LAN",
+  kind: "ethernet",
+  mac: null,
+  ipv4: [],
+  up: true,
+  running: true,
+  default_route: false,
+  netinstall_capable: true,
+  configured_ipv4: { method: "manual", address: "172.30.0.2", prefix: 22 },
+  auto_pool: { start: "172.30.0.3", end: "172.30.3.254" },
+};
+
+function open(backend = mockBackend(), settings: Settings = { ...SETTINGS }, iface: InterfaceView | null = EN6) {
   const onclose = vi.fn();
-  render(SettingsDialog, { props: { settings: { ...SETTINGS }, onclose }, context: backendContext(backend) });
+  render(SettingsDialog, { props: { settings, iface, onclose }, context: backendContext(backend) });
   return { backend, onclose };
 }
 
@@ -21,7 +36,7 @@ describe("settings form", () => {
     expect(f.download_timeout_min).toBe("30");
     expect(settingsErrors(f)).toEqual({});
     expect(fromSettingsForm(f, SETTINGS)).toEqual(SETTINGS);
-    const bad = { ...f, pool_start: "192.168.88.10", pool_end: "300.1.1.1", max_parallel: "0", cooldown_secs: "10" };
+    const bad = { ...f, poolCustom: true, pool_start: "192.168.88.10", pool_end: "300.1.1.1", max_parallel: "0", cooldown_secs: "10" };
     expect(Object.keys(settingsErrors(bad)).sort()).toEqual(["cooldown_secs", "max_parallel", "pool_end"]);
     expect("server_ip" in f).toBe(false);
   });
@@ -34,10 +49,11 @@ describe("SettingsDialog", () => {
     await userEvent.clear(screen.getByLabelText("Devices at once"));
     await userEvent.type(screen.getByLabelText("Devices at once"), "2");
     await userEvent.click(screen.getByText("Advanced"));
-    await userEvent.type(screen.getByLabelText("Address pool 1"), "192.168.88.10");
-    await userEvent.type(screen.getByLabelText("Address pool 2"), "192.168.88.50");
+    await userEvent.click(screen.getByRole("button", { name: "Custom range" }));
+    await userEvent.type(screen.getByLabelText("Address pool 1"), "172.30.1.10");
+    await userEvent.type(screen.getByLabelText("Address pool 2"), "172.30.1.50");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    const saved = { ...SETTINGS, language: "hu", max_parallel: 2, pool_start: "192.168.88.10", pool_end: "192.168.88.50" };
+    const saved = { ...SETTINGS, language: "hu", max_parallel: 2, pool_start: "172.30.1.10", pool_end: "172.30.1.50" };
     expect(backend.setSettings).toHaveBeenCalledWith(saved);
     expect(onclose).toHaveBeenCalledWith(saved);
   });
@@ -45,8 +61,9 @@ describe("SettingsDialog", () => {
   it("shows field errors and does not save", async () => {
     const { backend } = open();
     await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.click(screen.getByRole("button", { name: "Custom range" }));
     await userEvent.type(screen.getByLabelText("Address pool 1"), "192.168.88");
-    await userEvent.type(screen.getByLabelText("Address pool 2"), "192.168.88.50");
+    await userEvent.type(screen.getByLabelText("Address pool 2"), "172.30.1.50");
     await userEvent.clear(screen.getByLabelText("Ignore a flashed device for (seconds)"));
     await userEvent.type(screen.getByLabelText("Ignore a flashed device for (seconds)"), "5");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -141,7 +158,7 @@ describe("SettingsDialog", () => {
     expect(screen.queryByLabelText(/Subnet mask/)).toBeNull();
     const advanced = screen.getByText("Advanced").closest("details")!;
     expect(advanced).not.toHaveAttribute("open");
-    expect(advanced).toContainElement(screen.getByLabelText("Address pool 1"));
+    expect(advanced).toHaveTextContent("Automatic: 172.30.0.3 – 172.30.3.254");
     expect(advanced).toContainElement(screen.getByLabelText("Download timeout (minutes)"));
     expect(advanced).toHaveTextContent("Only needs increasing on very slow connections.");
   });
@@ -172,5 +189,37 @@ describe("SettingsDialog", () => {
     open(backend);
     const row = (await screen.findByText("routeros-7.25.1-arm64.npk")).closest("tr")!;
     expect(within(row).getByText("not checked yet")).not.toHaveClass("badge-warning");
+  });
+
+  it("derives the pool automatically, or takes a custom range inside the subnet", async () => {
+    const { backend } = open();
+    await userEvent.click(screen.getByText("Advanced"));
+    expect(screen.getByText("Automatic: 172.30.0.3 – 172.30.3.254")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Address pool 1")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Custom range" }));
+    await userEvent.type(screen.getByLabelText("Address pool 1"), "10.0.0.1");
+    await userEvent.type(screen.getByLabelText("Address pool 2"), "172.30.3.255");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getAllByRole("alert").map((a) => a.textContent)).toEqual([
+      "Use addresses inside 172.30.0.0/22, other than its first and last one.",
+    ]);
+    expect(backend.setSettings).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Reset to automatic" }));
+    expect(screen.getByText("Automatic: 172.30.0.3 – 172.30.3.254")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(backend.setSettings).toHaveBeenCalledWith(expect.objectContaining({ pool_start: null, pool_end: null }));
+  });
+
+  it("explains the automatic pool before a manual IPv4 is configured, in Hungarian too", async () => {
+    locale.set("hu");
+    open(mockBackend(), { ...SETTINGS }, { ...EN6, configured_ipv4: { method: "dhcp", address: null, prefix: null }, auto_pool: null });
+    await userEvent.click(screen.getByText("Haladó"));
+    expect(screen.getByText(/Automatikus – a kézi IPv4-cím beállítása után számolódik/)).toBeInTheDocument();
+  });
+
+  it("opens a stored custom range in custom mode", async () => {
+    open(mockBackend(), { ...SETTINGS, pool_start: "172.30.1.10", pool_end: "172.30.1.20" });
+    expect(screen.getByLabelText("Address pool 1")).toHaveValue("172.30.1.10");
+    expect(screen.getByRole("button", { name: "Reset to automatic" })).toBeInTheDocument();
   });
 });

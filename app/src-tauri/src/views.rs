@@ -33,6 +33,28 @@ pub struct InterfaceView {
     /// A real wired Ethernet NIC (built-in, USB, Thunderbolt or dock
     /// adapter): the only interfaces the window lists.
     pub netinstall_capable: bool,
+    /// How macOS is set up to address it (System Settings → TCP/IP);
+    /// `None` without a network service.
+    pub configured_ipv4: Option<ConfiguredIpv4View>,
+    /// The automatic DHCP pool for its manual address
+    /// ([`ni_engine::auto_pool`]); `None` without one.
+    pub auto_pool: Option<PoolView>,
+}
+
+/// [`ni_net::ConfiguredIpv4`] for the window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredIpv4View {
+    /// `manual`, `dhcp` or what macOS calls it (`BOOTP`, `none`, ...).
+    pub method: String,
+    pub address: Option<Ipv4Addr>,
+    pub prefix: Option<u32>,
+}
+
+/// A DHCP address range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolView {
+    pub start: Ipv4Addr,
+    pub end: Ipv4Addr,
 }
 
 impl InterfaceView {
@@ -54,6 +76,17 @@ impl InterfaceView {
             running: i.is_running,
             default_route: routed.contains(&i.name),
             netinstall_capable: i.is_netinstall_capable(),
+            configured_ipv4: i.configured_ipv4.as_ref().map(|c| ConfiguredIpv4View {
+                method: c.method.as_str().to_string(),
+                address: c.address,
+                prefix: c.netmask.map(|m| u32::from(m).leading_ones()),
+            }),
+            auto_pool: i
+                .configured_ipv4
+                .as_ref()
+                .and_then(|c| c.manual())
+                .and_then(|(ip, mask)| ni_engine::auto_pool(ip, mask).ok())
+                .map(|(start, end)| PoolView { start, end }),
         }
     }
 }
@@ -149,9 +182,43 @@ mod tests {
                 "mac": "48:A9:8A:01:02:03",
                 "ipv4": [{"address": "192.168.88.1", "prefix": 24}],
                 "up": true, "running": false, "default_route": true,
-                "netinstall_capable": true
+                "netinstall_capable": true,
+                "configured_ipv4": null,
+                "auto_pool": null
             })
         );
+        // The configured manual address and the pool derived from it.
+        let configured = Interface {
+            configured_ipv4: Some(ni_net::ConfiguredIpv4 {
+                method: ni_net::Ipv4Method::Manual,
+                address: Some(Ipv4Addr::new(172, 30, 0, 2)),
+                netmask: Some(Ipv4Addr::new(255, 255, 252, 0)),
+            }),
+            ..i.clone()
+        };
+        let v = serde_json::to_value(InterfaceView::new(&configured, &routed)).unwrap();
+        assert_eq!(
+            v["configured_ipv4"],
+            serde_json::json!({"method": "manual", "address": "172.30.0.2", "prefix": 22})
+        );
+        assert_eq!(
+            v["auto_pool"],
+            serde_json::json!({"start": "172.30.0.3", "end": "172.30.3.254"})
+        );
+        let dhcp = Interface {
+            configured_ipv4: Some(ni_net::ConfiguredIpv4 {
+                method: ni_net::Ipv4Method::Dhcp,
+                address: None,
+                netmask: None,
+            }),
+            ..i.clone()
+        };
+        let v = serde_json::to_value(InterfaceView::new(&dhcp, &routed)).unwrap();
+        assert_eq!(
+            v["configured_ipv4"],
+            serde_json::json!({"method": "dhcp", "address": null, "prefix": null})
+        );
+        assert_eq!(v["auto_pool"], serde_json::Value::Null);
         let tb = Interface {
             name: "en1".into(),
             display_name: Some("Thunderbolt 1".into()),

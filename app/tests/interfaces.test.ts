@@ -13,6 +13,8 @@ function iface(name: string, extra: Partial<InterfaceView> = {}): InterfaceView 
     running: true,
     default_route: false,
     netinstall_capable: true,
+    configured_ipv4: null,
+    auto_pool: null,
     ...extra,
   };
 }

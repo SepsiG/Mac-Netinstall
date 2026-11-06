@@ -138,11 +138,11 @@ describe("StatusBar", () => {
 });
 
 const IFACES: InterfaceView[] = [
-  { name: "en7", display_name: "USB LAN", kind: "ethernet", mac: null, ipv4: [{ address: "192.168.88.1", prefix: 24 }], up: true, running: true, default_route: false, netinstall_capable: true },
-  { name: "en8", display_name: "Thunderbolt Ethernet Slot 1", kind: "ethernet", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: true },
-  { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true, netinstall_capable: false },
-  { name: "en1", display_name: "Thunderbolt 1", kind: "thunderbolt_ip", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: false },
-  { name: "bridge0", display_name: null, kind: "bridge", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: false },
+  { name: "en7", display_name: "USB LAN", kind: "ethernet", mac: null, ipv4: [{ address: "192.168.88.1", prefix: 24 }], up: true, running: true, default_route: false, netinstall_capable: true, configured_ipv4: null, auto_pool: null },
+  { name: "en8", display_name: "Thunderbolt Ethernet Slot 1", kind: "ethernet", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: true, configured_ipv4: null, auto_pool: null },
+  { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true, netinstall_capable: false, configured_ipv4: null, auto_pool: null },
+  { name: "en1", display_name: "Thunderbolt 1", kind: "thunderbolt_ip", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: false, configured_ipv4: null, auto_pool: null },
+  { name: "bridge0", display_name: null, kind: "bridge", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: false, configured_ipv4: null, auto_pool: null },
 ];
 
 describe("InterfacePicker", () => {
@@ -169,5 +169,38 @@ describe("InterfacePicker", () => {
     ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Csatolólista frissítése" }));
     expect(onrefresh).toHaveBeenCalled();
+  });
+
+  const EN6: InterfaceView = {
+    name: "en6",
+    display_name: "USB 10/100/1G/2.5G LAN",
+    kind: "ethernet",
+    mac: null,
+    ipv4: [],
+    up: true,
+    running: true,
+    default_route: false,
+    netinstall_capable: true,
+    configured_ipv4: { method: "manual", address: "172.30.0.2", prefix: 22 },
+    auto_pool: { start: "172.30.0.3", end: "172.30.3.254" },
+  };
+
+  it("shows the configured address when the cable is out, and the link state", () => {
+    locale.set("hu");
+    render(InterfacePicker, { props: { interfaces: [EN6], selected: "en6", onrefresh: () => {} } });
+    expect(screen.getByRole("option").textContent).toBe("en6 – USB 10/100/1G/2.5G LAN · 172.30.0.2/22");
+    const state = screen.getByTestId("ipv4-state");
+    expect(state).toHaveTextContent("Kézi: 172.30.0.2/22");
+    expect(state).toHaveTextContent("nincs link – nincs bedugva a kábel?");
+  });
+
+  it.each<[InterfaceView["configured_ipv4"], string[], string]>([
+    [{ method: "manual", address: "172.30.0.2", prefix: 22 }, ["172.30.0.2"], "Manual: 172.30.0.2/22 · link up"],
+    [{ method: "dhcp", address: null, prefix: null }, [], "DHCP – set it to manual · no link – cable not plugged in?"],
+    [null, [], "No IPv4 configured · no link – cable not plugged in?"],
+  ])("describes %o", (configured, live, text) => {
+    const i: InterfaceView = { ...EN6, configured_ipv4: configured, ipv4: live.map((address) => ({ address, prefix: 22 })) };
+    render(InterfacePicker, { props: { interfaces: [i], selected: "en6", onrefresh: () => {} } });
+    expect(screen.getByTestId("ipv4-state")).toHaveTextContent(text);
   });
 });

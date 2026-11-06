@@ -63,6 +63,7 @@ pub const FAILURES: &[&str] = &[
     "send_failed",
     "server_ip_not_host",
     "server_ip_not_on_interface",
+    "subnet_too_small",
     "tftp_rejected",
     "too_many_packages",
     "unknown_device",

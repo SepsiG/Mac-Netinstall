@@ -91,6 +91,8 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
         running: true,
         default_route: false,
         netinstall_capable: true,
+        configured_ipv4: { method: "manual", address: "192.168.88.1", prefix: 24 },
+        auto_pool: { start: "192.168.88.2", end: "192.168.88.254" },
       },
       {
         name: "en0",
@@ -102,6 +104,8 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
         running: true,
         default_route: true,
         netinstall_capable: false,
+        configured_ipv4: { method: "dhcp", address: null, prefix: null },
+        auto_pool: null,
       },
     ]),
     preflight: vi.fn(async () => ({ findings: [], network: null })),

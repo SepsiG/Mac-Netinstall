@@ -404,7 +404,7 @@
 {/if}
 
 {#if settingsOpen && settings}
-  <SettingsDialog {settings} onclose={settingsClosed} />
+  <SettingsDialog {settings} iface={interfaces.find((i) => i.name === iface) ?? null} onclose={settingsClosed} />
 {/if}
 
 {#if stopAsk !== null}

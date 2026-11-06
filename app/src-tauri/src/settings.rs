@@ -21,7 +21,20 @@ pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
 /// Version 2 dropped `server_ip`, `netmask` (the address now comes from the
 /// adapter's manual IPv4 in macOS) and `show_all_interfaces` (only
 /// interfaces that can netinstall are listed); older files lose them.
-pub const SETTINGS_VERSION: u32 = 2;
+///
+/// Version 3 stores the pool as automatic (both ends `null`) unless it was
+/// chosen: an older pool equal to the automatic one (for the last
+/// interface's manual IPv4) becomes automatic.
+pub const SETTINGS_VERSION: u32 = 3;
+
+/// The automatic pool for an interface (by BSD name), if it has a manual
+/// IPv4 in macOS.
+pub type AutoPool = std::sync::Arc<dyn Fn(&str) -> Option<(Ipv4Addr, Ipv4Addr)> + Send + Sync>;
+
+fn system_auto_pool(iface: &str) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    let (ip, mask) = ni_net::configured_ipv4(iface)?.manual()?;
+    ni_engine::auto_pool(ip, mask).ok()
+}
 /// Keys of older versions that are dropped without complaint.
 const RETIRED_FIELDS: &[&str] = &["server_ip", "netmask", "show_all_interfaces"];
 /// The `max_parallel` default of unversioned files.
@@ -184,12 +197,22 @@ pub struct Loaded {
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// `settings.json` in a directory.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SettingsStore {
     path: PathBuf,
     /// The version of a file written by a newer app (0: none): it is read
     /// but never overwritten (see [`SettingsStore::save`]).
     newer: std::sync::Arc<AtomicU64>,
+    /// For migrating stored pools (see [`SETTINGS_VERSION`]).
+    auto_pool: AutoPool,
+}
+
+impl std::fmt::Debug for SettingsStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SettingsStore")
+            .field("path", &self.path)
+            .finish()
+    }
 }
 
 fn io_failure(op: &str, e: std::io::Error) -> Failure {
@@ -201,7 +224,18 @@ impl SettingsStore {
         SettingsStore {
             path: path.into(),
             newer: Default::default(),
+            auto_pool: std::sync::Arc::new(system_auto_pool),
         }
+    }
+
+    /// Use `f` instead of macOS's configuration to find automatic pools
+    /// (tests).
+    pub fn with_auto_pool(
+        mut self,
+        f: impl Fn(&str) -> Option<(Ipv4Addr, Ipv4Addr)> + Send + Sync + 'static,
+    ) -> Self {
+        self.auto_pool = std::sync::Arc::new(f);
+        self
     }
 
     pub fn path(&self) -> &Path {
@@ -284,6 +318,18 @@ impl SettingsStore {
             // choice.
             if version.is_none() && loaded.settings.max_parallel == OLD_DEFAULT_MAX_PARALLEL {
                 loaded.settings.max_parallel = Settings::default().max_parallel;
+            }
+            // Before version 3 a pool could not be "automatic" by name: one
+            // equal to the automatic pool was not a choice.
+            let s = &mut loaded.settings;
+            let auto = s
+                .last_interface
+                .as_deref()
+                .and_then(|i| (self.auto_pool)(i));
+            if let (Some(range), Some(start), Some(end)) = (auto, s.pool_start, s.pool_end) {
+                if range == (start, end) {
+                    (s.pool_start, s.pool_end) = (None, None);
+                }
             }
             // Retired fields are simply not written again. Store the
             // migrated file at once.
@@ -405,11 +451,41 @@ mod tests {
         );
         let stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(stored["version"], 2);
+        assert_eq!(stored["version"], SETTINGS_VERSION);
         for gone in ["server_ip", "netmask", "show_all_interfaces"] {
             assert!(stored.get(gone).is_none(), "{gone} is still stored");
         }
         assert!(!SettingsStore::new(&path).backup_path().exists());
+    }
+
+    #[test]
+    fn a_stored_pool_equal_to_the_automatic_one_becomes_automatic() {
+        let dir = tempdir("settings-v2-pool");
+        let path = dir.join("settings.json");
+        let auto = |iface: &str| {
+            (iface == "en6")
+                .then_some((Ipv4Addr::new(172, 30, 0, 3), Ipv4Addr::new(172, 30, 3, 254)))
+        };
+        let file = |start: &str, end: &str| {
+            format!(
+                r#"{{"version": 2, "last_interface": "en6", "pool_start": "{start}", "pool_end": "{end}"}}"#
+            )
+        };
+        std::fs::write(&path, file("172.30.0.3", "172.30.3.254")).unwrap();
+        let store = SettingsStore::new(&path).with_auto_pool(auto);
+        let s = store.load();
+        assert_eq!((s.pool_start, s.pool_end), (None, None), "automatic");
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["version"], SETTINGS_VERSION);
+        assert_eq!(stored["pool_start"], json!(null));
+        // A different range was a choice: kept.
+        std::fs::write(&path, file("172.30.1.10", "172.30.1.20")).unwrap();
+        let s = SettingsStore::new(&path).with_auto_pool(auto).load();
+        assert_eq!(s.pool_start, Some(Ipv4Addr::new(172, 30, 1, 10)));
+        // And never touched again once versioned.
+        let s = SettingsStore::new(&path).with_auto_pool(auto).load();
+        assert_eq!(s.pool_end, Some(Ipv4Addr::new(172, 30, 1, 20)));
     }
 
     #[test]

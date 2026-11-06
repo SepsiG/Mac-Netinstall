@@ -133,7 +133,7 @@ pub struct EngineConfig {
     /// [`DEFAULT_NETMASK`]. Ignored when the interface carries the address
     /// (its own netmask is used).
     pub netmask: Option<Ipv4Addr>,
-    /// First and last address handed out; default: see [`default_pool`].
+    /// First and last address handed out; default: see [`auto_pool`].
     pub pool: Option<(Ipv4Addr, Ipv4Addr)>,
     /// Source MAC of our Netinstall frames; default: the interface's MAC.
     pub server_mac: Option<Mac>,
@@ -230,18 +230,31 @@ pub fn subnet(ip: Ipv4Addr, mask: Ipv4Addr) -> (Ipv4Addr, Ipv4Addr) {
     ((ip & mask).into(), (ip | !mask).into())
 }
 
-/// Default pool: the subnet's first 254 host addresses (the whole subnet
-/// of a /24). The server IP inside it is skipped by the BOOTP pool.
-/// For /31 and /32 the pool is the subnet itself.
-pub fn default_pool(server_ip: Ipv4Addr, netmask: Ipv4Addr) -> (Ipv4Addr, Ipv4Addr) {
-    let (net, bcast) = subnet(server_ip, netmask);
-    let (net, bcast) = (u32::from(net), u32::from(bcast));
-    if bcast - net < 2 {
-        return (net.into(), bcast.into());
+/// The automatic DHCP pool: the larger run of host addresses beside the
+/// server's own one (never the network, broadcast or server address). For
+/// 172.30.0.2/22 that is 172.30.0.3 – 172.30.3.254. Error:
+/// `subnet_too_small` (`prefix`) for /31 and /32 (no address to hand out).
+pub fn auto_pool(server_ip: Ipv4Addr, netmask: Ipv4Addr) -> Result<(Ipv4Addr, Ipv4Addr), Failure> {
+    let prefix = u32::from(netmask).leading_ones();
+    if prefix > 30 {
+        return Err(Failure::new("subnet_too_small").with("prefix", prefix));
     }
-    let first = net + 1;
-    let last = (bcast - 1).min(net + 254);
-    (first.into(), last.into())
+    let (net, bcast) = subnet(server_ip, netmask);
+    let (first, last, server) = (
+        u32::from(net) + 1,
+        u32::from(bcast) - 1,
+        u32::from(server_ip),
+    );
+    let below = (server > first).then(|| (first, server - 1));
+    let above = (server < last).then(|| (server + 1, last));
+    let size = |r: Option<(u32, u32)>| r.map_or(0, |(a, b)| b - a + 1);
+    let (a, b) = if size(above) >= size(below) {
+        above
+    } else {
+        below
+    }
+    .ok_or_else(|| Failure::new("subnet_too_small").with("prefix", prefix))?;
+    Ok((a.into(), b.into()))
 }
 
 /// Resolve `cfg` against the interface list. Codes: `unknown_interface`,
@@ -306,7 +319,10 @@ pub(crate) fn resolve_addresses(
             }
         },
     };
-    let (pool_start, pool_end) = cfg.pool.unwrap_or_else(|| default_pool(server_ip, netmask));
+    let (pool_start, pool_end) = match cfg.pool {
+        Some(pool) => pool,
+        None => auto_pool(server_ip, netmask)?,
+    };
     // Never fall back to a placeholder: macOS may mask link addresses as
     // 02:00:00:00:00:00, and frames from it would collide between Macs.
     let server_mac = cfg
@@ -409,20 +425,31 @@ mod tests {
     }
 
     #[test]
-    fn default_pool_sizes() {
-        assert_eq!(default_pool(ip(1), MASK24), (ip(1), ip(254)));
+    fn the_automatic_pool_is_the_subnet_beside_the_server() {
+        let a = |ip: [u8; 4], prefix: u32| {
+            auto_pool(
+                Ipv4Addr::from(ip),
+                Ipv4Addr::from(u32::MAX << (32 - prefix)),
+            )
+        };
+        // The example from the UI: a /22 with the server near its start.
         assert_eq!(
-            default_pool(Ipv4Addr::new(10, 1, 2, 3), Ipv4Addr::new(255, 255, 0, 0)),
-            (Ipv4Addr::new(10, 1, 0, 1), Ipv4Addr::new(10, 1, 0, 254))
+            a([172, 30, 0, 2], 22).unwrap(),
+            (Ipv4Addr::new(172, 30, 0, 3), Ipv4Addr::new(172, 30, 3, 254))
         );
-        assert_eq!(
-            default_pool(ip(9), Ipv4Addr::new(255, 255, 255, 248)),
-            (ip(9), ip(14))
-        );
-        assert_eq!(
-            default_pool(ip(10), Ipv4Addr::new(255, 255, 255, 254)),
-            (ip(10), ip(11))
-        );
+        assert_eq!(a([192, 168, 88, 1], 24).unwrap(), (ip(2), ip(254)));
+        // Server in the upper half: the part below it.
+        assert_eq!(a([192, 168, 88, 200], 24).unwrap(), (ip(1), ip(199)));
+        assert_eq!(a([192, 168, 88, 254], 24).unwrap(), (ip(1), ip(253)));
+        // /30: two hosts, one is the server.
+        assert_eq!(a([192, 168, 88, 1], 30).unwrap(), (ip(2), ip(2)));
+        assert_eq!(a([192, 168, 88, 2], 30).unwrap(), (ip(1), ip(1)));
+        // /31 and /32 leave nothing to hand out.
+        for prefix in [31, 32] {
+            let err = a([192, 168, 88, 1], prefix).unwrap_err();
+            assert_eq!(err.code, "subnet_too_small", "/{prefix}");
+            assert_eq!(err.param("prefix"), Some(prefix.to_string().as_str()));
+        }
         assert_eq!(subnet(ip(77), MASK24), (ip(0), ip(255)));
     }
 
@@ -435,7 +462,7 @@ mod tests {
             NetPlan {
                 server_ip: ip(1),
                 netmask: MASK24,
-                pool_start: ip(1),
+                pool_start: ip(2),
                 pool_end: ip(254),
                 server_mac: MAC,
             }
@@ -504,7 +531,7 @@ mod tests {
         let plan = resolve_network(&[en7.clone()], &cfg).unwrap();
         assert_eq!(
             (plan.server_ip, plan.netmask, plan.pool_start, plan.pool_end),
-            (ip(1), MASK24, ip(1), ip(254))
+            (ip(1), MASK24, ip(2), ip(254))
         );
         cfg.netmask = Some(Ipv4Addr::new(255, 255, 255, 240));
         let plan = resolve_network(&[en7.clone()], &cfg).unwrap();
@@ -586,8 +613,8 @@ mod tests {
         en7.configured_ipv4 = manual(ip(1), MASK24);
         let plan = resolve_network(&[en7.clone()], &EngineConfig::new("en7")).unwrap();
         assert_eq!((plan.server_ip, plan.netmask), (ip(1), MASK24));
-        // The subnet (the BOOTP pool skips the server's own address).
-        assert_eq!((plan.pool_start, plan.pool_end), (ip(1), ip(254)));
+        // The subnet beside the server's own address.
+        assert_eq!((plan.pool_start, plan.pool_end), (ip(2), ip(254)));
         // With link, the live address is the same one.
         en7.is_running = true;
         en7.ipv4 = vec![(ip(1), MASK24)];

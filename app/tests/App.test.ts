@@ -290,6 +290,8 @@ describe("App", () => {
       running: true,
       default_route: false,
       netinstall_capable: true,
+      configured_ipv4: null,
+      auto_pool: null,
       ...extra,
     });
     await start({
@@ -308,7 +310,7 @@ describe("App", () => {
   it("explains when there is no usable adapter", async () => {
     const backend = mockBackend({
       listInterfaces: vi.fn(async () => [
-        { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true, netinstall_capable: false },
+        { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true, netinstall_capable: false, configured_ipv4: null, auto_pool: null },
       ]),
     });
     render(App, { props: { backend } });

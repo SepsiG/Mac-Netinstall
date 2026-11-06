@@ -5,15 +5,18 @@
   import { LANGS, locale, t } from "../lib/i18n";
   import { describe, hint } from "../lib/messages";
   import { fromSettingsForm, settingsErrors, toSettingsForm, type FieldError } from "../lib/settingsForm";
-  import type { Failure, Settings } from "../lib/types";
+  import type { Failure, InterfaceView, Settings } from "../lib/types";
   import CachePanel from "./CachePanel.svelte";
   import Modal from "./Modal.svelte";
 
   let {
     settings,
+    iface = null,
     onclose,
   }: {
     settings: Settings;
+    /** The selected adapter: its configured subnet and automatic pool. */
+    iface?: InterfaceView | null;
     /** The stored settings, or `null` if cancelled. */
     onclose: (saved: Settings | null) => void;
   } = $props();
@@ -24,7 +27,11 @@
   let tried = $state(false);
   let error = $state<Failure | null>(null);
 
-  const errors = $derived(settingsErrors(form));
+  const subnet = $derived.by(() => {
+    const c = iface?.configured_ipv4;
+    return c?.method === "manual" && c.address && c.prefix !== null ? { address: c.address, prefix: c.prefix } : null;
+  });
+  const errors = $derived(settingsErrors(form, subnet));
   // Open when a value in it was changed from the default.
   const advancedOpen = base.pool_start !== null || base.download_timeout_secs !== 30 * 60;
 
@@ -66,14 +73,26 @@
     <details class="advanced" open={advancedOpen}>
       <summary>{$t("settings.advanced")}</summary>
       <div class="grid">
-        <label for="s-pool">{$t("settings.pool")}</label>
+        <span class="label">{$t("settings.pool")}</span>
         <div>
-          <div class="row">
-            <input id="s-pool" type="text" bind:value={form.pool_start} placeholder="192.168.88.10" aria-label={`${$t("settings.pool")} 1`} />
-            –
-            <input type="text" bind:value={form.pool_end} placeholder="192.168.88.254" aria-label={`${$t("settings.pool")} 2`} />
-          </div>
-          {@render fieldError(errors.pool_start ?? errors.pool_end)}
+          {#if form.poolCustom}
+            <div class="row">
+              <input type="text" bind:value={form.pool_start} placeholder={iface?.auto_pool?.start ?? "192.168.88.10"} aria-label={`${$t("settings.pool")} 1`} />
+              –
+              <input type="text" bind:value={form.pool_end} placeholder={iface?.auto_pool?.end ?? "192.168.88.254"} aria-label={`${$t("settings.pool")} 2`} />
+            </div>
+            {@render fieldError(errors.pool_start ?? errors.pool_end)}
+            <button type="button" class="small" onclick={() => ((form.poolCustom = false), (form.pool_start = ""), (form.pool_end = ""))}
+              >{$t("settings.pool_auto_reset")}</button
+            >
+          {:else}
+            <div>
+              {iface?.auto_pool
+                ? $t("settings.pool_auto", { start: iface.auto_pool.start, end: iface.auto_pool.end })
+                : $t("settings.pool_auto_pending")}
+            </div>
+            <button type="button" class="small" onclick={() => (form.poolCustom = true)}>{$t("settings.pool_custom")}</button>
+          {/if}
           <div class="help">{$t("settings.pool_help")}</div>
         </div>
         <label for="s-dl">{$t("settings.download_timeout")}</label>
@@ -120,6 +139,11 @@
     font-weight: 600;
     color: var(--secondary);
     margin: 8px 0 6px;
+  }
+  .advanced .label {
+    text-align: right;
+    color: var(--secondary);
+    padding-top: 3px;
   }
   .advanced .grid {
     margin-top: 6px;

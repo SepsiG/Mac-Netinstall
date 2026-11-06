@@ -14,8 +14,22 @@ export function defaultInterface(list: InterfaceView[], last: string | null): st
   return (capable.find((i) => i.ipv4.length > 0) ?? capable[0])?.name ?? null;
 }
 
-/** `192.168.88.1/24`, or `null` without IPv4. */
+/** The manual address macOS is configured with, as `172.30.0.2/22`. */
+export function manualText(i: InterfaceView): string | null {
+  const c = i.configured_ipv4;
+  return c?.method === "manual" && c.address && c.prefix !== null ? `${c.address}/${c.prefix}` : null;
+}
+
+/** `192.168.88.1/24`: the live address, else the configured manual one
+ *  (macOS hides it while there is no cable); `null` without either. */
 export function addressText(i: InterfaceView): string | null {
   const a = i.ipv4[0];
-  return a ? `${a.address}/${a.prefix}` : null;
+  return a ? `${a.address}/${a.prefix}` : manualText(i);
+}
+
+/** There is a link: the interface has its address (macOS removes a
+ *  manual one while there is no carrier). */
+export function hasLink(i: InterfaceView): boolean {
+  const manual = i.configured_ipv4?.method === "manual" ? i.configured_ipv4.address : null;
+  return manual ? i.ipv4.some((a) => a.address === manual) : i.ipv4.length > 0;
 }
