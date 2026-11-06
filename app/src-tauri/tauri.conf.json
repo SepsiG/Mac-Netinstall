@@ -30,10 +30,16 @@
     "active": true,
     "targets": ["app", "dmg"],
     "icon": [
+      "icons/icon.png",
+      "icons/16x16.png",
+      "icons/16x16@2x.png",
       "icons/32x32.png",
+      "icons/32x32@2x.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.png"
+      "icons/256x256.png",
+      "icons/256x256@2x.png",
+      "icons/512x512@2x.png"
     ],
     "category": "public.app-category.utilities",
     "shortDescription": "MikroTik Netinstall for macOS",
@@ -45,7 +51,12 @@
         "Resources/en.lproj/InfoPlist.strings": "./locales/en.lproj/InfoPlist.strings",
         "Resources/hu.lproj/InfoPlist.strings": "./locales/hu.lproj/InfoPlist.strings"
       },
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "dmg": {
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 180 },
+        "applicationFolderPosition": { "x": 480, "y": 180 }
+      }
     }
   }
 }

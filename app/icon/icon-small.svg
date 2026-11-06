@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mac Netinstall app icon, small variant (16-64 px). SPDX-License-Identifier: GPL-3.0-only
+  Same body, colours and motif as icon.svg, with fewer and bolder shapes:
+  no LEDs, contacts or cable, three large ports, a wider arrow.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <path id="body" d="M627.36 100 c103.83 0 155.75 0 195.41 20.21 a185.4 185.4 0 0 1 81.02 81.02 c20.21 39.66 20.21 91.58 20.21 195.41 L924 627.36 c0 103.83 0 155.75 -20.21 195.41 a185.4 185.4 0 0 1 -81.02 81.02 c-39.66 20.21 -91.58 20.21 -195.41 20.21 L396.64 924 c-103.83 0 -155.75 0 -195.41 -20.21 a185.4 185.4 0 0 1 -81.02 -81.02 c-20.21 -39.66 -20.21 -91.58 -20.21 -195.41 L100 396.64 c0 -103.83 0 -155.75 20.21 -195.41 a185.4 185.4 0 0 1 81.02 -81.02 c39.66 -20.21 91.58 -20.21 195.41 -20.21 Z"/>
+
+    <linearGradient id="bg" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#3CC4F5"/>
+      <stop offset="0.55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#3B2BB8"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D5DEEA"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFD84D"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+
+  <!-- Body -->
+  <use href="#body" fill="url(#bg)" filter="url(#shadow)"/>
+
+  <!-- Device with three Ethernet ports -->
+  <rect x="190" y="560" width="644" height="240" rx="64" fill="url(#front)"/>
+  <g fill="#0F172A">
+    <rect x="262" y="632" width="128" height="104" rx="10"/>
+    <rect x="448" y="632" width="128" height="104" rx="10"/>
+    <rect x="634" y="632" width="128" height="104" rx="10"/>
+  </g>
+
+  <!-- Install arrow into the device -->
+  <path d="M512 540 L330 360 Q314 344 338 344 H440 V196 Q440 172 464 172 H560 Q584 172 584 196 V344 H686 Q710 344 694 360 Z"
+        fill="url(#arrow)"/>
+</svg>

@@ -7,10 +7,12 @@
 //! - [`settings`]: `settings.json` in Application Support.
 //! - [`codes`]: the code catalog the UI's translations are checked against.
 //! - [`window`]: the main window's size and position across launches.
+//! - [`dock`]: the Dock badge (devices being prepared or flashed).
 
 pub mod codes;
 pub mod commands;
 pub mod core;
+pub mod dock;
 pub mod forward;
 pub mod locale;
 pub mod logging;
@@ -21,12 +23,16 @@ pub mod views;
 pub mod window;
 
 use crate::core::{AppCore, Paths};
+use crate::dock::{DockSource, DockUpdate};
 use crate::forward::{forward_events, Forwarded, CLOSE_REQUESTED, ENGINE_EVENT, ENGINE_LAGGED};
 use ni_assets::HttpConfig;
+use ni_engine::{DeviceView, EngineEvent, EngineHandle};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, WebviewWindow, WindowEvent};
+use tokio::sync::{broadcast, watch};
 use window::WindowTracker;
 
 /// Label of the main window (tauri.conf.json).
@@ -178,6 +184,56 @@ fn restore_window(w: &WebviewWindow, saved: &settings::WindowGeometry) {
     }
 }
 
+/// Whether the main window is focused (from `WindowEvent::Focused`).
+#[derive(Debug, Default)]
+pub struct WindowFocus(AtomicBool);
+
+/// Show `update` on the Dock tile: the badge, and one informational bounce
+/// for a finished device while the app is in the background (not while
+/// it is quitting).
+fn apply_dock(app: &AppHandle, update: DockUpdate) {
+    let Some(w) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    if let Some(label) = update.badge {
+        #[cfg(target_os = "macos")]
+        if let Err(e) = w.set_badge_label(label) {
+            tracing::warn!("cannot set the Dock badge: {e}");
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = label;
+    }
+    let focused = app.state::<WindowFocus>().0.load(Ordering::SeqCst);
+    let quitting = app.state::<CloseGuard>().allowed();
+    if dock::should_bounce(update.finished, focused, quitting) {
+        let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+}
+
+/// The app's engine for [`dock::follow`].
+struct EngineSource(watch::Receiver<EngineHandle>);
+
+impl DockSource for EngineSource {
+    fn subscribe(&mut self) -> broadcast::Receiver<EngineEvent> {
+        self.0.borrow_and_update().subscribe()
+    }
+
+    fn devices(&self) -> impl Future<Output = Option<Vec<DeviceView>>> + Send {
+        let engine = self.0.borrow().clone();
+        async move {
+            match tokio::time::timeout(QUIT_ENGINE_WAIT, engine.snapshot()).await {
+                Ok(Ok(s)) => Some(s.devices),
+                _ => None,
+            }
+        }
+    }
+
+    fn replaced(&mut self) -> impl Future<Output = bool> + Send {
+        let engines = &mut self.0;
+        async move { engines.changed().await.is_ok() }
+    }
+}
+
 /// Quit for good: stop the engine first, then exit.
 pub(crate) async fn quit_now(app: AppHandle) {
     app.state::<CloseGuard>().allow();
@@ -279,11 +335,21 @@ pub fn run() {
             app.manage(core);
             app.manage(CloseGuard::default());
             app.manage(WindowTracker::default());
+            app.manage(WindowFocus::default());
             if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
                 if let Some(saved) = saved_window {
                     restore_window(&w, &saved);
                 }
             }
+            // A regular app: in the Dock and the app switcher while it
+            // runs (the default; set explicitly so it stays that way).
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            let dock_handle = app.handle().clone();
+            let dock_source = EngineSource(engines.clone());
+            tauri::async_runtime::spawn(dock::follow(dock_source, move |u| {
+                apply_dock(&dock_handle, u)
+            }));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(forward_events(engines, move |f| {
                 let _ = match f {
@@ -307,6 +373,10 @@ pub fn run() {
                     api.prevent_close();
                     tauri::async_runtime::spawn(request_close(app.clone()));
                 }
+            }
+            WindowEvent::Focused(focused) if window.label() == MAIN_WINDOW => {
+                let focus = window.app_handle().state::<WindowFocus>();
+                focus.0.store(*focused, Ordering::SeqCst);
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) if window.label() == MAIN_WINDOW => {
                 track_window(window);

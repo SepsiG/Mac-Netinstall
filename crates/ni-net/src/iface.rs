@@ -369,6 +369,9 @@ mod tests {
 
     #[test]
     fn some_interface_has_a_mac() {
+        if crate::test_env::skip_hardware_test("some_interface_has_a_mac") {
+            return;
+        }
         // Every Mac has at least one Ethernet-like interface (en0).
         let all = list_interfaces().unwrap();
         assert!(all.iter().any(|i| i.mac.is_some() && !i.is_loopback));

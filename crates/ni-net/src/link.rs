@@ -237,6 +237,9 @@ mod tests {
 
     #[test]
     fn iokit_names_the_controllers() {
+        if crate::test_env::skip_hardware_test("iokit_names_the_controllers") {
+            return;
+        }
         let all = controller_classes();
         assert!(!all.is_empty(), "IOKit listed no IOEthernetInterface");
         assert!(all.values().all(|chain| !chain.is_empty()));
@@ -244,6 +247,9 @@ mod tests {
 
     #[test]
     fn iokit_lists_real_hardware_addresses() {
+        if crate::test_env::skip_hardware_test("iokit_lists_real_hardware_addresses") {
+            return;
+        }
         // Every Mac has at least one Ethernet-like interface (en0).
         let all = hardware_addresses();
         assert!(!all.is_empty(), "IOKit listed no IOEthernetInterface");

@@ -7,6 +7,7 @@ use common::*;
 use ni_assets::testutil::{mirror_version, netinstall_tarball, Reply};
 use ni_assets::{Version, VersionSpec};
 use ni_engine::{DeviceState, EngineEvent, EngineHandle, KernelState, Profile, WaitReason};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> u64 {
@@ -219,15 +220,15 @@ fn exact(name: &str, version: &str) -> Profile {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_active_version_withdraws_and_refetches_the_kernels() {
     let mut rig = rig(|_| {}).await;
-    // 7.24.6 exists too; its tarball arrives slowly, so the switch is
-    // observable.
+    // 7.24.6 exists too; its tarball is held back until the test has
+    // probed BOOTP, so the switch is observable however fast the machine.
     mirror_version(&rig.srv, "7.24.6");
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
     rig.srv.route(
         "/dl/7.24.6/netinstall-7.24.6.tar.gz",
-        Reply::Slow {
+        Reply::Held {
             body: netinstall_tarball(),
-            chunk: 64 * 1024,
-            delay: Duration::from_millis(150),
+            gate: gate.clone(),
         },
     );
     rig.engine
@@ -264,6 +265,7 @@ async fn a_new_active_version_withdraws_and_refetches_the_kernels() {
         )
         .await;
     assert_eq!(reply, None);
+    gate.add_permits(1);
     let states = kernel_states(&mut rig.events).await;
     assert!(
         states

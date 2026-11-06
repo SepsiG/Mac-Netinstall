@@ -17,6 +17,9 @@ pub mod link;
 pub mod route;
 pub mod udp;
 
+#[cfg(test)]
+mod test_env;
+
 pub use error::NetError;
 pub use iface::{classify, interface_index, list_interfaces, Interface, InterfaceKind};
 pub use ipconfig::{configured_ipv4, ConfiguredIpv4, Ipv4Method};

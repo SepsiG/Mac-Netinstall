@@ -32,6 +32,13 @@ pub enum Reply {
         chunk: usize,
         delay: Duration,
     },
+    /// 200 with `body`: the head is sent at once, the body only once
+    /// `gate` has a permit (the permit is given back, so the gate stays
+    /// open for later requests).
+    Held {
+        body: Vec<u8>,
+        gate: Arc<tokio::sync::Semaphore>,
+    },
 }
 
 type Routes = Arc<Mutex<HashMap<String, Reply>>>;
@@ -152,6 +159,21 @@ async fn handle(mut stream: TcpStream, routes: Routes, log: Arc<Mutex<Vec<String
                     return;
                 }
             }
+            let _ = stream.shutdown().await;
+            return;
+        }
+        Some(Reply::Held { body, gate }) => {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let Ok(_open) = gate.acquire().await else {
+                return; // closed: never sent
+            };
+            let _ = stream.write_all(&body).await;
             let _ = stream.shutdown().await;
             return;
         }
