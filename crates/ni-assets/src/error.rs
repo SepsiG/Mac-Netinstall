@@ -78,6 +78,8 @@ pub enum AssetError {
     UnsupportedLocalFile { name: String },
     #[error("{name:?} is larger than the {max} byte limit")]
     LocalFileTooLarge { name: String, max: u64 },
+    #[error("{name:?} is not a regular file")]
+    LocalNotAFile { name: String },
     #[error("local file {name:?} is not registered")]
     LocalMissing { name: String },
     #[error("local file {name:?} changed in the cache; register it again")]
@@ -116,6 +118,7 @@ impl AssetError {
             AssetError::Io { .. } => "io",
             AssetError::UnsupportedLocalFile { .. } => "unsupported_local_file",
             AssetError::LocalFileTooLarge { .. } => "local_too_large",
+            AssetError::LocalNotAFile { .. } => "local_not_file",
             AssetError::LocalMissing { .. } => "local_missing",
             AssetError::LocalCorrupt { .. } => "local_corrupt",
         }
@@ -194,6 +197,7 @@ mod tests {
                 name: "a.rsc".into(),
                 max: 1,
             },
+            AssetError::LocalNotAFile { name: "a".into() },
             AssetError::LocalMissing { name: "a".into() },
             AssetError::LocalCorrupt { name: "a".into() },
         ];
@@ -227,6 +231,7 @@ mod tests {
                 "io",
                 "unsupported_local_file",
                 "local_too_large",
+                "local_not_file",
                 "local_missing",
                 "local_corrupt",
             ]
