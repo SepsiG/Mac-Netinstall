@@ -183,6 +183,7 @@ pub(crate) fn start(
         next_link_check,
         link,
         link_index,
+        foreign_ip_checks: 0,
         send_errors: Default::default(),
         next_prune: Instant::now(),
     };

@@ -233,7 +233,9 @@ pub enum EngineEvent {
     },
     /// The engine cannot go on (it stops afterwards, unless the code is
     /// `kernels_unavailable`): `interface_gone` (the interface was missing
-    /// for longer than the grace period), `runner_failed`, ...
+    /// for longer than the grace period), `server_ip_not_on_interface`
+    /// (link and other addresses, but not ours, for 3 checks in a row:
+    /// `interface`, `ip`, `addresses`), `runner_failed`, ...
     Error(Failure),
     /// Something to look at, while everything keeps running:
     /// `link_down` (`interface`, `reason`: `no_ip`, `no_carrier`,

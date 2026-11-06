@@ -157,3 +157,33 @@ async fn start_without_link_uses_the_configured_server_ip() {
     assert_eq!(reply.server, Ipv4Addr::LOCALHOST);
     engine.stop().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_ip_that_never_appears_stops_the_engine() {
+    let (source, iface) = fake_interfaces(Some(real_lo0()));
+    let mut rig = rig(|cfg| {
+        cfg.interfaces = source;
+        cfg.link_check = Some(CHECK);
+    })
+    .await;
+    // Link is up, but the interface got a self-assigned address instead
+    // of ours (e.g. the manual configuration was replaced by DHCP).
+    let mut other = real_lo0();
+    other.ipv4 = vec![(Ipv4Addr::new(169, 254, 7, 9), Ipv4Addr::new(255, 255, 0, 0))];
+    let start = std::time::Instant::now();
+    *iface.lock().unwrap() = Some(other);
+    next(&mut rig.events, warning("link_down")).await;
+    let e = next(&mut rig.events, |e| matches!(e, EngineEvent::Error(_))).await;
+    assert!(start.elapsed() >= CHECK * 2, "not on the first check");
+    assert_eq!(
+        e,
+        EngineEvent::Error(
+            Failure::new("server_ip_not_on_interface")
+                .with("interface", "lo0")
+                .with("ip", Ipv4Addr::LOCALHOST)
+                .with("addresses", "169.254.7.9/16")
+        )
+    );
+    next(&mut rig.events, |e| *e == EngineEvent::Stopped).await;
+    assert!(!rig.engine.snapshot().await.unwrap().running);
+}

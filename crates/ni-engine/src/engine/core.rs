@@ -33,6 +33,10 @@ const SEND_WARNING_INTERVAL: Duration = Duration::from_secs(1);
 /// How often the `ignored` and cooldown maps are pruned (lazily, on
 /// activity).
 const PRUNE_INTERVAL: Duration = Duration::from_secs(1);
+/// Consecutive watchdog checks that may see the interface with link and
+/// other IPv4 addresses but not the server IP before the engine gives up
+/// (`server_ip_not_on_interface`): the address is not coming back.
+pub(crate) const FOREIGN_IP_CHECKS: u32 = 3;
 /// How long `stop` waits for aborted tasks to release their sockets.
 const REAP_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -98,6 +102,8 @@ pub(crate) struct Running {
     pub link: Link,
     /// Index of the interface at start (`IP_BOUND_IF` binds it).
     pub link_index: u32,
+    /// Consecutive checks that saw other addresses but not the server IP.
+    pub foreign_ip_checks: u32,
     pub send_errors: SendErrors,
     pub next_prune: Instant,
 }
@@ -1033,7 +1039,10 @@ impl Core {
     /// again when the link is back (`link_up`; see `start.rs` for why no
     /// rebind is needed). Only an interface that stays missing from the
     /// list for `interface_grace`, or comes back under another index, is
-    /// `interface_gone`, and the engine stops.
+    /// `interface_gone`, and the engine stops; so is an interface that has
+    /// link and other IPv4 addresses (a 169.254 one included) but not the
+    /// server IP for [`FOREIGN_IP_CHECKS`] checks in a row:
+    /// `server_ip_not_on_interface` (`interface`, `ip`, `addresses`).
     fn check_link(&mut self, now: Instant, io: &mut Option<Io>) {
         let Some(run) = self.run.as_mut() else { return };
         let (Some(at), Some(every)) = (run.next_link_check, run.cfg.link_check) else {
@@ -1053,7 +1062,30 @@ impl Core {
         let name = run.cfg.interface.clone();
         let server_ip = run.net.server_ip;
         let status = link_status(&ifaces, &name, server_ip);
-        let index = ifaces.iter().find(|i| i.name == name).map(|i| i.index);
+        let found = ifaces.iter().find(|i| i.name == name);
+        let index = found.map(|i| i.index);
+        // Link, addresses, but not ours: a lost carrier looks different
+        // (no address at all), so this one will not heal by itself.
+        let foreign: Vec<String> = found
+            .filter(|i| i.is_up && i.is_running && status == LinkStatus::Down("no_ip"))
+            .map(|i| {
+                i.ipv4
+                    .iter()
+                    .map(|(a, m)| format!("{a}/{}", u32::from(*m).leading_ones()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        run.foreign_ip_checks = if foreign.is_empty() {
+            0
+        } else {
+            run.foreign_ip_checks + 1
+        };
+        let foreign_fatal = (run.foreign_ip_checks >= FOREIGN_IP_CHECKS).then(|| {
+            Failure::new("server_ip_not_on_interface")
+                .with("interface", &name)
+                .with("ip", server_ip)
+                .with("addresses", foreign.join(","))
+        });
         let prev = run.link;
         let index_changed =
             index.is_some_and(|i| run.link_index != 0 && i != 0 && i != run.link_index);
@@ -1073,7 +1105,7 @@ impl Core {
                 (Link::Missing(since), over.then(|| gone("missing")))
             }
             _ if index_changed => (prev, Some(gone("index_changed"))),
-            LinkStatus::Down(reason) => (Link::Down(reason), None),
+            LinkStatus::Down(reason) => (Link::Down(reason), foreign_fatal),
             LinkStatus::Up => (Link::Up, None),
         };
         run.link = link;
