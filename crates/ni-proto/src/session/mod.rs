@@ -475,6 +475,7 @@ mod tests {
             model: "hEX".into(),
             arch: "mmips".into(),
             min_os: "7.0".into(),
+            extra: Vec::new(),
         }
     }
 

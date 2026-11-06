@@ -66,6 +66,7 @@ impl SimConfig {
                 model: model.into(),
                 arch: arch.into(),
                 min_os: "7.0".into(),
+                extra: vec!["0".into(), "0".into()],
             },
             hello_interval: Duration::from_secs(1),
             resend_interval: Duration::from_millis(500),
