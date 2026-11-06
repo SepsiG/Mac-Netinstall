@@ -116,7 +116,6 @@ impl Assets {
             return Ok(data);
         }
         let url = urls::file(&self.download_base, version, file);
-        let published = self.published_checksum(&url, file).await?;
         {
             let dir = dir.clone();
             blocking(move || dir.create()).await?;
@@ -126,6 +125,13 @@ impl Assets {
             .http
             .download(&url, &part, file, &|e| self.emit(e))
             .await?;
+        let published = match self.published_checksum(version, &url, file).await {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                return Err(e);
+            }
+        };
         let (dir, file) = (dir.clone(), file.to_string());
         blocking(move || {
             let result = (|| {
@@ -210,7 +216,7 @@ mod tests {
 
         let index = CacheDir::new(root.join(V)).load();
         assert!(index.files[&format!("routeros-{V}-arm64.npk")].published_checksum);
-        assert!(!index.files[&format!("wireless-{V}-arm64.npk")].published_checksum);
+        assert!(index.files[&format!("wireless-{V}-arm64.npk")].published_checksum);
 
         let before = srv.paths().len();
         assert_eq!(
@@ -264,14 +270,12 @@ mod tests {
         let srv = TestServer::start().await;
         mirror(&srv);
         let d = format!("/dl/{V}");
-        srv.route(
-            &format!("{d}/routeros-{V}-arm64.npk.sha256"),
-            Reply::Status(404),
-        );
-        srv.route(
-            &format!("{d}/routeros-{V}-arm64.npk"),
-            Reply::Body(b"<html>maintenance</html>".to_vec()),
-        );
+        let file = format!("routeros-{V}-arm64.npk");
+        let serve = |body: Vec<u8>| {
+            srv.route(&format!("{d}/{file}.sha256"), sum_file(&body, &file));
+            srv.route(&format!("{d}/{file}"), Reply::Body(body));
+        };
+        serve(b"<html>maintenance</html>".to_vec());
         let root = tempdir("not-npk");
         let a = assets(&srv, &root);
         let err = a
@@ -281,7 +285,7 @@ mod tests {
         assert_eq!(err.code(), "not_npk");
         let mut short = npk(100, 1);
         short.truncate(90);
-        srv.route(&format!("{d}/routeros-{V}-arm64.npk"), Reply::Body(short));
+        serve(short);
         let err = a
             .ensure_packages(&v(), PkgArch::Arm64, &[])
             .await
@@ -293,6 +297,29 @@ mod tests {
             .filter(|n| n != INDEX_FILE)
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[tokio::test]
+    async fn package_checksums_are_required_from_7_15_only() {
+        let srv = TestServer::start().await;
+        let root = tempdir("npk-sum-policy");
+        let a = assets(&srv, &root);
+        for (ver, required) in [("7.14", false), ("7.15", true)] {
+            let (_, main, _) = mirror_version(&srv, ver);
+            srv.route(
+                &format!("/dl/{ver}/routeros-{ver}-arm64.npk.sha256"),
+                Reply::Status(404),
+            );
+            let version = Version::parse(ver).unwrap();
+            let got = a.ensure_packages(&version, PkgArch::Arm64, &[]).await;
+            if required {
+                assert_eq!(got.unwrap_err().code(), "checksum_missing", "{ver}");
+            } else {
+                assert_eq!(got.unwrap()[0].data.as_ref(), main.as_slice(), "{ver}");
+                let index = CacheDir::new(root.join(ver)).load();
+                assert!(!index.files[&format!("routeros-{ver}-arm64.npk")].published_checksum);
+            }
+        }
     }
 
     #[tokio::test]

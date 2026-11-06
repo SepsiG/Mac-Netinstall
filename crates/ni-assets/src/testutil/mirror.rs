@@ -24,42 +24,50 @@ pub fn sum_file(data: &[u8], name: &str) -> Reply {
     Reply::Body(format!("{}  {name}\n", sha256_hex(data)).into_bytes())
 }
 
-/// Serve a fake MikroTik mirror: tarball (with checksum), arm64 main
-/// package (with checksum), `wireless` (without checksum) and the
-/// arm64 `all_packages` zip.
+/// Serve a fake MikroTik mirror for [`V`]: tarball, arm64 main package,
+/// `wireless` (all with checksums) and the arm64 `all_packages` zip.
 pub fn mirror(srv: &TestServer) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    mirror_version(srv, V)
+}
+
+/// Like [`mirror`], for version `ver`.
+pub fn mirror_version(srv: &TestServer, ver: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let tarball = netinstall_tarball();
     let main = npk(5000, 0xaa);
     let wireless = npk(3000, 0xbb);
-    let d = format!("/dl/{V}");
+    let d = format!("/dl/{ver}");
     srv.route(
         "/up/NEWESTa7.stable",
         Reply::Body(b"7.25.1 1793623193\n".to_vec()),
     );
     srv.route(
-        &format!("{d}/netinstall-{V}.tar.gz"),
+        &format!("{d}/netinstall-{ver}.tar.gz"),
         Reply::Body(tarball.clone()),
     );
     srv.route(
-        &format!("{d}/netinstall-{V}.tar.gz.sha256"),
-        sum_file(&tarball, &format!("netinstall-{V}.tar.gz")),
+        &format!("{d}/netinstall-{ver}.tar.gz.sha256"),
+        sum_file(&tarball, &format!("netinstall-{ver}.tar.gz")),
     );
     srv.route(
-        &format!("{d}/routeros-{V}-arm64.npk"),
+        &format!("{d}/routeros-{ver}-arm64.npk"),
         Reply::Body(main.clone()),
     );
     srv.route(
-        &format!("{d}/routeros-{V}-arm64.npk.sha256"),
-        sum_file(&main, &format!("routeros-{V}-arm64.npk")),
+        &format!("{d}/routeros-{ver}-arm64.npk.sha256"),
+        sum_file(&main, &format!("routeros-{ver}-arm64.npk")),
     );
     srv.route(
-        &format!("{d}/wireless-{V}-arm64.npk"),
+        &format!("{d}/wireless-{ver}-arm64.npk"),
         Reply::Body(wireless.clone()),
     );
-    let wl = format!("wireless-{V}-arm64.npk");
-    let ct = format!("container-{V}-arm64.npk");
     srv.route(
-        &format!("{d}/all_packages-arm64-{V}.zip"),
+        &format!("{d}/wireless-{ver}-arm64.npk.sha256"),
+        sum_file(&wireless, &format!("wireless-{ver}-arm64.npk")),
+    );
+    let wl = format!("wireless-{ver}-arm64.npk");
+    let ct = format!("container-{ver}-arm64.npk");
+    srv.route(
+        &format!("{d}/all_packages-arm64-{ver}.zip"),
         Reply::Body(zip(&[(wl.as_str(), &wireless[..]), (ct.as_str(), b"c")])),
     );
     (tarball, main, wireless)

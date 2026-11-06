@@ -10,7 +10,12 @@ use thiserror::Error;
 /// Validated so it is safe in URLs and file names: 1–32 characters of ASCII
 /// digits, lowercase letters and dots, starting with a major version ≥ 7
 /// (v6 packages are named and bundled differently).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// Ordering is semantic: numeric components compare as numbers (`7.9 <
+/// 7.25`), and a pre-release sorts before its release (`7.26beta5 <
+/// 7.26rc1 < 7.26`). Spellings that compare equal numerically (`7.25` and
+/// `7.25.0`) are ordered by their text, so `Ord` stays consistent with `Eq`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Version(String);
 
@@ -50,6 +55,58 @@ impl Version {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// `(numeric components, pre-release rank, pre-release number)`; a
+    /// release ranks above `alpha` < `beta` < `rc` (unknown tags rank as
+    /// `alpha`).
+    fn sort_key(&self) -> (Vec<u64>, u8, u64) {
+        let s = self.0.as_str();
+        let split = s.find(|c: char| c.is_ascii_lowercase()).unwrap_or(s.len());
+        let (head, tail) = s.split_at(split);
+        let mut nums: Vec<u64> = head.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+        while nums.last() == Some(&0) {
+            nums.pop();
+        }
+        if tail.is_empty() {
+            return (nums, 3, 0);
+        }
+        let digits = tail
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or(tail.len());
+        let (tag, num) = tail.split_at(digits);
+        let rank = match tag {
+            "beta" => 1,
+            "rc" => 2,
+            _ => 0,
+        };
+        let num = num
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        (nums, rank, num)
+    }
+
+    /// Whether MikroTik publishes `<file>.sha256` checksums for this
+    /// version: from 7.15 on (7.14 and older answer 404; verified on the
+    /// download server). Pre-releases of 7.15 count as older.
+    pub fn has_published_checksums(&self) -> bool {
+        *self >= Version("7.15".into())
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sort_key()
+            .cmp(&other.sort_key())
+            .then_with(|| self.0.cmp(&other.0))
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -196,6 +253,36 @@ mod tests {
                 "{v:?}"
             );
         }
+    }
+
+    #[test]
+    fn versions_order_semantically() {
+        let p = |s: &str| Version::parse(s).unwrap();
+        assert!(p("7.9") < p("7.25"));
+        assert!(p("7.26beta5") < p("7.26"));
+        assert!(p("7.26beta5") < p("7.26beta10"));
+        assert!(p("7.26beta9") < p("7.26rc1"));
+        assert!(p("7.26rc1") < p("7.26"));
+        assert!(p("7.25.1") < p("7.26beta1"));
+        assert!(p("7.25") < p("7.25.1"));
+        assert!(p("7.25.10") > p("7.25.9"));
+        assert!(p("8.0") > p("7.99.99"));
+        // Consistent with Eq: different spellings are not equal.
+        assert_ne!(p("7.25").cmp(&p("7.25.0")), std::cmp::Ordering::Equal);
+        let mut all: Vec<Version> = ["7.26", "7.9", "7.26beta5", "7.25.1", "7.10"]
+            .into_iter()
+            .map(p)
+            .collect();
+        all.sort();
+        let sorted: Vec<&str> = all.iter().map(Version::as_str).collect();
+        assert_eq!(sorted, ["7.9", "7.10", "7.25.1", "7.26beta5", "7.26"]);
+    }
+
+    #[test]
+    fn checksums_are_published_from_7_15() {
+        let p = |s: &str| Version::parse(s).unwrap().has_published_checksums();
+        assert!(p("7.15") && p("7.15.3") && p("7.25.1") && p("8.0"));
+        assert!(!p("7.14") && !p("7.14.3") && !p("7.12.1") && !p("7.15beta4"));
     }
 
     #[test]

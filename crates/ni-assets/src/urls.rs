@@ -4,8 +4,8 @@
 //! - `<download>/<ver>/netinstall-<ver>.tar.gz`
 //! - `<download>/<ver>/<name>-<ver>-<arch>.npk` (main package: `routeros`)
 //! - `<download>/<ver>/all_packages-<arch>-<ver>.zip` (extra packages)
-//! - `<file URL>.sha256` (`sha256sum` format; published since about 7.13,
-//!   missing for 7.12.1 and older)
+//! - `<file URL>.sha256` (`sha256sum` format; published from 7.15 on,
+//!   404 for 7.14 and older — see [`Version::has_published_checksums`])
 //!
 //! Bases have no trailing `/`; see [`crate::HttpConfig`].
 

@@ -27,8 +27,7 @@ impl AsRef<Path> for TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let keep = std::thread::panicking()
-            && std::env::var(KEEP_ENV).is_ok_and(|v| v == "1");
+        let keep = std::thread::panicking() && std::env::var(KEEP_ENV).is_ok_and(|v| v == "1");
         if keep {
             eprintln!("keeping {}", self.0.display());
         } else {
@@ -41,10 +40,7 @@ impl Drop for TempDir {
 pub fn tempdir(tag: &str) -> TempDir {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "ni-assets-test-{}-{tag}-{n}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("ni-assets-test-{}-{tag}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     TempDir(dir)

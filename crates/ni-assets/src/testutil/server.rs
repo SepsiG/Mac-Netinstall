@@ -127,4 +127,3 @@ async fn handle(mut stream: TcpStream, routes: Routes, log: Arc<Mutex<Vec<String
     let _ = stream.write_all(&body).await;
     let _ = stream.shutdown().await;
 }
-

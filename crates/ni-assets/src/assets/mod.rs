@@ -125,14 +125,20 @@ impl Assets {
         }
     }
 
-    /// The published SHA-256 of `file` at `url`, `None` if none is published.
+    /// The published SHA-256 of `file` at `url`. From 7.15 on a checksum
+    /// must exist (`checksum_missing` otherwise); for older versions `None`
+    /// means none is published.
     async fn published_checksum(
         &self,
+        version: &Version,
         url: &str,
         file: &str,
     ) -> Result<Option<String>, AssetError> {
         let sum_url = urls::checksum(url);
         match self.http.optional_text(&sum_url).await? {
+            None if version.has_published_checksums() => {
+                Err(AssetError::ChecksumMissing { url: sum_url })
+            }
             None => Ok(None),
             Some(body) => parse_sha256_file(&body, file)
                 .map(Some)
@@ -158,7 +164,6 @@ impl Assets {
             return Ok(set);
         }
         let url = urls::file(&self.download_base, version, &tarball);
-        let published = self.published_checksum(&url, &tarball).await?;
         let part = dir.path(&format!("{tarball}.part"));
         {
             let dir = dir.clone();
@@ -168,6 +173,13 @@ impl Assets {
             .http
             .download(&url, &part, &tarball, &|e| self.emit(e))
             .await?;
+        let published = match self.published_checksum(version, &url, &tarball).await {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                return Err(e);
+            }
+        };
         blocking(move || {
             let result = (|| {
                 check_published(&tarball, &published, &got.sha256)?;
@@ -317,25 +329,39 @@ mod tests {
             Reply::Body(b"<Error>NoSuchKey</Error>".to_vec()),
         );
         let root = tempdir("kernels-badsum");
-        let err = assets(&srv, &root)
-            .ensure_kernels(&v())
-            .await
-            .unwrap_err();
+        let err = assets(&srv, &root).ensure_kernels(&v()).await.unwrap_err();
         assert_eq!(err.code(), "bad_response");
     }
 
     #[tokio::test]
-    async fn old_versions_without_published_checksums_still_work() {
+    async fn versions_before_7_15_work_without_published_checksums() {
         let srv = TestServer::start().await;
-        mirror(&srv);
+        let old = "7.14.3";
+        mirror_version(&srv, old);
         srv.route(
-            &format!("/dl/{V}/netinstall-{V}.tar.gz.sha256"),
+            &format!("/dl/{old}/netinstall-{old}.tar.gz.sha256"),
             Reply::Status(404),
         );
         let root = tempdir("kernels-nosum");
-        assets(&srv, &root).ensure_kernels(&v()).await.unwrap();
-        let index = CacheDir::new(root.join(V)).load();
+        let version = Version::parse(old).unwrap();
+        assets(&srv, &root).ensure_kernels(&version).await.unwrap();
+        let index = CacheDir::new(root.join(old)).load();
         assert!(!index.files["kernel-arm.elf"].published_checksum);
+    }
+
+    #[tokio::test]
+    async fn a_missing_checksum_is_an_error_from_7_15_on() {
+        let srv = TestServer::start().await;
+        mirror_version(&srv, "7.15");
+        srv.route("/dl/7.15/netinstall-7.15.tar.gz.sha256", Reply::Status(404));
+        let root = tempdir("kernels-sum-required");
+        let version = Version::parse("7.15").unwrap();
+        let err = assets(&srv, &root)
+            .ensure_kernels(&version)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "checksum_missing", "{err:?}");
+        assert!(!root.join("7.15").join("kernel-arm.elf").exists());
     }
 
     #[tokio::test]
@@ -345,21 +371,21 @@ mod tests {
         let few: Vec<_> = synthetic_kernels().into_iter().take(3).collect();
         let partial = tar_gz(&[("netinstall-cli", &crate::testutil::kernel_container(&few))]);
         let d = format!("/dl/{V}");
-        srv.route(&format!("{d}/netinstall-{V}.tar.gz"), Reply::Body(partial));
+        let tarball = format!("netinstall-{V}.tar.gz");
         srv.route(
-            &format!("{d}/netinstall-{V}.tar.gz.sha256"),
-            Reply::Status(404),
+            &format!("{d}/{tarball}.sha256"),
+            sum_file(&partial, &tarball),
         );
+        srv.route(&format!("{d}/{tarball}"), Reply::Body(partial));
         let root = tempdir("kernels-partial");
         let a = assets(&srv, &root);
         assert_eq!(
             a.ensure_kernels(&v()).await.unwrap_err().code(),
             "kernel_missing"
         );
-        srv.route(
-            &format!("{d}/netinstall-{V}.tar.gz"),
-            Reply::Body(tar_gz(&[])),
-        );
+        let empty = tar_gz(&[]);
+        srv.route(&format!("{d}/{tarball}.sha256"), sum_file(&empty, &tarball));
+        srv.route(&format!("{d}/{tarball}"), Reply::Body(empty));
         assert_eq!(
             a.ensure_kernels(&v()).await.unwrap_err().code(),
             "archive_missing_cli"
