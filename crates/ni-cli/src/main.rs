@@ -3,7 +3,8 @@
 //! A thin layer over `ni-engine`; see `ni-cli --help`. Exit codes are in
 //! [`cli::exit`]. Errors go to stderr as `error: <code> (<params>)`; with
 //! `--json` they are also printed to stdout as one JSON object
-//! `{"type":"error","code":..,"params":{..},"message":..}` (usage errors
+//! `{"event":"error","code":..,"params":{..},"message":..}` — the same
+//! discriminator as engine events — (usage errors
 //! have code `usage`), so a JSON consumer never has to parse stderr.
 
 mod cli;
@@ -16,13 +17,14 @@ use clap::Parser;
 use std::process::ExitCode;
 
 /// An error for people (stderr) and, with `--json`, also as one JSON
-/// object on stdout: `{"type":"error","code":..,"params":{..},"message":..}`
+/// object on stdout, shaped like an engine `error` event:
+/// `{"event":"error","code":..,"params":{..},"message":..}`
 /// (`message` is English, for logs; translate `code`).
 fn report_error(json: bool, f: &ni_engine::Failure) {
     eprintln!("error: {}", output::failure(f));
     if json {
         let v = serde_json::json!({
-            "type": "error",
+            "event": "error",
             "code": f.code,
             "params": f.params,
             "message": f.to_string(),
@@ -41,7 +43,7 @@ fn main() -> ExitCode {
             let code = if e.use_stderr() {
                 if json_requested {
                     let v = serde_json::json!({
-                        "type": "error",
+                        "event": "error",
                         "code": "usage",
                         "params": {},
                         "message": e.kind().to_string(),

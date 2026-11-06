@@ -15,8 +15,7 @@ pub mod exit {
     /// Invalid arguments.
     pub const USAGE: u8 = 2;
     /// A device failed to flash: the single device, or with
-    /// `--auto-repeat` any device (also one cancelled half-way because
-    /// `--count` was reached).
+    /// `--auto-repeat` any device.
     pub const DEVICE_FAILED: u8 = 3;
     /// Preflight found an error (interface, addresses, ports, assets).
     pub const PREFLIGHT: u8 = 4;
@@ -28,8 +27,9 @@ pub mod exit {
 const EXIT_CODES: &str = "Exit codes: 0 success, 1 error, 2 invalid arguments, \
 3 a device failed, 4 preflight failed, 130 interrupted (also: stopped while a device \
 was being flashed). While a device is being flashed, the first Ctrl-C only warns; \
-press it again within 5 s to abort. With --json, errors are also printed to stdout \
-as {\"type\":\"error\",\"code\":...,\"message\":...}.";
+press it again within 5 s to abort. With --count, devices still being flashed when the \
+count is reached are waited for. With --json, errors are also printed to stdout as \
+{\"event\":\"error\",\"code\":...,\"message\":...}.";
 
 /// Environment variable that unlocks the hidden testing flags.
 pub const TESTING_ENV: &str = "NI_CLI_TESTING";
@@ -237,7 +237,8 @@ pub struct FlashArgs {
     /// Keep going: flash every device that appears, until Ctrl-C.
     #[arg(long)]
     pub auto_repeat: bool,
-    /// With --auto-repeat: exit after this many devices finished.
+    /// With --auto-repeat: start no new device once this many have finished,
+    /// wait for those still being flashed, then exit.
     #[arg(long, requires = "auto_repeat")]
     pub count: Option<usize>,
     /// Serve only this device (MAC address).

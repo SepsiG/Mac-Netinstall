@@ -351,7 +351,7 @@ async fn testing_flags_need_the_environment_variable() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("testing_flag_not_allowed"), "{stderr}");
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["type"], "error");
+    assert_eq!(v["event"], "error");
     assert_eq!(v["code"], "testing_flag_not_allowed");
     assert_eq!(v["params"]["flag"], "--download-base");
 }
@@ -363,7 +363,7 @@ async fn json_errors_are_printed_on_stdout() {
     assert_eq!(code, 1);
     assert!(err.contains("profile_not_found"), "{err}");
     let v: Value = serde_json::from_str(out.trim()).unwrap();
-    assert_eq!(v["type"], "error");
+    assert_eq!(v["event"], "error");
     assert_eq!(v["code"], "profile_not_found");
     assert!(v["message"]
         .as_str()
@@ -374,7 +374,7 @@ async fn json_errors_are_printed_on_stdout() {
     assert_eq!(code, 2);
     let v: Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(
-        (v["type"].as_str(), v["code"].as_str()),
+        (v["event"].as_str(), v["code"].as_str()),
         (Some("error"), Some("usage"))
     );
 }
@@ -437,8 +437,9 @@ async fn ctrl_c_during_a_flash_needs_confirmation_and_exits_130() {
     sigint(&child);
     let warning = stderr_line(&mut errs, "press Ctrl-C again").await;
     assert!(warning.contains("48:A9:8A:00:00:0C"), "{warning}");
-    let pending = json_line(&mut lines, |v| v["type"] == "warning").await;
-    assert_eq!(pending["code"], "interrupt_pending");
+    let pending = json_line(&mut lines, |v| v["code"] == "interrupt_pending").await;
+    assert_eq!(pending["event"], "warning");
+    assert_eq!(pending["params"]["devices"], "48:A9:8A:00:00:0C");
     // Still running: nothing was cancelled.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
@@ -478,4 +479,71 @@ async fn ctrl_c_before_the_single_device_appears_exits_130_at_once() {
         .unwrap()
         .unwrap();
     assert_eq!(status.code(), Some(130));
+}
+
+/// BOOTP + TFTP for a simulated device, then run it.
+async fn boot_and_add(lan: &SimLan, started: &Value, sim: SimConfig) {
+    let mac = sim.info.mac;
+    let reply = lan
+        .boot(mac, "ARM64__boot", addr(started, "bootp"), WAIT)
+        .await
+        .expect("BOOTP reply");
+    let tftp = SocketAddr::from((reply.server, addr(started, "tftp").port()));
+    tftp_get(tftp, &reply.file).await.unwrap();
+    lan.add(DeviceSim::new(sim, Instant::now())).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reaching_the_count_waits_for_devices_still_flashing() {
+    const SLOW: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0d]);
+    let env = Env::new("cli-count-drain");
+    let srv = TestServer::start().await;
+    mirror(&srv);
+    let lan = SimLan::bind().await.unwrap();
+    let mut args = flash_args(&srv, &lan);
+    args.extend(["--auto-repeat".into(), "--count".into(), "1".into()]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = env.cmd(&args).spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let started = json_line(&mut lines, |v| v["event"] == "started").await;
+    lan.connect(addr(&started, "netinstall")).await;
+    json_line(&mut lines, |v| v["event"] == "kernels_ready").await;
+    let mut slow = SimConfig::new(SLOW, "hAP ax2", "arm64");
+    slow.hello_interval = Duration::from_millis(100);
+    slow.format_delay = Duration::from_millis(1500);
+    boot_and_add(&lan, &started, slow).await;
+    json_line(&mut lines, |v| {
+        v["event"] == "device" && v["state"] == "flashing" && v["mac"] == "48:A9:8A:00:00:0D"
+    })
+    .await;
+    let mut fast = SimConfig::new(DEVICE, "hAP ax2", "arm64");
+    fast.hello_interval = Duration::from_millis(100);
+    boot_and_add(&lan, &started, fast).await;
+    // The fast one reaches the count; the slow one is waited for.
+    let mut finished = Vec::new();
+    loop {
+        let v = json_line(&mut lines, |v| {
+            v["event"] == "stopped"
+                || (v["event"] == "device"
+                    && matches!(v["state"].as_str(), Some("done" | "failed")))
+        })
+        .await;
+        if v["event"] == "stopped" {
+            break;
+        }
+        finished.push((v["mac"].as_str().unwrap().to_string(), v["state"].clone()));
+    }
+    assert_eq!(
+        finished,
+        [
+            ("48:A9:8A:00:00:0C".to_string(), Value::from("done")),
+            ("48:A9:8A:00:00:0D".to_string(), Value::from("done")),
+        ]
+    );
+    let status = tokio::time::timeout(WAIT, child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.code(), Some(0));
+    assert!(lan.wait_terminated(SLOW, WAIT).await.is_some());
 }

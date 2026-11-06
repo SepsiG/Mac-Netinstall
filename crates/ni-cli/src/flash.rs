@@ -4,20 +4,27 @@
 //!
 //! With no device being prepared or flashed, Ctrl-C stops at once. While
 //! one is, the first Ctrl-C only warns (on stderr; with `--json` also as
-//! `{"type":"warning","code":"interrupt_pending",...}` on stdout) that the
-//! device may be left unbootable; a second Ctrl-C within
-//! [`CONFIRM_WINDOW`] aborts. SIGTERM always stops at once.
+//! `{"event":"warning","code":"interrupt_pending","params":{"devices":..,
+//! "confirm_secs":"5"}}` on stdout) that the device may be left unbootable;
+//! a second Ctrl-C within [`CONFIRM_WINDOW`] aborts. SIGTERM always stops
+//! at once.
+//!
+//! # `--count`
+//!
+//! When `--count` devices have finished, auto-repeat is turned off (no new
+//! device is started; queued ones go back to waiting) and the run waits
+//! for the devices still being prepared or flashed, then stops. The
+//! Ctrl-C rules above apply while waiting.
 //!
 //! # Exit code
 //!
 //! - single device (no `--auto-repeat`): only the device being flashed
 //!   counts: 0 done, 3 failed; others are reported but do not change it;
-//! - `--auto-repeat`: 3 if any device failed, else 0;
+//! - `--auto-repeat`: 3 if any device failed (including those finished
+//!   while draining after `--count`), else 0;
 //! - 130 (`INTERRUPTED`) when stopped by a signal before the single device
 //!   finished, or while any device was being prepared or flashed
 //!   (including `cancelled` devices reported while stopping);
-//! - 3 also when `--count` was reached while another device was still
-//!   being flashed (it is cancelled);
 //! - 1 if the engine reports an error or its task is gone (`engine_gone`).
 //!
 //! Events missed by a slow terminal (`Lagged`) are made up for from the
@@ -43,6 +50,9 @@ pub const CONFIRM_WINDOW: Duration = Duration::from_secs(5);
 enum Step {
     /// Flash this device (the single-device target was found).
     Flash(Mac),
+    /// `--count` reached: turn auto-repeat off (no new devices) and wait
+    /// for the devices still being prepared or flashed.
+    Drain,
     /// Done: exit with this code.
     Finish(u8),
 }
@@ -61,6 +71,8 @@ struct Tracker {
     failed: usize,
     /// Result of the target device: `Some(true)` done, `Some(false)` failed.
     target_result: Option<bool>,
+    /// `--count` was reached; finishing once nothing is active.
+    draining: bool,
 }
 
 impl Tracker {
@@ -73,6 +85,15 @@ impl Tracker {
             done: 0,
             failed: 0,
             target_result: None,
+            draining: false,
+        }
+    }
+
+    /// While draining: finish once no device is prepared or flashed.
+    fn finish_drain(&self, steps: &mut Vec<Step>) {
+        let finishing = steps.iter().any(|s| matches!(s, Step::Finish(_)));
+        if self.draining && !finishing && self.active().is_empty() {
+            steps.push(Step::Finish(self.result()));
         }
     }
 
@@ -120,11 +141,13 @@ impl Tracker {
         if !self.auto_repeat && self.target == Some(mac) {
             self.target_result = Some(ok);
             steps.push(Step::Finish(self.result()));
-        } else if self
-            .count
-            .is_some_and(|n| self.auto_repeat && self.done + self.failed >= n)
+        } else if !self.draining
+            && self
+                .count
+                .is_some_and(|n| self.auto_repeat && self.done + self.failed >= n)
         {
-            steps.push(Step::Finish(self.result()));
+            self.draining = true;
+            steps.push(Step::Drain);
         }
     }
 
@@ -142,6 +165,7 @@ impl Tracker {
             EngineEvent::Device { mac, state } => self.device(*mac, state.name(), &mut steps),
             _ => {}
         }
+        self.finish_drain(&mut steps);
         steps
     }
 
@@ -161,6 +185,7 @@ impl Tracker {
                 self.pick_target(d.mac, &mut steps);
             }
         }
+        self.finish_drain(&mut steps);
         steps
     }
 }
@@ -228,8 +253,13 @@ pub async fn flash(ctx: &Ctx, args: FlashArgs) -> Outcome {
                     println!("{line}");
                 }
                 if let EngineEvent::Error(f) = &e {
+                    // Already printed (as an `error` event with --json).
+                    tracing::error!("{f}");
                     let _ = engine.stop().await;
-                    return Err(f.clone());
+                    if !ctx.json {
+                        eprintln!("error: {}", crate::output::failure(f));
+                    }
+                    return Ok(exit::ERROR);
                 }
                 tracker.on_event(&e)
             }
@@ -245,6 +275,10 @@ pub async fn flash(ctx: &Ctx, args: FlashArgs) -> Outcome {
         for step in steps {
             match step {
                 Step::Flash(mac) => engine.flash(mac, profile.clone()).await?,
+                Step::Drain => {
+                    info!(active = tracker.active().len(), "count reached; draining");
+                    engine.set_auto_repeat(false).await?;
+                }
                 Step::Finish(code) => break 'run code,
             }
         }
@@ -262,8 +296,8 @@ pub async fn flash(ctx: &Ctx, args: FlashArgs) -> Outcome {
     }
     let code = match signalled {
         Some(active) if !active.is_empty() || cancelled > 0 => exit::INTERRUPTED,
-        // `--count` reached while another device was being flashed: it was
-        // cancelled half-way.
+        // Should not happen (nothing is active when a run finishes), but a
+        // device cancelled half-way is a failure.
         None if cancelled > 0 => exit::DEVICE_FAILED,
         _ => code,
     };
@@ -288,8 +322,10 @@ fn interrupt_warning(ctx: &Ctx, active: &[Mac]) {
         macs.join(", ")
     );
     if ctx.json {
-        let v = json!({"type": "warning", "code": "interrupt_pending",
-                       "devices": macs, "confirm_secs": secs});
+        // Shaped like an engine `warning` event.
+        let v = json!({"event": "warning", "code": "interrupt_pending",
+                       "params": {"devices": macs.join(","),
+                                  "confirm_secs": secs.to_string()}});
         println!("{v}");
     }
 }
@@ -386,9 +422,28 @@ mod tests {
         assert_eq!(t.on_event(&discovered(A)), []);
         assert_eq!(t.on_event(&ev(A, failed())), []);
         assert_eq!(t.on_event(&ev(A, failed())), [], "same state twice");
-        assert_eq!(t.on_event(&ev(B, DeviceState::Done)), [Step::Finish(3)]);
+        assert_eq!(
+            t.on_event(&ev(B, DeviceState::Done)),
+            [Step::Drain, Step::Finish(3)],
+            "nothing else active: finish at once"
+        );
         let t = Tracker::new(true, None);
         assert_eq!(t.result(), exit::OK);
+    }
+
+    #[test]
+    fn reaching_the_count_waits_for_devices_still_flashing() {
+        let mut t = Tracker::new(true, Some(1));
+        assert_eq!(t.on_event(&ev(B, flashing())), []);
+        assert_eq!(t.on_event(&ev(A, DeviceState::Done)), [Step::Drain]);
+        assert_eq!(t.active(), [B]);
+        // More devices finishing while draining do not drain again.
+        assert_eq!(t.on_event(&ev(B, flashing())), []);
+        assert_eq!(t.on_event(&ev(B, failed())), [Step::Finish(3)]);
+        let mut t = Tracker::new(true, Some(1));
+        t.on_event(&ev(B, flashing()));
+        t.on_event(&ev(A, DeviceState::Done));
+        assert_eq!(t.on_event(&ev(B, DeviceState::Done)), [Step::Finish(0)]);
     }
 
     #[test]
