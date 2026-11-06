@@ -298,7 +298,7 @@ impl EngineHandle {
     /// the kernel version it booted: installing another one on it fails
     /// with `profile_version_mismatch` until it netboots again. The same
     /// spec keeps the kernels, unless they are `unavailable`: then they are
-    /// fetched again (a retry without stopping). Errors: `not_running`,
+    /// fetched again (a retry without stopping; also with `None`). Errors: `not_running`,
     /// profile validation codes.
     pub async fn set_active_profile(&self, profile: Option<Profile>) -> Result<(), Failure> {
         self.call(|tx| Command::ActiveProfile(profile.map(Box::new), tx))

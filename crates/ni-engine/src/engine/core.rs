@@ -605,7 +605,11 @@ impl Core {
             if run.cfg.auto_repeat {
                 self.set_auto_repeat(false)?;
             }
-            self.running()?.cfg.profile = None;
+            let run = self.running()?;
+            run.cfg.profile = None;
+            if matches!(run.kernels, KernelState::Unavailable { .. }) {
+                self.fetch_kernels(); // try again (stable, without a profile)
+            }
             return Ok(());
         };
         // The same spec keeps the kernels, unless they could not be had:

@@ -510,6 +510,11 @@ async fn unavailable_kernels_are_fetched_again_for_the_same_spec() {
     engine.start(config(&lan)).await.unwrap();
     let states = kernel_states(&mut events).await;
     assert_eq!(states.last().unwrap().name(), "unavailable");
+    // Without a profile too (stable); the mirror still fails.
+    engine.set_active_profile(None).await.unwrap();
+    let states = kernel_states(&mut events).await;
+    assert_eq!(states.first().unwrap().name(), "downloading");
+    assert_eq!(states.last().unwrap().name(), "unavailable");
     srv.route(tarball, Reply::Body(netinstall_tarball()));
     engine.set_active_profile(Some(profile())).await.unwrap();
     let states = kernel_states(&mut events).await;
