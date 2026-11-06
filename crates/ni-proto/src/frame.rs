@@ -11,6 +11,12 @@
 //! | 16     | 2    | `seq`: sender sequence number |
 //! | 18     | 2    | `ack`: acknowledged sequence  |
 //! | 20     | ..   | payload                       |
+//!
+//! Offset 16 always carries the *server's* sequence number: the server
+//! increments it per frame, and the device echoes it back in its replies.
+//! Offset 18 is the acknowledged number: the server puts its previous
+//! sequence number there (`seq - 1`), the device the one it is answering
+//! (so a device reply has `seq == ack`). Hello frames use `seq = 1, ack = 0`.
 
 use bytes::Bytes;
 use std::fmt;
@@ -102,6 +108,12 @@ impl Frame {
     }
 
     /// Serialize to wire format.
+    ///
+    /// # Panics
+    ///
+    /// If the payload is longer than [`u16::MAX`] bytes (it cannot be
+    /// represented in the length field). Netinstall payloads are at most
+    /// [`MAX_CHUNK`] bytes of file data or a short control message.
     pub fn encode(&self) -> Vec<u8> {
         let len = u16::try_from(self.payload.len()).expect("payload larger than u16::MAX");
         let mut out = Vec::with_capacity(HEADER_LEN + self.payload.len());

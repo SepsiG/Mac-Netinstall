@@ -95,6 +95,7 @@ fn installs_package_and_config_script() {
     );
     let ev = events(&mut server);
     assert_eq!(ev.last(), Some(&Event::Done));
+    assert_eq!(server.phase(), &Phase::Done);
     let last_progress = ev.iter().rev().find_map(|e| match e {
         Event::Progress {
             bytes_sent,
@@ -124,7 +125,6 @@ fn installs_package_and_config_script() {
             "uploading",
             "finishing",
             "rebooting",
-            "done"
         ]
     );
 }
@@ -294,10 +294,12 @@ fn silent_device_fails_with_timeout_in_offering() {
     );
 
     assert_eq!(server.phase(), &Phase::Failed);
+    let ev = events(&mut server);
     assert_eq!(
-        events(&mut server).last(),
+        ev.last(),
         Some(&Event::Failed(FailReason::Timeout { phase: "offering" }))
     );
+    assert!(!ev.contains(&Event::PhaseChanged(Phase::Failed)));
 }
 
 /// Classify a server → device frame for the golden transcript.

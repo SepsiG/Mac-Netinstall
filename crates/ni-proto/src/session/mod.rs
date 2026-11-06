@@ -20,6 +20,13 @@
 //!
 //! Sequence numbers: the k-th server frame has `seq = k, ack = k - 1`;
 //! the device answers with `seq = k, ack = k`.
+//!
+//! Retransmission: pyNetinstall never retransmits; it just waits (60 s) for
+//! the device. We re-send an unanswered frame with the *same* `seq`, assuming
+//! the device recognises the duplicate and only repeats its previous answer.
+//! This is unverified on hardware: a device that processed a re-sent chunk
+//! again would store it twice (see the simulator's `SimConfig::dedup` and
+//! the `without_device_dedup_a_lost_reply_corrupts_the_file` test).
 
 mod steps;
 
@@ -28,6 +35,7 @@ use crate::frame::{Frame, Mac};
 use crate::message;
 use bytes::Bytes;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use steps::{build_steps, Expect, Step, TimeoutKind};
 use thiserror::Error;
@@ -109,7 +117,9 @@ pub struct SessionConfig {
     pub reply_timeout: Duration,
     /// Wait for the device to finish formatting.
     pub format_timeout: Duration,
-    /// Wait for replies some devices never send (`FILE` header).
+    /// Wait for replies some devices never send (`FILE` header). With the
+    /// default retransmits this waits about 40 s in total, close to
+    /// pyNetinstall's 60 s socket timeout.
     pub optional_timeout: Duration,
     /// Re-sends of an unanswered frame before failing.
     pub max_retransmits: u32,
@@ -122,7 +132,7 @@ impl Default for SessionConfig {
         Self {
             reply_timeout: Duration::from_secs(10),
             format_timeout: Duration::from_secs(120),
-            optional_timeout: Duration::from_secs(3),
+            optional_timeout: Duration::from_secs(10),
             max_retransmits: 3,
             chunk_delay: Duration::from_millis(5),
         }
@@ -135,7 +145,7 @@ pub enum Phase {
     Offering,
     Formatting,
     Preparing,
-    Uploading { file: String },
+    Uploading { file: Arc<str> },
     Finishing,
     Rebooting,
     Done,
@@ -164,6 +174,8 @@ pub enum FailReason {
     Timeout { phase: &'static str },
     #[error("device rejected the request during {phase}")]
     Rejected { phase: &'static str },
+    #[error("installation cancelled")]
+    Cancelled,
 }
 
 impl FailReason {
@@ -172,15 +184,21 @@ impl FailReason {
         match self {
             FailReason::Timeout { .. } => "timeout",
             FailReason::Rejected { .. } => "rejected",
+            FailReason::Cancelled => "cancelled",
         }
     }
 }
 
+/// Session events.
+///
+/// [`Event::PhaseChanged`] is only emitted for active phases; the end of a
+/// session is reported by [`Event::Done`] or [`Event::Failed`] alone (while
+/// [`ServerSession::phase`] then reports [`Phase::Done`] / [`Phase::Failed`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     PhaseChanged(Phase),
     Progress {
-        file: String,
+        file: Arc<str>,
         file_sent: u64,
         file_total: u64,
         bytes_sent: u64,
@@ -288,8 +306,13 @@ impl ServerSession {
             };
             return Some(frame);
         }
-        let step = self.steps.get(self.idx)?.clone();
-        self.set_phase(step.phase.clone());
+        let step = self.steps.get(self.idx)?;
+        let (payload, expect, timeout) = (step.payload.clone(), step.expect, step.timeout);
+        if self.phase != step.phase {
+            self.phase = step.phase.clone();
+            self.events
+                .push_back(Event::PhaseChanged(self.phase.clone()));
+        }
         // Cannot overflow: plans needing more than u16::MAX frames are rejected.
         debug_assert!(self.seq < u16::MAX, "sequence number would wrap");
         self.seq += 1;
@@ -298,14 +321,14 @@ impl ServerSession {
             self.device.mac,
             self.seq,
             self.seq - 1,
-            step.payload.clone(),
+            payload,
         );
         self.last_frame = Some(frame.clone());
-        if step.expect == Expect::None {
+        if expect == Expect::None {
             self.advance(now, false);
         } else {
             self.wait = Wait::Reply {
-                deadline: now + self.timeout(step.timeout),
+                deadline: now + self.timeout(timeout),
                 retries_left: self.cfg.max_retransmits,
                 replies: 0,
             };
@@ -338,10 +361,10 @@ impl ServerSession {
             }
         }
         let delay = step.delay_after;
-        if let Some(chunk) = step.chunk.clone() {
+        if let Some(chunk) = &step.chunk {
             self.bytes_sent += step.payload.len() as u64;
             self.events.push_back(Event::Progress {
-                file: chunk.file,
+                file: Arc::clone(&chunk.file),
                 file_sent: chunk.file_sent,
                 file_total: chunk.file_total,
                 bytes_sent: self.bytes_sent,
@@ -388,6 +411,14 @@ impl ServerSession {
         }
     }
 
+    /// Abort the session. If it has not finished yet, it fails with
+    /// [`FailReason::Cancelled`]; nothing more is sent.
+    pub fn cancel(&mut self) {
+        if !self.is_finished() {
+            self.fail(FailReason::Cancelled);
+        }
+    }
+
     pub fn poll_event(&mut self) -> Option<Event> {
         self.events.pop_front()
     }
@@ -400,18 +431,11 @@ impl ServerSession {
         }
     }
 
-    fn set_phase(&mut self, phase: Phase) {
-        if self.phase != phase {
-            self.phase = phase.clone();
-            self.events.push_back(Event::PhaseChanged(phase));
-        }
-    }
-
     fn advance(&mut self, now: Instant, delay: bool) {
         self.idx += 1;
         if self.idx >= self.steps.len() {
             self.wait = Wait::Finished;
-            self.set_phase(Phase::Done);
+            self.phase = Phase::Done;
             self.events.push_back(Event::Done);
         } else {
             let at = if delay {
@@ -425,7 +449,7 @@ impl ServerSession {
 
     fn fail(&mut self, reason: FailReason) {
         self.wait = Wait::Finished;
-        self.set_phase(Phase::Failed);
+        self.phase = Phase::Failed;
         self.events.push_back(Event::Failed(reason));
     }
 }
@@ -702,6 +726,73 @@ mod tests {
         assert_eq!(s.poll_transmit(now), None);
         s.handle_frame(&reply(5, message::RETR), now);
         assert_eq!(s.poll_transmit(now).map(|f| f.seq), Some(6));
+    }
+
+    #[test]
+    fn failure_emits_failed_event_but_no_phase_change() {
+        let now = Instant::now();
+        let mut s = session(&plan(), now);
+        s.poll_transmit(now).unwrap();
+        s.handle_frame(&reply(1, b"NACK"), now);
+        assert_eq!(s.phase(), &Phase::Failed);
+        let events: Vec<Event> = std::iter::from_fn(|| s.poll_event()).collect();
+        assert_eq!(
+            events,
+            [
+                Event::PhaseChanged(Phase::Offering),
+                Event::Failed(FailReason::Rejected { phase: "offering" })
+            ]
+        );
+    }
+
+    #[test]
+    fn cancel_fails_an_unfinished_session_once() {
+        let now = Instant::now();
+        let mut s = session(&plan(), now);
+        s.poll_transmit(now).unwrap();
+        s.cancel();
+        assert!(s.is_finished());
+        assert_eq!(s.phase(), &Phase::Failed);
+        assert_eq!(s.poll_transmit(now), None);
+        assert_eq!(s.poll_timeout(), None);
+        s.cancel();
+        let events: Vec<Event> = std::iter::from_fn(|| s.poll_event()).collect();
+        assert_eq!(
+            events,
+            [
+                Event::PhaseChanged(Phase::Offering),
+                Event::Failed(FailReason::Cancelled)
+            ]
+        );
+        assert_eq!(FailReason::Cancelled.code(), "cancelled");
+    }
+
+    #[test]
+    fn default_optional_timeout_is_ten_seconds() {
+        assert_eq!(
+            SessionConfig::default().optional_timeout,
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn upload_phase_and_progress_name_the_file() {
+        let now = Instant::now();
+        let mut s = session(&plan(), now);
+        send_until_last_chunk(&mut s, now);
+        assert_eq!(
+            s.phase(),
+            &Phase::Uploading {
+                file: Arc::from("routeros.npk")
+            }
+        );
+        s.handle_frame(&reply(5, message::RETR), now);
+        s.handle_frame(&reply(5, message::RETR), now);
+        let progress = std::iter::from_fn(|| s.poll_event()).find_map(|e| match e {
+            Event::Progress { file, .. } => Some(file),
+            _ => None,
+        });
+        assert_eq!(progress.as_deref(), Some("routeros.npk"));
     }
 
     #[test]

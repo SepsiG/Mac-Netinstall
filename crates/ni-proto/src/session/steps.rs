@@ -4,6 +4,7 @@ use super::{InstallPlan, Phase};
 use crate::frame::MAX_CHUNK;
 use crate::message;
 use bytes::Bytes;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Expect {
@@ -30,7 +31,7 @@ pub(super) enum TimeoutKind {
 
 #[derive(Debug, Clone)]
 pub(super) struct ChunkInfo {
-    pub(super) file: String,
+    pub(super) file: Arc<str>,
     pub(super) file_sent: u64,
     pub(super) file_total: u64,
 }
@@ -91,14 +92,13 @@ pub(super) fn build_steps(plan: &InstallPlan) -> Vec<Step> {
         Step::control(Phase::Preparing, b"", Any, Reply),
     ];
     for pkg in &plan.packages {
-        push_file(&mut steps, &pkg.name, &pkg.data);
-        let phase = Phase::Uploading {
-            file: pkg.name.clone(),
-        };
+        let name: Arc<str> = Arc::from(pkg.name.as_str());
+        push_file(&mut steps, Arc::clone(&name), &pkg.data);
+        let phase = Phase::Uploading { file: name };
         steps.push(Step::control(phase, b"", Any, Reply));
     }
     if let Some(script) = &plan.config_script {
-        push_file(&mut steps, message::CONFIG_SCRIPT_NAME, script);
+        push_file(&mut steps, Arc::from(message::CONFIG_SCRIPT_NAME), script);
     }
     steps.push(Step::control(Phase::Finishing, b"", Any, Reply));
     steps.push(Step::control(
@@ -116,14 +116,15 @@ pub(super) fn build_steps(plan: &InstallPlan) -> Vec<Step> {
     steps
 }
 
-fn push_file(steps: &mut Vec<Step>, name: &str, data: &Bytes) {
+fn push_file(steps: &mut Vec<Step>, name: Arc<str>, data: &Bytes) {
+    let header = Bytes::from(message::file_header(&name, data.len() as u64));
     let phase = Phase::Uploading {
-        file: name.to_string(),
+        file: Arc::clone(&name),
     };
     let total = data.len() as u64;
     steps.push(Step {
         phase: phase.clone(),
-        payload: Bytes::from(message::file_header(name, total)),
+        payload: header,
         expect: Expect::Optional,
         timeout: TimeoutKind::Optional,
         chunk: None,
@@ -152,7 +153,7 @@ fn push_file(steps: &mut Vec<Step>, name: &str, data: &Bytes) {
             },
             timeout: TimeoutKind::Reply,
             chunk: Some(ChunkInfo {
-                file: name.to_string(),
+                file: Arc::clone(&name),
                 file_sent: sent,
                 file_total: total,
             }),

@@ -6,6 +6,10 @@
 pub const OFFR: &[u8] = b"OFFR\n\n";
 pub const YACK: &[u8] = b"YACK\n";
 /// Negative acknowledgement prefix (device → server).
+///
+/// Speculative: the string appears in the official Netinstall tool, but
+/// pyNetinstall never checks for it. A device reply starting with it fails
+/// the session.
 pub const NACK: &[u8] = b"NACK";
 /// Device finished formatting.
 pub const STRT: &[u8] = b"STRT";
