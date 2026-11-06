@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod event;
+pub mod gate;
 pub mod profile;
 
 pub use config::{
