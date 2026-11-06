@@ -161,10 +161,13 @@ impl EngineHandle {
     }
 
     /// Bind the listeners and start serving. Boot kernels are fetched in
-    /// the background ([`EngineEvent::KernelsReady`]). Errors:
-    /// `already_running`, `invalid_profile`-family codes, network codes
-    /// from [`crate::resolve_network`], `invalid_network`, `port_in_use`,
-    /// `bind_failed`.
+    /// the background ([`EngineEvent::KernelsReady`]). With a configured
+    /// server IP this works while the interface has no link (reported as
+    /// a `link_down` warning right after `started`). Errors:
+    /// `already_running`, `invalid_cooldown`, profile validation codes,
+    /// `interface_list_failed`, network codes from
+    /// [`crate::resolve_network`] (incl. `pool_includes_reserved`),
+    /// `invalid_network`, `port_in_use`, `bind_failed`.
     pub async fn start(&self, cfg: EngineConfig) -> Result<StartInfo, Failure> {
         self.call(|tx| Command::Start(Box::new(cfg), tx)).await?
     }
