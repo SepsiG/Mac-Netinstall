@@ -79,8 +79,11 @@ impl Printer {
             DeviceState::Waiting {
                 reason: WaitReason::Concurrency,
             } => "waiting for a free slot".into(),
-            DeviceState::Preparing => "preparing packages".into(),
-            DeviceState::Flashing { phase, sent, total } => {
+            DeviceState::Preparing { version: None } => "preparing packages".into(),
+            DeviceState::Preparing { version: Some(v) } => format!("preparing RouterOS {v}"),
+            DeviceState::Flashing {
+                phase, sent, total, ..
+            } => {
                 let step = percent(*sent, *total) / 10;
                 let key = (phase.clone(), step);
                 if self.devices.get(&mac) == Some(&key) {
@@ -150,6 +153,7 @@ mod tests {
         EngineEvent::Device {
             mac: MAC,
             state: DeviceState::Flashing {
+                version: "7.25.1".into(),
                 phase: phase.into(),
                 sent,
                 total: 1000,
@@ -163,7 +167,7 @@ mod tests {
         let line = p.line(&flashing("uploading", 1)).unwrap();
         assert_eq!(
             line,
-            r#"{"event":"device","mac":"48:A9:8A:00:00:01","state":"flashing","phase":"uploading","sent":1,"total":1000}"#
+            r#"{"event":"device","mac":"48:A9:8A:00:00:01","state":"flashing","version":"7.25.1","phase":"uploading","sent":1,"total":1000}"#
         );
         assert!(p.line(&flashing("uploading", 2)).is_some());
     }

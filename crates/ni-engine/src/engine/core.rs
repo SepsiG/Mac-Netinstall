@@ -1,16 +1,16 @@
 //! The engine loop and its state machine.
 
-use super::device::Device;
+use super::device::{self, Device, MAX_DEVICES};
 use super::start::start;
 use super::{Command, Snapshot};
-use crate::config::{interface_usable, EngineConfig, NetPlan};
+use crate::config::{link_status, EngineConfig, LinkStatus, NetPlan};
 use crate::event::{DeviceInfoView, DeviceState, EngineEvent, Failure, StartInfo, WaitReason};
 use crate::gate::{Gate, Verdict};
-use crate::prepare::{boot_maps, prepare};
+use crate::prepare::{boot_maps, prepare, version_mismatch};
 use crate::profile::Profile;
-use ni_assets::{Assets, KernelSet, Version};
+use ni_assets::{Assets, KernelSet, Version, VersionSpec};
 use ni_bootp::{BootpEvent, BootpHandle, IgnoreReason};
-use ni_net::{list_interfaces, RecvErrorAction, RecvErrorGuard};
+use ni_net::{RecvErrorAction, RecvErrorGuard};
 use ni_proto::{DeviceInfo, FailReason, Frame, InstallPlan, Mac, ServerSession};
 use ni_tftp::{FileMap, TftpEvent};
 use std::collections::{BTreeMap, HashMap};
@@ -28,6 +28,13 @@ use tracing::{debug, info, warn};
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 /// Minimum time between two `ignored` events per device and reason.
 const IGNORED_INTERVAL: Duration = Duration::from_secs(10);
+/// Minimum time between two `send_failed` warnings.
+const SEND_WARNING_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the `ignored` and cooldown maps are pruned (lazily, on
+/// activity).
+const PRUNE_INTERVAL: Duration = Duration::from_secs(1);
+/// How long `stop` waits for aborted tasks to release their sockets.
+const REAP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Messages from tasks the engine spawned.
 pub(crate) enum Internal {
@@ -39,7 +46,7 @@ pub(crate) enum Internal {
         epoch: u64,
         mac: Mac,
         attempt: u64,
-        result: Result<InstallPlan, Failure>,
+        result: Result<(Version, InstallPlan), Failure>,
     },
     RunnerExited {
         epoch: u64,
@@ -54,6 +61,23 @@ pub(crate) struct Io {
     pub bootp_rx: mpsc::Receiver<BootpEvent>,
     pub tftp_rx: mpsc::Receiver<TftpEvent>,
     pub recv_errors: RecvErrorGuard,
+}
+
+/// The watchdog's last view of the interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Link {
+    Up,
+    /// Listed but unusable (reason code); `link_down` was reported.
+    Down(&'static str),
+    /// Not listed since then.
+    Missing(Instant),
+}
+
+/// Failed sends since the last `send_failed` warning.
+#[derive(Debug, Default)]
+pub(crate) struct SendErrors {
+    count: u64,
+    last_report: Option<Instant>,
 }
 
 /// State while started.
@@ -71,6 +95,24 @@ pub(crate) struct Running {
     pub queue_seq: u64,
     pub ignored: HashMap<(Mac, &'static str), Instant>,
     pub next_link_check: Option<Instant>,
+    pub link: Link,
+    /// Index of the interface at start (`IP_BOUND_IF` binds it).
+    pub link_index: u32,
+    pub send_errors: SendErrors,
+    pub next_prune: Instant,
+}
+
+impl Running {
+    /// Drop expired `ignored` rate-limit entries and cooldowns.
+    fn prune(&mut self, now: Instant) {
+        if now < self.next_prune {
+            return;
+        }
+        self.next_prune = now + PRUNE_INTERVAL;
+        self.ignored
+            .retain(|_, t| now.saturating_duration_since(*t) < IGNORED_INTERVAL);
+        self.gate.prune(now);
+    }
 }
 
 struct Core {
@@ -79,6 +121,9 @@ struct Core {
     internal: mpsc::Sender<Internal>,
     epoch: u64,
     run: Option<Running>,
+    /// Tasks aborted by `stop`, awaited before the next start (and before
+    /// `stop` replies) so their sockets are closed.
+    aborted: Vec<JoinHandle<()>>,
 }
 
 async fn recv_opt<T>(rx: Option<&mut mpsc::Receiver<T>>) -> Option<T> {
@@ -123,6 +168,7 @@ pub(crate) async fn run(
         internal,
         epoch: 0,
         run: None,
+        aborted: Vec::new(),
     };
     let mut io: Option<Io> = None;
     let mut buf = vec![0u8; 2048];
@@ -138,7 +184,7 @@ pub(crate) async fn run(
         };
         tokio::select! {
             cmd = cmds.recv() => match cmd {
-                Some(cmd) => core.command(cmd, &mut io),
+                Some(cmd) => core.command(cmd, &mut io).await,
                 None => {
                     core.stop(&mut io);
                     return;
@@ -170,9 +216,10 @@ impl Core {
 
     // ------------------------------------------------------------ commands
 
-    fn command(&mut self, cmd: Command, io: &mut Option<Io>) {
+    async fn command(&mut self, cmd: Command, io: &mut Option<Io>) {
         match cmd {
             Command::Start(cfg, reply) => {
+                self.reap().await;
                 let _ = reply.send(self.start(*cfg, io));
             }
             Command::Stop(reply) => {
@@ -183,6 +230,7 @@ impl Core {
                         Ok(())
                     }
                 };
+                self.reap().await;
                 let _ = reply.send(r);
             }
             Command::Flash(mac, profile, reply) => {
@@ -197,6 +245,22 @@ impl Core {
             Command::Snapshot(reply) => {
                 let _ = reply.send(self.snapshot());
             }
+            #[cfg(test)]
+            Command::Panic => panic!("engine task panic requested by a test"),
+        }
+    }
+
+    /// Wait (bounded) until the tasks aborted by `stop` have ended, so the
+    /// listeners they owned are closed and their ports can be bound again.
+    async fn reap(&mut self) {
+        let tasks = std::mem::take(&mut self.aborted);
+        let all = async {
+            for task in tasks {
+                let _ = task.await;
+            }
+        };
+        if tokio::time::timeout(REAP_TIMEOUT, all).await.is_err() {
+            warn!("aborted engine tasks did not end in time");
         }
     }
 
@@ -209,9 +273,15 @@ impl Core {
         self.epoch = epoch;
         let info = running.info.clone();
         info!(interface = %info.interface, server_ip = %info.server_ip, "engine started");
+        let link = running.link;
         self.run = Some(running);
         *io = Some(new_io);
         self.emit(EngineEvent::Started(info.clone()));
+        match link {
+            Link::Up => {}
+            Link::Down(reason) => self.link_down(reason),
+            Link::Missing(_) => self.link_down("interface_missing"),
+        }
         Ok(info)
     }
 
@@ -222,6 +292,7 @@ impl Core {
         *io = None;
         for task in run.tasks.drain(..) {
             task.abort();
+            self.aborted.push(task);
         }
         for dev in run.devices.values_mut() {
             if dev.is_active() {
@@ -254,6 +325,11 @@ impl Core {
         }
         if dev.is("done") {
             return Err(Failure::new("device_done").with("mac", mac));
+        }
+        if let (VersionSpec::Exact(v), Some(k)) = (&profile.version, &run.kernel_version) {
+            if v != k {
+                return Err(version_mismatch(v, k));
+            }
         }
         dev.assigned = Some(profile.clone());
         if dev.info.is_some() {
@@ -288,6 +364,29 @@ impl Core {
             return Err(Failure::new("no_profile"));
         }
         run.cfg.auto_repeat = on;
+        if !on {
+            // Queued only because of auto-repeat: back to waiting for a
+            // profile. Devices given one with `flash` keep their place.
+            let dequeue: Vec<Mac> = run
+                .devices
+                .values_mut()
+                .filter(|d| d.queued.is_some() && d.assigned.is_none())
+                .map(|d| {
+                    d.queued = None;
+                    d.using = None;
+                    d.mac
+                })
+                .collect();
+            for mac in dequeue {
+                self.set_state(
+                    mac,
+                    DeviceState::Waiting {
+                        reason: WaitReason::NoProfile,
+                    },
+                );
+            }
+            return Ok(());
+        }
         let waiting: Vec<Mac> = run
             .devices
             .values()
@@ -341,6 +440,7 @@ impl Core {
         }
         debug!(%mac, state = state.name(), "device state");
         dev.state = Some(state.clone());
+        dev.updated = Instant::now();
         self.emit(EngineEvent::Device { mac, state });
     }
 
@@ -386,12 +486,18 @@ impl Core {
         }
     }
 
+    /// Queue a device with `profile`; one already queued keeps its place.
     fn enqueue(&mut self, mac: Mac, profile: Profile) {
         let Some(run) = self.run.as_mut() else { return };
-        let seq = run.queue_seq;
-        run.queue_seq += 1;
         let Some(dev) = run.devices.get_mut(&mac) else {
             return;
+        };
+        let seq = match dev.queued {
+            Some(seq) => seq,
+            None => {
+                run.queue_seq += 1;
+                run.queue_seq
+            }
         };
         dev.using = Some(profile);
         dev.queued = Some(seq);
@@ -445,10 +551,21 @@ impl Core {
         dev.queued = None;
         dev.attempt += 1;
         let attempt = dev.attempt;
-        let version = kernel_version.filter(|_| active_spec.as_ref() == Some(&profile.version));
+        let version = kernel_version
+            .clone()
+            .filter(|_| active_spec.as_ref() == Some(&profile.version));
+        dev.version = version.clone();
+        let shown = version.as_ref().map(|v| v.to_string());
         run.tasks.retain(|t| !t.is_finished());
         run.tasks.push(tokio::spawn(async move {
-            let result = prepare(&assets, &profile, version, &info.arch).await;
+            let result = prepare(
+                &assets,
+                &profile,
+                version,
+                kernel_version.as_ref(),
+                &info.arch,
+            )
+            .await;
             let _ = internal
                 .send(Internal::Prepared {
                     epoch,
@@ -458,10 +575,15 @@ impl Core {
                 })
                 .await;
         }));
-        self.set_state(mac, DeviceState::Preparing);
+        self.set_state(mac, DeviceState::Preparing { version: shown });
     }
 
-    fn prepared(&mut self, mac: Mac, attempt: u64, result: Result<InstallPlan, Failure>) {
+    fn prepared(
+        &mut self,
+        mac: Mac,
+        attempt: u64,
+        result: Result<(Version, InstallPlan), Failure>,
+    ) {
         let Some(run) = self.run.as_mut() else { return };
         let session_cfg = run.cfg.session.clone();
         let server_mac = run.net.server_mac;
@@ -473,13 +595,15 @@ impl Core {
         }
         let state = match result {
             Err(f) => DeviceState::failed(f),
-            Ok(plan) => {
+            Ok((version, plan)) => {
                 let info = dev.info.clone().expect("prepared devices have said hello");
+                dev.version = Some(version.clone());
                 match ServerSession::new(server_mac, info, &plan, session_cfg, Instant::now()) {
                     Ok(session) => {
                         dev.session = Some(session);
                         dev.last_progress = None;
                         DeviceState::Flashing {
+                            version: version.to_string(),
                             phase: "offering".into(),
                             sent: 0,
                             total: plan.total_bytes(),
@@ -501,11 +625,14 @@ impl Core {
             self.ignored(mac, verdict.reason(), now);
             return;
         }
-        let dev = run.devices.entry(mac).or_insert_with(|| Device::new(mac));
-        if dev.is("done") {
-            // The cooldown is over: a new round for this device.
-            *dev = Device::new(mac);
+        if run.devices.get(&mac).is_some_and(|d| d.is("done")) {
+            // The cooldown is over, but a new round starts only with a new
+            // BOOTP request: these hellos are stale (or the device was
+            // power-cycled straight into the old kernel's session).
+            self.ignored(mac, "awaiting_bootp", now);
+            return;
         }
+        let dev = device::entry(&mut run.devices, mac, MAX_DEVICES);
         if dev.info.is_some() {
             return; // already discovered (waiting, flashing, failed, ...)
         }
@@ -583,11 +710,16 @@ impl Core {
         let Some(run) = self.run.as_mut() else { return };
         match ev {
             BootpEvent::Replied { mac, arch, ip, .. } => {
-                let dev = run.devices.entry(mac).or_insert_with(|| Device::new(mac));
+                let dev = device::entry(&mut run.devices, mac, MAX_DEVICES);
                 if dev.is_active() {
                     debug!(%mac, "BOOTP from a device being flashed");
                     return;
                 }
+                // Netbooting again: a done device starts a new round; a
+                // failed one is reset (it keeps a profile assigned with
+                // `flash`) and, once it says hello, is flashed again if it
+                // has a profile (assigned, or the active one with
+                // auto-repeat). No `retry` needed.
                 if dev.is("done") {
                     *dev = Device::new(mac);
                 }
@@ -768,13 +900,19 @@ impl Core {
                 events.push((dev.mac, ev));
             }
         }
+        run.prune(now);
         let dest = run.cfg.ports.netinstall_dest;
+        let mut send_error = None;
         if let Some(io) = io.as_ref() {
             for frame in &frames {
                 if let Err(e) = io.socket.send_to(frame, dest).await {
                     debug!("netinstall send failed: {e}");
+                    send_error = Some(e);
                 }
             }
+        }
+        if let Some(e) = send_error {
+            self.send_failed("netinstall", &e, now);
         }
         for (mac, ev) in events {
             self.session_event(mac, ev, now);
@@ -783,21 +921,58 @@ impl Core {
         self.check_link(now, io);
     }
 
+    /// A failed send: `send_failed` (`service`, `count` failures since the
+    /// last report, `detail`), at most once per [`SEND_WARNING_INTERVAL`],
+    /// and not while the link is known to be down (`link_down` says it).
+    /// Before macOS's Local Network permission is granted, sends fail too
+    /// (`EHOSTUNREACH`); this is how that shows up.
+    fn send_failed(&mut self, service: &str, e: &io::Error, now: Instant) {
+        let Some(run) = self.run.as_mut() else { return };
+        let errors = &mut run.send_errors;
+        errors.count += 1;
+        if run.link != Link::Up
+            || errors
+                .last_report
+                .is_some_and(|t| now.saturating_duration_since(t) < SEND_WARNING_INTERVAL)
+        {
+            return;
+        }
+        let count = std::mem::take(&mut errors.count);
+        errors.last_report = Some(now);
+        self.warning(
+            Failure::new("send_failed")
+                .with("service", service)
+                .with("count", count)
+                .with("detail", e),
+        );
+    }
+
     fn session_event(&mut self, mac: Mac, ev: ni_proto::Event, now: Instant) {
         let Some(run) = self.run.as_mut() else { return };
         let cooldown = run.cfg.cooldown;
         let Some(dev) = run.devices.get_mut(&mac) else {
             return;
         };
-        let (phase, sent, total) = match &dev.state {
-            Some(DeviceState::Flashing { phase, sent, total }) => (phase.clone(), *sent, *total),
-            _ => (String::new(), 0, 0),
+        let (version, phase, sent, total) = match &dev.state {
+            Some(DeviceState::Flashing {
+                version,
+                phase,
+                sent,
+                total,
+            }) => (version.clone(), phase.clone(), *sent, *total),
+            _ => (String::new(), String::new(), 0, 0),
         };
         match ev {
             ni_proto::Event::PhaseChanged(p) => {
                 dev.last_progress = Some(now);
                 let phase = p.name().to_string();
-                self.set_state(mac, DeviceState::Flashing { phase, sent, total });
+                let state = DeviceState::Flashing {
+                    version,
+                    phase,
+                    sent,
+                    total,
+                };
+                self.set_state(mac, state);
             }
             ni_proto::Event::Progress {
                 bytes_sent,
@@ -805,6 +980,7 @@ impl Core {
                 ..
             } => {
                 let state = DeviceState::Flashing {
+                    version,
                     phase,
                     sent: bytes_sent,
                     total: bytes_total,
@@ -842,6 +1018,22 @@ impl Core {
         }
     }
 
+    fn link_down(&self, reason: &str) {
+        let Some(run) = self.run.as_ref() else { return };
+        self.warning(
+            Failure::new("link_down")
+                .with("interface", &run.cfg.interface)
+                .with("reason", reason),
+        );
+    }
+
+    /// The link watchdog (every `link_check`). A lost carrier or server IP
+    /// is reported once (`link_down`) and the engine keeps running:
+    /// sessions in flight fail by their own timeouts, the sockets work
+    /// again when the link is back (`link_up`; see `start.rs` for why no
+    /// rebind is needed). Only an interface that stays missing from the
+    /// list for `interface_grace`, or comes back under another index, is
+    /// `interface_gone`, and the engine stops.
     fn check_link(&mut self, now: Instant, io: &mut Option<Io>) {
         let Some(run) = self.run.as_mut() else { return };
         let (Some(at), Some(every)) = (run.next_link_check, run.cfg.link_check) else {
@@ -851,11 +1043,50 @@ impl Core {
             return;
         }
         run.next_link_check = Some(now + every);
-        let ifaces = list_interfaces().unwrap_or_default();
-        if !interface_usable(&ifaces, &run.cfg.interface, run.net.server_ip) {
-            let f = Failure::new("interface_gone")
-                .with("interface", &run.cfg.interface)
-                .with("ip", run.net.server_ip);
+        let ifaces = match run.cfg.interfaces.list() {
+            Ok(list) => list,
+            Err(e) => {
+                debug!("interface list failed: {e}");
+                return;
+            }
+        };
+        let name = run.cfg.interface.clone();
+        let server_ip = run.net.server_ip;
+        let status = link_status(&ifaces, &name, server_ip);
+        let index = ifaces.iter().find(|i| i.name == name).map(|i| i.index);
+        let prev = run.link;
+        let index_changed =
+            index.is_some_and(|i| run.link_index != 0 && i != 0 && i != run.link_index);
+        let gone = |reason: &str| {
+            Failure::new("interface_gone")
+                .with("interface", &name)
+                .with("ip", server_ip)
+                .with("reason", reason)
+        };
+        let (link, fatal) = match status {
+            LinkStatus::Missing => {
+                let since = match prev {
+                    Link::Missing(since) => since,
+                    _ => now,
+                };
+                let over = now.saturating_duration_since(since) >= run.cfg.interface_grace;
+                (Link::Missing(since), over.then(|| gone("missing")))
+            }
+            _ if index_changed => (prev, Some(gone("index_changed"))),
+            LinkStatus::Down(reason) => (Link::Down(reason), None),
+            LinkStatus::Up => (Link::Up, None),
+        };
+        run.link = link;
+        match (prev, link) {
+            (Link::Up, Link::Down(reason)) => self.link_down(reason),
+            (Link::Up, Link::Missing(_)) => self.link_down("interface_missing"),
+            (Link::Down(_) | Link::Missing(_), Link::Up) => {
+                info!(interface = %name, "link up");
+                self.warning(Failure::new("link_up").with("interface", &name));
+            }
+            _ => {}
+        }
+        if let Some(f) = fatal {
             warn!("{f}");
             self.emit(EngineEvent::Error(f));
             self.stop(io);

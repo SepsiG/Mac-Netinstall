@@ -8,10 +8,16 @@
 //! [`EngineHandle::snapshot`] gives the full current state at any time.
 //!
 //! The task ends (stopping everything) when the last handle is dropped.
+//! Only the engine task holds the event channel's `Sender` (handles and
+//! the asset download hook hold a `WeakSender`), so if the task ends for
+//! any reason — including a panic — subscribers get `RecvError::Closed`
+//! and commands fail with `engine_gone`.
 
 mod core;
 mod device;
 mod start;
+
+pub use device::MAX_DEVICES;
 
 use crate::config::{EngineConfig, NetPlan};
 use crate::event::{DeviceInfoView, DeviceState, EngineEvent, Failure, StartInfo};
@@ -38,6 +44,9 @@ pub struct DeviceView {
     pub info: Option<DeviceInfoView>,
     /// Name of the profile assigned with `flash` (or in use).
     pub profile: Option<String>,
+    /// RouterOS version of the current (or last) install attempt, once
+    /// resolved.
+    pub version: Option<String>,
     pub state: DeviceState,
 }
 
@@ -65,13 +74,17 @@ pub(crate) enum Command {
     Retry(Mac, Reply<()>),
     AutoRepeat(bool, Reply<()>),
     Snapshot(oneshot::Sender<Snapshot>),
+    /// Makes the engine task panic (tests of `engine_gone`).
+    #[cfg(test)]
+    Panic,
 }
 
 /// Controls a running engine task. Cheap to clone.
 #[derive(Clone)]
 pub struct EngineHandle {
     cmds: mpsc::Sender<Command>,
-    events: broadcast::Sender<EngineEvent>,
+    /// Weak: only the engine task owns the `Sender` (see the module docs).
+    events: broadcast::WeakSender<EngineEvent>,
     assets: Arc<Assets>,
 }
 
@@ -105,27 +118,32 @@ impl EngineHandle {
     /// runtime. Error: `assets_failed`.
     pub fn spawn(cache_root: impl Into<PathBuf>, http: HttpConfig) -> Result<Self, Failure> {
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        let sink = events.clone();
+        let weak = events.downgrade();
+        let sink = weak.clone();
         let assets = Assets::new(cache_root, http)
             .map_err(|e| asset_failure("assets_failed", &e))?
             .with_events(Arc::new(move |e| {
-                if let Some(ev) = download_event(e) {
-                    let _ = sink.send(ev);
+                if let (Some(ev), Some(tx)) = (download_event(e), sink.upgrade()) {
+                    let _ = tx.send(ev);
                 }
             }));
         let assets = Arc::new(assets);
         let (cmds, rx) = mpsc::channel(32);
-        tokio::spawn(core::run(assets.clone(), events.clone(), rx));
+        tokio::spawn(core::run(assets.clone(), events, rx));
         Ok(EngineHandle {
             cmds,
-            events,
+            events: weak,
             assets,
         })
     }
 
-    /// Events from now on.
+    /// Events from now on. If the engine task has ended, the receiver
+    /// reports `RecvError::Closed` at once.
     pub fn subscribe(&self) -> broadcast::Receiver<EngineEvent> {
-        self.events.subscribe()
+        match self.events.upgrade() {
+            Some(tx) => tx.subscribe(),
+            None => broadcast::channel(1).1,
+        }
     }
 
     /// The engine's asset manager (for preflight, registering scripts, ...).
@@ -157,26 +175,59 @@ impl EngineHandle {
     }
 
     /// Install `profile` on a device. A device that has not said hello yet
-    /// keeps the profile for when it does. Errors: `not_running`,
-    /// `unknown_device`, `device_busy`, `device_done`, profile validation.
+    /// keeps the profile for when it does. A device already waiting for a
+    /// slot keeps its place in the queue. Errors: `not_running`,
+    /// `unknown_device`, `device_busy`, `device_done`, profile validation,
+    /// `profile_version_mismatch` (`version`, `kernel_version`): an exact
+    /// version other than the boot kernels' (the device already runs the
+    /// kernel it was served, so it cannot install another version); a
+    /// channel is checked once resolved, and the device fails with that
+    /// code.
     pub async fn flash(&self, mac: Mac, profile: Profile) -> Result<(), Failure> {
         self.call(|tx| Command::Flash(mac, Box::new(profile), tx))
             .await?
     }
 
     /// Re-arm a failed device. Errors: `not_running`, `unknown_device`,
-    /// `not_failed`.
+    /// `not_failed`. (A failed device that netboots again is reset by its
+    /// BOOTP request and, with auto-repeat or an assigned profile, flashed
+    /// again without `retry`.)
     pub async fn retry(&self, mac: Mac) -> Result<(), Failure> {
         self.call(|tx| Command::Retry(mac, tx)).await?
     }
 
-    /// With auto-repeat on, waiting devices get the active profile.
-    /// Errors: `not_running`, `no_profile` (turning it on without one).
+    /// With auto-repeat on, waiting devices get the active profile. Turning
+    /// it off takes devices that wait for a slot only because of it (no
+    /// profile assigned with `flash`) out of the queue (`waiting` /
+    /// `no_profile`). Errors: `not_running`, `no_profile` (turning it on
+    /// without one).
     pub async fn set_auto_repeat(&self, on: bool) -> Result<(), Failure> {
         self.call(|tx| Command::AutoRepeat(on, tx)).await?
     }
 
     pub async fn snapshot(&self) -> Result<Snapshot, Failure> {
         self.call(Command::Snapshot).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::sync::broadcast::error::RecvError;
+
+    #[tokio::test]
+    async fn a_dead_engine_closes_the_event_stream() {
+        let dir = ni_assets::testutil::tempdir("engine-dead");
+        let engine = EngineHandle::spawn(dir.join("cache"), HttpConfig::default()).unwrap();
+        let mut events = engine.subscribe();
+        let _ = engine.cmds.send(Command::Panic).await;
+        let r = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("closed in time");
+        assert_eq!(r, Err(RecvError::Closed));
+        assert_eq!(engine.snapshot().await.unwrap_err().code, "engine_gone");
+        let late = engine.subscribe().recv().await;
+        assert_eq!(late, Err(RecvError::Closed));
     }
 }

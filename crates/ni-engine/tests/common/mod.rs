@@ -6,17 +6,22 @@
 use ni_assets::testutil::{mirror, synthetic_kernels, tempdir, TempDir, TestServer};
 use ni_assets::{Channel, HttpConfig, VersionSpec};
 use ni_bootp::BootArch;
-use ni_engine::{EngineConfig, EngineEvent, EngineHandle, Ports, Profile, StartInfo};
+use ni_engine::{
+    EngineConfig, EngineEvent, EngineHandle, InterfaceSource, Ports, Profile, StartInfo,
+};
+use ni_net::Interface;
 use ni_proto::{Mac, SessionConfig};
 use ni_sim::lan::{tftp_get, SimLan};
 use ni_sim::{DeviceSim, SimConfig};
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 pub const SERVER_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0x01]);
 pub const A: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0a]);
 pub const B: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0b]);
+pub const C: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0c]);
 pub const WAIT: Duration = Duration::from_secs(10);
 
 pub struct Rig {
@@ -67,17 +72,55 @@ pub fn config(lan: &SimLan) -> EngineConfig {
     cfg
 }
 
+/// HTTP settings for the rig's fake mirror.
+pub fn http(srv: &TestServer) -> HttpConfig {
+    HttpConfig {
+        download_base: format!("{}/dl/", srv.base),
+        upgrade_base: format!("{}/up", srv.base),
+        ..HttpConfig::default()
+    }
+}
+
+/// HTTP settings for a mirror that refuses connections (offline).
+pub fn offline_http() -> HttpConfig {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    HttpConfig {
+        download_base: format!("http://127.0.0.1:{port}/dl/"),
+        upgrade_base: format!("http://127.0.0.1:{port}/up"),
+        ..HttpConfig::default()
+    }
+}
+
+/// The real `lo0`, as the starting point of a fake interface list.
+pub fn real_lo0() -> Interface {
+    ni_net::list_interfaces()
+        .unwrap()
+        .into_iter()
+        .find(|i| i.name == "lo0")
+        .expect("lo0")
+}
+
+/// An interface source reporting whatever the returned cell holds
+/// (`None`: the interface is not listed at all).
+pub fn fake_interfaces(
+    start: Option<Interface>,
+) -> (InterfaceSource, Arc<Mutex<Option<Interface>>>) {
+    let cell = Arc::new(Mutex::new(start));
+    let read = cell.clone();
+    let source = InterfaceSource::new(move || Ok(read.lock().unwrap().iter().cloned().collect()));
+    (source, cell)
+}
+
 /// Start an engine (after `tweak`) and wait until its kernels are served.
 pub async fn rig(tweak: impl FnOnce(&mut EngineConfig)) -> Rig {
     let srv = TestServer::start().await;
     let (_, main, wireless) = mirror(&srv);
     let cache = tempdir("engine");
-    let http = HttpConfig {
-        download_base: format!("{}/dl/", srv.base),
-        upgrade_base: format!("{}/up", srv.base),
-        ..HttpConfig::default()
-    };
-    let engine = EngineHandle::spawn(cache.join("cache"), http).unwrap();
+    let engine = EngineHandle::spawn(cache.join("cache"), http(&srv)).unwrap();
     let mut events = engine.subscribe();
     let lan = SimLan::bind().await.unwrap();
     let mut cfg = config(&lan);

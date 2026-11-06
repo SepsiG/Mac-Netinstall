@@ -18,7 +18,8 @@ pub mod prepare;
 pub mod profile;
 
 pub use config::{
-    default_pool, interface_usable, resolve_network, subnet, EngineConfig, NetPlan, Ports,
+    check_pool_reserved, default_pool, interface_usable, link_status, resolve_network, subnet,
+    EngineConfig, InterfaceSource, LinkStatus, NetPlan, Ports, DEFAULT_NETMASK, MIN_COOLDOWN,
 };
 pub use engine::{DeviceView, EngineHandle, Snapshot, EVENT_CAPACITY};
 pub use event::{DeviceInfoView, DeviceState, EngineEvent, Failure, StartInfo, WaitReason};

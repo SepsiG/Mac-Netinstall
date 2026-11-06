@@ -6,8 +6,56 @@ use ni_net::Interface;
 use ni_proto::{Mac, SessionConfig};
 use ni_tftp::TransferConfig;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Shortest allowed cooldown: a flashed device must not be served again
+/// while it reboots (RouterBOOT may netboot once more).
+pub const MIN_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// Netmask used with a configured server IP that is not on the interface
+/// (yet): `/24`.
+pub const DEFAULT_NETMASK: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
+
+type ListFn = dyn Fn() -> io::Result<Vec<Interface>> + Send + Sync;
+
+/// Where the engine reads the interface list from (`start` and the link
+/// watchdog). [`InterfaceSource::system`] (the default) asks the OS;
+/// tests inject a fake one to simulate a lost carrier or an unplugged
+/// adapter.
+#[derive(Clone)]
+pub struct InterfaceSource(Arc<ListFn>);
+
+impl InterfaceSource {
+    /// The live list ([`ni_net::list_interfaces`]).
+    pub fn system() -> Self {
+        InterfaceSource(Arc::new(ni_net::list_interfaces))
+    }
+
+    /// Any function returning an interface list.
+    pub fn new(f: impl Fn() -> io::Result<Vec<Interface>> + Send + Sync + 'static) -> Self {
+        InterfaceSource(Arc::new(f))
+    }
+
+    pub fn list(&self) -> io::Result<Vec<Interface>> {
+        (self.0)()
+    }
+}
+
+impl Default for InterfaceSource {
+    fn default() -> Self {
+        InterfaceSource::system()
+    }
+}
+
+impl fmt::Debug for InterfaceSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("InterfaceSource")
+    }
+}
 
 /// Ports and addresses. The defaults are the real protocol ports with
 /// broadcast destinations; tests use port 0 (ephemeral) and loopback
@@ -46,8 +94,14 @@ impl Default for Ports {
 pub struct EngineConfig {
     /// BSD name of the boot interface, e.g. `en7`.
     pub interface: String,
-    /// Our address; default: the interface's first IPv4 address.
+    /// Our address; default: the interface's first IPv4 address. Set it
+    /// to start while the interface has no link: macOS removes a manual
+    /// IPv4 address while there is no carrier (see [`resolve_network`]).
     pub server_ip: Option<Ipv4Addr>,
+    /// Netmask for `server_ip` while it is not on the interface; default
+    /// [`DEFAULT_NETMASK`]. Ignored when the interface carries the address
+    /// (its own netmask is used).
+    pub netmask: Option<Ipv4Addr>,
     /// First and last address handed out; default: see [`default_pool`].
     pub pool: Option<(Ipv4Addr, Ipv4Addr)>,
     /// Source MAC of our Netinstall frames; default: the interface's MAC.
@@ -61,15 +115,26 @@ pub struct EngineConfig {
     /// Devices preparing or flashing at the same time (at least 1).
     pub max_parallel: usize,
     /// How long a finished device is ignored (it reboots, and must not be
-    /// flashed again).
+    /// flashed again); at least `min_cooldown`. After the cooldown a done
+    /// device is served again only once it netboots (a new BOOTP request):
+    /// stray hellos alone are ignored (`awaiting_bootp`).
     pub cooldown: Duration,
+    /// Lower bound for `cooldown`: [`MIN_COOLDOWN`]. Tests lower it.
+    #[doc(hidden)]
+    pub min_cooldown: Duration,
     pub session: SessionConfig,
     pub tftp: TransferConfig,
     pub lease_secs: u32,
     pub ports: Ports,
-    /// How often to check that the interface is still up and has the
-    /// server IP; `None` disables the check.
+    /// How often to check the interface (link watchdog); `None` disables
+    /// the check. A missing carrier or server IP is a `link_down` warning
+    /// (and `link_up` when it is back); the engine keeps running.
     pub link_check: Option<Duration>,
+    /// How long the interface may be missing from the interface list
+    /// (adapter unplugged) before the engine stops with `interface_gone`.
+    pub interface_grace: Duration,
+    /// Where the interface list comes from (default: the OS).
+    pub interfaces: InterfaceSource,
 }
 
 impl EngineConfig {
@@ -79,6 +144,7 @@ impl EngineConfig {
         EngineConfig {
             interface: interface.to_string(),
             server_ip: None,
+            netmask: None,
             pool: None,
             server_mac: None,
             profile: None,
@@ -86,12 +152,29 @@ impl EngineConfig {
             only_mac: None,
             max_parallel: 4,
             cooldown: Duration::from_secs(5 * 60),
+            min_cooldown: MIN_COOLDOWN,
             session: SessionConfig::default(),
             tftp: TransferConfig::default(),
             lease_secs: 600,
             ports: Ports::default(),
             link_check: Some(Duration::from_secs(2)),
+            interface_grace: Duration::from_secs(10),
+            interfaces: InterfaceSource::system(),
         }
+    }
+
+    /// Settings `start` refuses. Codes: `invalid_cooldown` (`min_secs`,
+    /// `secs`), profile validation codes.
+    pub fn validate(&self) -> Result<(), Failure> {
+        if self.cooldown < self.min_cooldown {
+            return Err(Failure::new("invalid_cooldown")
+                .with("min_secs", self.min_cooldown.as_secs())
+                .with("secs", self.cooldown.as_secs()));
+        }
+        if let Some(p) = &self.profile {
+            p.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -129,8 +212,26 @@ pub fn default_pool(server_ip: Ipv4Addr, netmask: Ipv4Addr) -> (Ipv4Addr, Ipv4Ad
 /// Resolve `cfg` against the interface list. Codes: `unknown_interface`,
 /// `no_ipv4`, `server_ip_not_on_interface`, `no_mac` (neither a configured
 /// server MAC nor a known interface MAC; placeholders such as
-/// `02:00:00:00:00:00` count as unknown).
+/// `02:00:00:00:00:00` count as unknown), `pool_includes_reserved`.
+///
+/// A configured `server_ip` that is not on the interface is accepted
+/// (with `cfg.netmask`, default [`DEFAULT_NETMASK`]) while the interface
+/// has no link — no IPv4 address at all, or not up/running: macOS removes
+/// a manual address while there is no carrier and restores it with the
+/// link. On an interface that has other addresses it is
+/// `server_ip_not_on_interface`.
 pub fn resolve_network(ifaces: &[Interface], cfg: &EngineConfig) -> Result<NetPlan, Failure> {
+    let plan = resolve_addresses(ifaces, cfg)?;
+    check_pool_reserved(&plan)?;
+    Ok(plan)
+}
+
+/// [`resolve_network`] without the pool check (preflight reports that
+/// separately).
+pub(crate) fn resolve_addresses(
+    ifaces: &[Interface],
+    cfg: &EngineConfig,
+) -> Result<NetPlan, Failure> {
     let iface = ifaces
         .iter()
         .find(|i| i.name == cfg.interface)
@@ -140,11 +241,17 @@ pub fn resolve_network(ifaces: &[Interface], cfg: &EngineConfig) -> Result<NetPl
             .ipv4
             .first()
             .ok_or_else(|| Failure::new("no_ipv4").with("interface", &iface.name))?,
-        Some(ip) => *iface.ipv4.iter().find(|(a, _)| *a == ip).ok_or_else(|| {
-            Failure::new("server_ip_not_on_interface")
-                .with("interface", &iface.name)
-                .with("ip", ip)
-        })?,
+        Some(ip) => match iface.ipv4.iter().find(|(a, _)| *a == ip) {
+            Some(found) => *found,
+            None if iface.ipv4.is_empty() || !iface.is_up || !iface.is_running => {
+                (ip, cfg.netmask.unwrap_or(DEFAULT_NETMASK))
+            }
+            None => {
+                return Err(Failure::new("server_ip_not_on_interface")
+                    .with("interface", &iface.name)
+                    .with("ip", ip))
+            }
+        },
     };
     let (pool_start, pool_end) = cfg.pool.unwrap_or_else(|| default_pool(server_ip, netmask));
     // Never fall back to a placeholder: macOS may mask link addresses as
@@ -163,11 +270,59 @@ pub fn resolve_network(ifaces: &[Interface], cfg: &EngineConfig) -> Result<NetPl
     })
 }
 
+/// A pool must not contain the subnet's network or broadcast address
+/// (`pool_includes_reserved`; /31 and /32 have neither). The BOOTP pool
+/// would skip them anyway, but a pool given that way is a mistake.
+pub fn check_pool_reserved(plan: &NetPlan) -> Result<(), Failure> {
+    let mask = u32::from(plan.netmask);
+    if mask.leading_ones() + mask.trailing_zeros() != 32 || mask.leading_ones() > 30 {
+        return Ok(());
+    }
+    let (net, bcast) = subnet(plan.server_ip, plan.netmask);
+    let (start, end) = (u32::from(plan.pool_start), u32::from(plan.pool_end));
+    let inside = |ip: Ipv4Addr| (start..=end).contains(&u32::from(ip));
+    if inside(net) || inside(bcast) {
+        return Err(Failure::new("pool_includes_reserved")
+            .with("start", plan.pool_start)
+            .with("end", plan.pool_end)
+            .with("network", net)
+            .with("broadcast", bcast));
+    }
+    Ok(())
+}
+
+/// The watchdog's view of the boot interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkStatus {
+    /// Listed, up, and carrying the server IP.
+    Up,
+    /// Listed but unusable right now; the reason is a stable code:
+    /// `interface_down` (not `IFF_UP`), `no_ip` (the server IP is missing:
+    /// on macOS that is what a lost carrier looks like), `no_carrier`.
+    Down(&'static str),
+    /// Not listed at all (e.g. the USB adapter was unplugged).
+    Missing,
+}
+
+/// The status of interface `name` for `server_ip`.
+pub fn link_status(ifaces: &[Interface], name: &str, server_ip: Ipv4Addr) -> LinkStatus {
+    let Some(i) = ifaces.iter().find(|i| i.name == name) else {
+        return LinkStatus::Missing;
+    };
+    if !i.is_up {
+        LinkStatus::Down("interface_down")
+    } else if !i.ipv4.iter().any(|(a, _)| *a == server_ip) {
+        LinkStatus::Down("no_ip")
+    } else if !i.is_running {
+        LinkStatus::Down("no_carrier")
+    } else {
+        LinkStatus::Up
+    }
+}
+
 /// The interface still exists, is up and carries `server_ip`.
 pub fn interface_usable(ifaces: &[Interface], name: &str, server_ip: Ipv4Addr) -> bool {
-    ifaces
-        .iter()
-        .any(|i| i.name == name && i.is_up && i.ipv4.iter().any(|(a, _)| *a == server_ip))
+    link_status(ifaces, name, server_ip) == LinkStatus::Up
 }
 
 /// An up, running Ethernet interface for tests.
@@ -279,6 +434,100 @@ mod tests {
             cfg.server_mac = Some(MAC);
             assert_eq!(resolve_network(&ifaces, &cfg).unwrap().server_mac, MAC);
         }
+    }
+
+    #[test]
+    fn a_configured_server_ip_works_without_link() {
+        // No carrier: macOS removed the manual address.
+        let mut en7 = iface("en7", &[], Some(MAC));
+        en7.is_running = false;
+        let mut cfg = EngineConfig::new("en7");
+        assert_eq!(
+            resolve_network(&[en7.clone()], &cfg).unwrap_err().code,
+            "no_ipv4"
+        );
+        cfg.server_ip = Some(ip(1));
+        let plan = resolve_network(&[en7.clone()], &cfg).unwrap();
+        assert_eq!(
+            (plan.server_ip, plan.netmask, plan.pool_start, plan.pool_end),
+            (ip(1), MASK24, ip(1), ip(254))
+        );
+        cfg.netmask = Some(Ipv4Addr::new(255, 255, 255, 240));
+        let plan = resolve_network(&[en7.clone()], &cfg).unwrap();
+        assert_eq!(
+            (plan.netmask, plan.pool_end),
+            (cfg.netmask.unwrap(), ip(14))
+        );
+        // On an interface with link and other addresses it is a mistake.
+        let other = iface("en7", &[(ip(9), MASK24)], Some(MAC));
+        assert_eq!(
+            resolve_network(&[other], &cfg).unwrap_err().code,
+            "server_ip_not_on_interface"
+        );
+        // When the address is there, its own netmask wins.
+        let back = iface("en7", &[(ip(1), MASK24)], Some(MAC));
+        assert_eq!(resolve_network(&[back], &cfg).unwrap().netmask, MASK24);
+    }
+
+    #[test]
+    fn a_pool_must_not_contain_network_or_broadcast() {
+        let ifaces = [iface("en7", &[(ip(1), MASK24)], Some(MAC))];
+        let mut cfg = EngineConfig::new("en7");
+        for pool in [(ip(0), ip(10)), (ip(200), ip(255))] {
+            cfg.pool = Some(pool);
+            let err = resolve_network(&ifaces, &cfg).unwrap_err();
+            assert_eq!(err.code, "pool_includes_reserved");
+            assert_eq!(err.param("broadcast"), Some("192.168.88.255"));
+        }
+        cfg.pool = Some((ip(1), ip(254)));
+        assert!(resolve_network(&ifaces, &cfg).is_ok());
+        // /31 has no network or broadcast address.
+        let p2p = [iface(
+            "en7",
+            &[(ip(0), Ipv4Addr::new(255, 255, 255, 254))],
+            Some(MAC),
+        )];
+        cfg.pool = Some((ip(0), ip(1)));
+        assert!(resolve_network(&p2p, &cfg).is_ok());
+    }
+
+    #[test]
+    fn link_status_tells_down_from_missing() {
+        let mut en7 = iface("en7", &[(ip(1), MASK24)], Some(MAC));
+        assert_eq!(link_status(&[en7.clone()], "en7", ip(1)), LinkStatus::Up);
+        assert_eq!(
+            link_status(&[en7.clone()], "en8", ip(1)),
+            LinkStatus::Missing
+        );
+        assert_eq!(
+            link_status(&[en7.clone()], "en7", ip(2)),
+            LinkStatus::Down("no_ip")
+        );
+        en7.is_running = false;
+        assert_eq!(
+            link_status(&[en7.clone()], "en7", ip(1)),
+            LinkStatus::Down("no_carrier")
+        );
+        en7.is_up = false;
+        assert_eq!(
+            link_status(&[en7], "en7", ip(1)),
+            LinkStatus::Down("interface_down")
+        );
+    }
+
+    #[test]
+    fn cooldown_has_a_lower_bound() {
+        let mut cfg = EngineConfig::new("en7");
+        cfg.cooldown = Duration::from_secs(29);
+        let err = cfg.validate().unwrap_err();
+        assert_eq!(
+            err,
+            Failure::new("invalid_cooldown")
+                .with("min_secs", 30)
+                .with("secs", 29)
+        );
+        cfg.cooldown = MIN_COOLDOWN;
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

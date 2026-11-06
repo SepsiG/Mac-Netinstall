@@ -100,17 +100,29 @@ pub enum DeviceState {
     Waiting {
         reason: WaitReason,
     },
-    /// Packages and script are being downloaded / read.
-    Preparing,
-    /// The install session runs; `phase` is [`ni_proto::Phase::name`].
+    /// Packages and script are being downloaded / read. `version` is the
+    /// RouterOS version being installed, once known (it is known at once
+    /// when the profile's version is the one the boot kernels were
+    /// resolved to; otherwise it is resolved during preparation).
+    Preparing {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    /// The install session runs; `phase` is [`ni_proto::Phase::name`],
+    /// `version` the RouterOS version being installed.
     Flashing {
+        version: String,
         phase: String,
         sent: u64,
         total: u64,
     },
-    /// Installed; the device reboots. Ignored for the cooldown.
+    /// Installed; the device reboots. Ignored for the cooldown, and after
+    /// it until the device netboots again (a new BOOTP request).
     Done,
-    /// See [`Failure`]; `retry` re-arms it.
+    /// See [`Failure`]; `retry` re-arms it. A failed device that netboots
+    /// again (a new BOOTP request, e.g. after a power cycle) is reset to
+    /// `bootp_seen`, and with auto-repeat (or an assigned profile) it is
+    /// flashed again automatically.
     Failed {
         code: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -133,7 +145,7 @@ impl DeviceState {
             DeviceState::KernelServing { .. } => "kernel_serving",
             DeviceState::Discovered => "discovered",
             DeviceState::Waiting { .. } => "waiting",
-            DeviceState::Preparing => "preparing",
+            DeviceState::Preparing { .. } => "preparing",
             DeviceState::Flashing { .. } => "flashing",
             DeviceState::Done => "done",
             DeviceState::Failed { .. } => "failed",
@@ -142,7 +154,10 @@ impl DeviceState {
 
     /// Preparing or flashing: counts against the concurrency limit.
     pub fn is_active(&self) -> bool {
-        matches!(self, DeviceState::Preparing | DeviceState::Flashing { .. })
+        matches!(
+            self,
+            DeviceState::Preparing { .. } | DeviceState::Flashing { .. }
+        )
     }
 }
 
@@ -208,17 +223,25 @@ pub enum EngineEvent {
         info: DeviceInfoView,
     },
     /// A device was not served: `cooldown`, `not_selected`,
-    /// `no_boot_file`, `pool_exhausted` or `unsupported_device`. Reported
-    /// at most every 10 s per device and reason.
+    /// `awaiting_bootp` (hellos from a done device that has not netbooted
+    /// again), `no_boot_file`, `pool_exhausted` or `unsupported_device`.
+    /// Reported at most every 10 s per device and reason.
     Ignored {
         #[serde(with = "mac_str")]
         mac: Mac,
         reason: String,
     },
     /// The engine cannot go on (it stops afterwards, unless the code is
-    /// `kernels_unavailable`): `interface_gone`, `runner_failed`, ...
+    /// `kernels_unavailable`): `interface_gone` (the interface was missing
+    /// for longer than the grace period), `runner_failed`, ...
     Error(Failure),
-    /// Something to look at, while everything keeps running.
+    /// Something to look at, while everything keeps running:
+    /// `link_down` (`interface`, `reason`: `no_ip`, `no_carrier`,
+    /// `interface_down`, `interface_missing`) once when the link is lost,
+    /// `link_up` (`interface`) when it is back; `send_failed` (`service`,
+    /// `count`, `detail`; at most once per second and service, not while
+    /// the link is down), `recv_error`, `bootp_send_failed`,
+    /// `tftp_rejected`, `kernels_offline_fallback` (`version`).
     Warning(Failure),
 }
 
@@ -241,6 +264,7 @@ mod tests {
         let e = EngineEvent::Device {
             mac: MAC,
             state: DeviceState::Flashing {
+                version: "7.25.1".into(),
                 phase: "uploading".into(),
                 sent: 10,
                 total: 20,
@@ -249,8 +273,19 @@ mod tests {
         assert_eq!(
             roundtrip(&e),
             json!({"event": "device", "mac": "48:A9:8A:11:22:33", "state": "flashing",
-                   "phase": "uploading", "sent": 10, "total": 20})
+                   "version": "7.25.1", "phase": "uploading", "sent": 10, "total": 20})
         );
+        let preparing = |version: Option<&str>| EngineEvent::Device {
+            mac: MAC,
+            state: DeviceState::Preparing {
+                version: version.map(String::from),
+            },
+        };
+        assert_eq!(
+            roundtrip(&preparing(None)),
+            json!({"event": "device", "mac": "48:A9:8A:11:22:33", "state": "preparing"})
+        );
+        assert_eq!(roundtrip(&preparing(Some("7.25.1")))["version"], "7.25.1");
         let failed = EngineEvent::Device {
             mac: MAC,
             state: DeviceState::failed(Failure::new("flash_timeout").with("phase", "offering")),
@@ -337,8 +372,9 @@ mod tests {
             DeviceState::Waiting {
                 reason: WaitReason::Concurrency,
             },
-            DeviceState::Preparing,
+            DeviceState::Preparing { version: None },
             DeviceState::Flashing {
+                version: "7.25.1".into(),
                 phase: "offering".into(),
                 sent: 0,
                 total: 0,

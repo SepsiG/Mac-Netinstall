@@ -8,14 +8,19 @@
 //!
 //! Not checkable: macOS's Local Network permission cannot be queried by an
 //! app. Without it, sends to the local network fail with `EHOSTUNREACH`
-//! (reported as `recv_error` / `bootp_send_failed` warnings later).
+//! (reported as `send_failed` / `bootp_send_failed` / `recv_error`
+//! warnings later).
 
-use crate::config::{resolve_network, subnet, EngineConfig, NetPlan};
+use crate::config::{
+    check_pool_reserved, link_status, resolve_addresses, subnet, EngineConfig, LinkStatus, NetPlan,
+};
 use crate::event::Failure;
 use crate::profile::{ConfigMode, Profile};
 use ni_assets::Assets;
-use ni_net::{bind_udp, list_interfaces, BindOptions, Interface, InterfaceKind, NetError};
+use ni_bootp::{BootpConfig, BootpResponder};
+use ni_net::{bind_udp, BindOptions, Interface, InterfaceKind, NetError};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,23 +72,39 @@ impl PreflightReport {
 /// Interface and address checks. Errors: `unknown_interface`,
 /// `interface_down`, `no_ipv4`, `server_ip_not_on_interface`, `no_mac`,
 /// `invalid_netmask`, `server_ip_not_host`, `pool_inverted`,
-/// `pool_outside_subnet`. Warnings: `link_down` (no cable yet?),
-/// `unsuitable_interface` (`kind`: wifi, loopback, bridge, tunnel,
-/// apple_wireless, other).
+/// `pool_outside_subnet`, `pool_includes_reserved` (the network or
+/// broadcast address), `invalid_network` (what `ni-bootp` refuses, e.g. a
+/// pool with no usable address; `detail`). Warnings: `link_down`
+/// (`reason`: `no_ip`, `no_carrier`; no cable yet? With a configured
+/// server IP a missing address is only this warning: macOS removes a
+/// manual address while there is no carrier), `unsuitable_interface`
+/// (`kind`: wifi, loopback, bridge, tunnel, apple_wireless, other).
 pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>, Option<NetPlan>) {
     let mut out = Vec::new();
     let Some(iface) = ifaces.iter().find(|i| i.name == cfg.interface) else {
         let f = Failure::new("unknown_interface").with("interface", &cfg.interface);
         return (vec![Finding::error(f)], None);
     };
+    let resolved = resolve_addresses(ifaces, cfg);
     if !iface.is_up {
         out.push(Finding::error(
             Failure::new("interface_down").with("interface", &iface.name),
         ));
-    } else if !iface.is_running {
-        out.push(Finding::warning(
-            Failure::new("link_down").with("interface", &iface.name),
-        ));
+    } else {
+        let reason = match &resolved {
+            Ok(plan) => match link_status(ifaces, &iface.name, plan.server_ip) {
+                LinkStatus::Down(reason) => Some(reason),
+                _ => None,
+            },
+            Err(_) => (!iface.is_running).then_some("no_carrier"),
+        };
+        if let Some(reason) = reason {
+            out.push(Finding::warning(
+                Failure::new("link_down")
+                    .with("interface", &iface.name)
+                    .with("reason", reason),
+            ));
+        }
     }
     if iface.kind != InterfaceKind::Ethernet {
         out.push(Finding::warning(
@@ -92,7 +113,7 @@ pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>,
                 .with("kind", iface.kind.as_str()),
         ));
     }
-    let plan = match resolve_network(ifaces, cfg) {
+    let plan = match resolved {
         Ok(plan) => plan,
         Err(f) => {
             out.push(Finding::error(f));
@@ -106,6 +127,7 @@ pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>,
         ));
         return (out, None);
     }
+    let errors_before = out.iter().filter(|f| f.severity == Severity::Error).count();
     let (net, bcast) = subnet(plan.server_ip, plan.netmask);
     if mask.leading_ones() <= 30 && (plan.server_ip == net || plan.server_ip == bcast) {
         out.push(Finding::error(
@@ -128,7 +150,33 @@ pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>,
                 .with("network", format!("{net}/{}", mask.leading_ones())),
         ));
     }
+    if out.iter().filter(|f| f.severity == Severity::Error).count() == errors_before {
+        if let Err(f) = check_pool_reserved(&plan) {
+            out.push(Finding::error(f));
+        } else if let Err(e) = BootpResponder::new(BootpConfig {
+            server_ip: plan.server_ip,
+            netmask: plan.netmask,
+            pool_start: plan.pool_start,
+            pool_end: plan.pool_end,
+            boot_files: Default::default(),
+            lease_secs: cfg.lease_secs,
+        }) {
+            out.push(Finding::error(
+                Failure::new("invalid_network").with("detail", e),
+            ));
+        }
+    }
     (out, Some(plan))
+}
+
+/// Warning `default_route` (`interface`) if the boot interface carries an
+/// IPv4 default route (`routed`: see [`ni_net::default_route_interfaces`]):
+/// it is probably a real LAN, where the BOOTP pool may collide with live
+/// hosts and another DHCP server may answer the devices.
+pub fn check_default_route(routed: &BTreeSet<String>, cfg: &EngineConfig) -> Option<Finding> {
+    routed
+        .contains(&cfg.interface)
+        .then(|| Finding::warning(Failure::new("default_route").with("interface", &cfg.interface)))
 }
 
 /// Bind (and release) each listener as `start` would. Errors:
@@ -205,16 +253,18 @@ pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
     out
 }
 
-/// Everything: network (with the live interface list), ports, and the
-/// assets of `profile` if given.
+/// Everything: network (with `cfg.interfaces`), the default route, ports,
+/// and the assets of `profile` if given.
 pub async fn run(
     cfg: &EngineConfig,
     assets: Option<&Assets>,
     profile: Option<&Profile>,
 ) -> PreflightReport {
-    let ifaces = list_interfaces().unwrap_or_default();
+    let ifaces = cfg.interfaces.list().unwrap_or_default();
     let (mut findings, network) = check_network(&ifaces, cfg);
     if network.is_some() {
+        let routed = ni_net::default_route_interfaces().unwrap_or_default();
+        findings.extend(check_default_route(&routed, cfg));
         findings.extend(check_ports(cfg));
     }
     if let (Some(assets), Some(profile)) = (assets, profile) {
@@ -267,6 +317,7 @@ mod tests {
                 ("unsuitable_interface", Severity::Warning)
             ]
         );
+        assert_eq!(findings[0].failure.param("reason"), Some("no_carrier"));
         assert_eq!(findings[1].failure.param("kind"), Some("wifi"));
         assert!(plan.is_some());
         en7.is_up = false;
@@ -293,6 +344,7 @@ mod tests {
         let mut cfg = EngineConfig::new("en7");
         cfg.server_ip = Some(ip(5));
         cfg.pool = Some((ip(200), Ipv4Addr::new(192, 168, 89, 10)));
+        // (outside the subnet; the reserved-address check is skipped then)
         let (findings, _) = check_network(&ifaces, &cfg);
         assert_eq!(codes(&findings), [("pool_outside_subnet", Severity::Error)]);
         assert_eq!(
@@ -310,6 +362,61 @@ mod tests {
         let (findings, plan) = check_network(&odd, &EngineConfig::new("en7"));
         assert_eq!(codes(&findings), [("invalid_netmask", Severity::Error)]);
         assert_eq!(plan, None);
+    }
+
+    #[test]
+    fn missing_link_is_a_warning_with_a_configured_server_ip() {
+        let mut en7 = iface("en7", &[], Some(MAC));
+        en7.is_running = false;
+        let mut cfg = EngineConfig::new("en7");
+        let (findings, plan) = check_network(&[en7.clone()], &cfg);
+        assert_eq!(
+            codes(&findings),
+            [
+                ("link_down", Severity::Warning),
+                ("no_ipv4", Severity::Error)
+            ]
+        );
+        assert_eq!(plan, None);
+        cfg.server_ip = Some(ip(1));
+        let (findings, plan) = check_network(&[en7.clone()], &cfg);
+        assert_eq!(codes(&findings), [("link_down", Severity::Warning)]);
+        assert_eq!(findings[0].failure.param("reason"), Some("no_ip"));
+        assert_eq!(plan.unwrap().server_ip, ip(1));
+        // Carrier but the address not (yet) there: still only a warning.
+        en7.is_running = true;
+        let (findings, _) = check_network(&[en7], &cfg);
+        assert_eq!(codes(&findings), [("link_down", Severity::Warning)]);
+    }
+
+    #[test]
+    fn pools_with_reserved_or_no_usable_addresses_are_errors() {
+        let ifaces = [iface("en7", &[(ip(1), MASK24)], Some(MAC))];
+        let mut cfg = EngineConfig::new("en7");
+        cfg.pool = Some((ip(0), ip(20)));
+        let (findings, _) = check_network(&ifaces, &cfg);
+        assert_eq!(
+            codes(&findings),
+            [("pool_includes_reserved", Severity::Error)]
+        );
+        assert_eq!(findings[0].failure.param("network"), Some("192.168.88.0"));
+        // Only the server's own address: ni-bootp has nothing to hand out.
+        cfg.pool = Some((ip(1), ip(1)));
+        let (findings, _) = check_network(&ifaces, &cfg);
+        assert_eq!(codes(&findings), [("invalid_network", Severity::Error)]);
+    }
+
+    #[test]
+    fn a_default_route_on_the_interface_is_a_warning() {
+        let cfg = EngineConfig::new("en7");
+        let routed: BTreeSet<String> = ["en0".to_string()].into();
+        assert_eq!(check_default_route(&routed, &cfg), None);
+        let routed: BTreeSet<String> = ["en0".to_string(), "en7".to_string()].into();
+        let f = check_default_route(&routed, &cfg).unwrap();
+        assert_eq!(
+            (f.severity, f.failure.code.as_str()),
+            (Severity::Warning, "default_route")
+        );
     }
 
     #[tokio::test]

@@ -64,6 +64,16 @@ impl Gate {
         self.lock().cooldown_until.insert(mac, until);
     }
 
+    /// Drop expired cooldowns (so the map cannot grow without bound).
+    pub fn prune(&self, now: Instant) {
+        self.lock().cooldown_until.retain(|_, until| now < *until);
+    }
+
+    /// Devices in cooldown (expired entries not yet pruned included).
+    pub fn cooldowns(&self) -> usize {
+        self.lock().cooldown_until.len()
+    }
+
     pub fn clear_cooldown(&self, mac: Mac) {
         self.lock().cooldown_until.remove(&mac);
     }
@@ -104,6 +114,17 @@ mod tests {
         gate.start_cooldown(A, t0 + Duration::from_secs(300));
         gate.clear_cooldown(A);
         assert_eq!(gate.check(A, t0), Verdict::Allow);
+    }
+
+    #[test]
+    fn expired_cooldowns_are_pruned() {
+        let gate = Gate::default();
+        let t0 = Instant::now();
+        gate.start_cooldown(A, t0 + Duration::from_secs(1));
+        gate.start_cooldown(B, t0 + Duration::from_secs(60));
+        gate.prune(t0 + Duration::from_secs(2));
+        assert_eq!(gate.cooldowns(), 1);
+        assert_eq!(gate.check(B, t0), Verdict::Cooldown);
     }
 
     #[test]
