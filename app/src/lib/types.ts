@@ -124,7 +124,15 @@ export interface InterfaceView {
   auto_pool: { start: string; end: string } | null;
 }
 
-export type ConfigMode = { mode: "default" } | { mode: "custom_script"; local_name: string };
+/** The device's configuration after the install (`ni_engine::ConfigMode`). */
+export type ConfigMode =
+  | { mode: "keep" }
+  | { mode: "default" }
+  | { mode: "empty" }
+  | { mode: "script"; local_name: string };
+
+export const AFTER_INSTALL = ["reboot", "reboot_message", "shutdown"] as const;
+export type AfterInstall = (typeof AFTER_INSTALL)[number];
 
 export interface Profile {
   name: string;
@@ -132,6 +140,12 @@ export interface Profile {
   version: string;
   extra_packages: string[];
   config: ConfigMode;
+  /** Registered `.rsc` sent as `mode.scr` (not with `keep`). */
+  mode_script: string | null;
+  remove_branding: boolean;
+  /** Key file contents without line breaks. */
+  license_key: string | null;
+  after_install: AfterInstall;
 }
 
 export interface ProfilesView {
@@ -148,6 +162,10 @@ export interface PackagesView {
 export interface ScriptView {
   name: string;
   size: number;
+}
+
+export interface LicenseKeyView {
+  key: string;
 }
 
 export type Integrity = "verified" | "unpublished" | "unchecked" | "corrupt" | "missing" | "partial";

@@ -8,6 +8,7 @@ import type {
   EngineEvent,
   Failure,
   InterfaceView,
+  LicenseKeyView,
   PackagesView,
   PreflightReport,
   Profile,
@@ -45,6 +46,8 @@ export interface Backend {
   availablePackages(version: string, arch: string): Promise<PackagesView>;
   /** Opens a file dialog (in Rust); `null` if cancelled. */
   pickScript(): Promise<ScriptView | null>;
+  /** Opens a file dialog and reads the key file (in Rust); `null` if cancelled. */
+  pickLicenseKey(): Promise<LicenseKeyView | null>;
   getSettings(): Promise<Settings>;
   setSettings(settings: Settings): Promise<Settings>;
   /** `verify`: check every file's SHA-256 (slow); else a quick listing. */
@@ -98,6 +101,7 @@ export function tauriBackend(): Backend {
     deleteProfile: (name) => invoke("delete_profile", { name }),
     availablePackages: (version, arch) => invoke("available_packages", { version, arch }),
     pickScript: () => invoke("pick_script"),
+    pickLicenseKey: () => invoke("pick_license_key"),
     getSettings: () => invoke("get_settings"),
     setSettings: (settings) => invoke("set_settings", { settings }),
     cacheInventory: (verify) => invoke("cache_inventory", { verify }),

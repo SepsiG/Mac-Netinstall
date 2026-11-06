@@ -4,11 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import App from "../src/App.svelte";
 import type { Backend } from "../src/lib/api";
 import type { DeviceState, DeviceView, Profile, Snapshot } from "../src/lib/types";
-import { mockBackend, SETTINGS, IDLE } from "./mock";
+import { mockBackend, profile, SETTINGS, IDLE } from "./mock";
 
 const A = "48:A9:8A:00:00:0A";
 const B = "48:A9:8A:00:00:0B";
-const LAB: Profile = { name: "lab", version: "stable", extra_packages: [], config: { mode: "default" } };
+const LAB: Profile = profile("lab");
 const OTHER: Profile = { ...LAB, name: "other" };
 const FORMATTING: DeviceState = { state: "flashing", version: "7.25.1", phase: "formatting", sent: 0, total: 100 };
 
@@ -174,8 +174,8 @@ describe("App", () => {
     await userEvent.type(screen.getByLabelText("Name"), "fresh");
     vi.mocked(backend.listProfiles).mockResolvedValueOnce({
       profiles: [
-        { name: "fresh", version: "stable", extra_packages: [], config: { mode: "default" } },
-        { name: "lab", version: "stable", extra_packages: [], config: { mode: "default" } },
+        profile("fresh"),
+        profile("lab"),
       ],
       broken: [],
     });

@@ -2,7 +2,7 @@
 // and `emit*` drive the event callbacks.
 import { vi } from "vitest";
 import type { Backend } from "../src/lib/api";
-import type { CacheView, EngineEvent, Settings, Snapshot } from "../src/lib/types";
+import type { CacheView, EngineEvent, Profile, Settings, Snapshot } from "../src/lib/types";
 
 export const SETTINGS: Settings = {
   version: 1,
@@ -68,6 +68,21 @@ export const IDLE: Snapshot = {
   devices: [],
 };
 
+/** A stored profile with the default options. */
+export function profile(name: string, more: Partial<Profile> = {}): Profile {
+  return {
+    name,
+    version: "stable",
+    extra_packages: [],
+    config: { mode: "default" },
+    mode_script: null,
+    remove_branding: false,
+    license_key: null,
+    after_install: "reboot",
+    ...more,
+  };
+}
+
 export interface MockBackend extends Backend {
   emit(e: EngineEvent): void;
   emitLagged(): void;
@@ -129,7 +144,7 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
     setCooldown: ok(),
     snapshot: vi.fn(async () => IDLE),
     listProfiles: vi.fn(async () => ({
-      profiles: [{ name: "lab", version: "stable", extra_packages: [], config: { mode: "default" as const } }],
+      profiles: [profile("lab")],
       broken: [],
     })),
     saveProfile: ok(),
@@ -140,6 +155,7 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
       packages: ["container", "wireless"],
     })),
     pickScript: vi.fn(async () => ({ name: "setup.rsc", size: 30 })),
+    pickLicenseKey: vi.fn(async () => ({ key: "-----BEGIN KEY-----AAAA-----END KEY-----" })),
     getSettings: vi.fn(async () => ({ ...SETTINGS })),
     setSettings: vi.fn(async (s: Settings) => s),
     cacheInventory: vi.fn(async () => structuredClone(CACHE)),

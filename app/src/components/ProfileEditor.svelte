@@ -1,13 +1,15 @@
 <script lang="ts">
   // Create or edit a profile: version (channel or exact), extra packages
-  // from the published list, configuration (default or a picked script).
+  // from the published list, configuration (keep, default, empty or a
+  // picked script), what to do afterwards, and the advanced options of
+  // the official tool (mode script, remove branding, license key).
   import { untrack } from "svelte";
   import { toFailure } from "../lib/api";
   import { useBackend } from "../lib/context";
   import { locale, t } from "../lib/i18n";
   import { describe, hint } from "../lib/messages";
-  import { ARCHES, formErrors, fromForm, toForm } from "../lib/profile";
-  import { CHANNELS, type Failure, type Profile } from "../lib/types";
+  import { ARCHES, CONFIG_CHOICES, formErrors, fromForm, toForm } from "../lib/profile";
+  import { AFTER_INSTALL, CHANNELS, type Failure, type Profile } from "../lib/types";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import Modal from "./Modal.svelte";
 
@@ -87,10 +89,19 @@
     form.packages = on ? [...form.packages, name] : form.packages.filter((p) => p !== name);
   }
 
-  async function pick() {
+  async function pick(field: "script" | "modeScript") {
     try {
       const s = await backend.pickScript();
-      if (s) form.script = s.name;
+      if (s) form[field] = s.name;
+    } catch (e) {
+      saveError = toFailure(e);
+    }
+  }
+
+  async function pickKey() {
+    try {
+      const k = await backend.pickLicenseKey();
+      if (k) form.licenseKey = k.key;
     } catch (e) {
       saveError = toFailure(e);
     }
@@ -120,7 +131,7 @@
   }
 </script>
 
-<Modal title={initial ? $t("profile.edit_title") : $t("profile.new_title")} onclose={requestClose} width={520}>
+<Modal title={initial ? $t("profile.edit_title") : $t("profile.new_title")} onclose={requestClose} width={560}>
   <form class="grid" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <label for="p-name">{$t("profile.name")}</label>
     <div>
@@ -185,21 +196,61 @@
 
     <span class="label">{$t("profile.config")}</span>
     <div class="stack">
+      {#each CONFIG_CHOICES as c (c)}
+        <label class="row">
+          <input type="radio" name="cmode" checked={form.config === c} onchange={() => (form.config = c)} />
+          {$t(`profile.config_${c}`)}
+        </label>
+        <div class="help indent">{$t(`profile.config_${c}_help`)}</div>
+        {#if c === "script" && form.config === "script"}
+          <div class="row indent">
+            <button type="button" class="small" onclick={() => pick("script")}>{$t("profile.choose")}</button>
+            <span class={form.script ? "mono" : "secondary"}>{form.script ?? $t("profile.no_script")}</span>
+          </div>
+          {#if tried && errors.script}<div class="field-error" role="alert">{$t(errors.script)}</div>{/if}
+        {/if}
+      {/each}
+    </div>
+
+    <label for="p-after">{$t("profile.after_install")}</label>
+    <div>
+      <select id="p-after" bind:value={form.afterInstall}>
+        {#each AFTER_INSTALL as a (a)}<option value={a}>{$t(`profile.after_${a}`)}</option>{/each}
+      </select>
+    </div>
+
+    <span class="label">{$t("profile.advanced")}</span>
+    <div class="stack">
       <label class="row">
-        <input type="radio" name="cmode" checked={!form.useScript} onchange={() => (form.useScript = false)} />
-        {$t("profile.config_default")}
+        <input type="checkbox" bind:checked={form.useModeScript} disabled={form.config === "keep" && !form.useModeScript} />
+        {$t("profile.mode_script")}
       </label>
-      <label class="row">
-        <input type="radio" name="cmode" checked={form.useScript} onchange={() => (form.useScript = true)} />
-        {$t("profile.config_script")}
-      </label>
-      {#if form.useScript}
+      <div class="help indent">{$t("profile.mode_script_help")}</div>
+      {#if form.useModeScript}
         <div class="row indent">
-          <button type="button" class="small" onclick={pick}>{$t("profile.choose")}</button>
-          <span class={form.script ? "mono" : "secondary"}>{form.script ?? $t("profile.no_script")}</span>
+          <button type="button" class="small" onclick={() => pick("modeScript")}>{$t("profile.choose")}</button>
+          <span class={form.modeScript ? "mono" : "secondary"}>{form.modeScript ?? $t("profile.no_script")}</span>
         </div>
-        {#if tried && errors.script}<div class="field-error" role="alert">{$t(errors.script)}</div>{/if}
       {/if}
+      {#if errors.modeScript && (tried || errors.modeScript === "profile.err_mode_keep")}
+        <div class="field-error" role="alert">{$t(errors.modeScript)}</div>
+      {/if}
+      <label class="row">
+        <input type="checkbox" bind:checked={form.removeBranding} />
+        {$t("profile.remove_branding")}
+      </label>
+      <div class="help indent">{$t("profile.remove_branding_help")}</div>
+      <div class="row">
+        {$t("profile.license_key")}
+        <button type="button" class="small" onclick={pickKey}>{$t("profile.license_key_choose")}</button>
+        {#if form.licenseKey}
+          <span>{$t("profile.license_key_set", { count: form.licenseKey.length })}</span>
+          <button type="button" class="small" onclick={() => (form.licenseKey = null)}>{$t("profile.license_key_remove")}</button>
+        {:else}
+          <span class="secondary">{$t("profile.license_key_none")}</span>
+        {/if}
+      </div>
+      <div class="help">{$t("profile.license_key_help")}</div>
     </div>
   </form>
   {#if saveError}
@@ -267,6 +318,12 @@
   }
   .indent {
     padding-left: 22px;
+  }
+  .help {
+    margin-top: -3px;
+    font-size: 11px;
+    color: var(--secondary);
+    white-space: normal;
   }
   .packages {
     display: grid;

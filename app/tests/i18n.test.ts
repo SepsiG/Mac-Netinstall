@@ -48,6 +48,14 @@ describe("locales", () => {
     }
   });
 
+  it("names the configuration modes in natural Hungarian", () => {
+    expect(HU["profile.config_keep"]).toBe("Meglévő konfiguráció megtartása");
+    expect(HU["profile.config_default"]).toBe("Gyári alapkonfiguráció");
+    expect(HU["profile.config_empty"]).toBe("Üres konfiguráció");
+    expect(HU["profile.config_script"]).toBe("Saját szkript (.rsc)");
+    expect(HU["profile.mode_script"]).toBe("Mode script (haladó)");
+  });
+
   it("hu has exactly the keys of en", () => {
     expect(Object.keys(HU).sort()).toEqual(Object.keys(EN).sort());
   });
