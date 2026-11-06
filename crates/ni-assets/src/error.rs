@@ -32,6 +32,10 @@ pub enum AssetError {
         #[source]
         source: reqwest::Error,
     },
+    #[error("{url} timed out")]
+    Timeout { url: String },
+    #[error("{url} redirected to a URL that is not allowed (https downgrade or another host)")]
+    RedirectRefused { url: String },
     #[error("{url} ended after {got} of {expected} bytes")]
     Truncated {
         url: String,
@@ -88,6 +92,8 @@ impl AssetError {
             AssetError::NotFound { .. } => "not_found",
             AssetError::Status { .. } => "http_status",
             AssetError::Network { .. } => "network",
+            AssetError::Timeout { .. } => "timeout",
+            AssetError::RedirectRefused { .. } => "redirect_refused",
             AssetError::Truncated { .. } => "truncated",
             AssetError::TooLarge { .. } => "too_large",
             AssetError::BadResponse { .. } => "bad_response",
@@ -135,6 +141,8 @@ mod tests {
                 url: "u".into(),
                 status: 500,
             },
+            AssetError::Timeout { url: "u".into() },
+            AssetError::RedirectRefused { url: "u".into() },
             AssetError::Truncated {
                 url: "u".into(),
                 expected: 2,
@@ -191,6 +199,8 @@ mod tests {
                 "unknown_package",
                 "not_found",
                 "http_status",
+                "timeout",
+                "redirect_refused",
                 "truncated",
                 "too_large",
                 "bad_response",

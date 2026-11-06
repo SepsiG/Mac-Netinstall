@@ -17,6 +17,21 @@ pub enum Reply {
     Truncated { body: Vec<u8>, declared: usize },
     /// Sends the response head, then nothing.
     Stall,
+    /// 302 to `Location`.
+    Redirect(String),
+    /// Exactly this status, extra header lines (`Name: value`) and body
+    /// (`Content-Length` is added); `Range` is ignored.
+    Raw {
+        status: u16,
+        headers: Vec<String>,
+        body: Vec<u8>,
+    },
+    /// 200 with `body`, sent in `chunk`-byte pieces `delay` apart.
+    Slow {
+        body: Vec<u8>,
+        chunk: usize,
+        delay: Duration,
+    },
 }
 
 type Routes = Arc<Mutex<HashMap<String, Reply>>>;
@@ -113,6 +128,33 @@ async fn handle(mut stream: TcpStream, routes: Routes, log: Arc<Mutex<Vec<String
             }
         },
         Some(Reply::Truncated { body, declared }) => (200, String::new(), body, declared),
+        Some(Reply::Redirect(to)) => (302, format!("Location: {to}\r\n"), Vec::new(), 0),
+        Some(Reply::Raw {
+            status,
+            headers,
+            body,
+        }) => {
+            let extra: String = headers.iter().map(|h| format!("{h}\r\n")).collect();
+            let len = body.len();
+            (status, extra, body, len)
+        }
+        Some(Reply::Slow { body, chunk, delay }) => {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            for piece in body.chunks(chunk.max(1)) {
+                tokio::time::sleep(delay).await;
+                if stream.write_all(piece).await.is_err() {
+                    return;
+                }
+            }
+            let _ = stream.shutdown().await;
+            return;
+        }
         Some(Reply::Stall) => {
             let head = "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n";
             let _ = stream.write_all(head.as_bytes()).await;
