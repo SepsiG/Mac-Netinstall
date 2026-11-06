@@ -196,6 +196,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ni-bootp"
+version = "0.1.0"
+dependencies = [
+ "ni-net",
+ "ni-proto",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "ni-net"
 version = "0.1.0"
 dependencies = [

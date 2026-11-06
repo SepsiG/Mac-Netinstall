@@ -1,0 +1,16 @@
+[package]
+name = "ni-bootp"
+description = "Minimal BOOTP/DHCP server for RouterBOOT network boot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ni-proto.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "sync"] }
+
+[dev-dependencies]
+ni-net.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

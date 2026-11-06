@@ -4,6 +4,7 @@ members = [
     "crates/ni-proto",
     "crates/ni-sim",
     "crates/ni-net",
+    "crates/ni-bootp",
 ]
 
 [workspace.package]
