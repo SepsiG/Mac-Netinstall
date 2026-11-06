@@ -56,6 +56,7 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
         up: true,
         running: true,
         default_route: false,
+        thunderbolt: false,
       },
       {
         name: "en0",
@@ -66,6 +67,7 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
         up: true,
         running: true,
         default_route: true,
+        thunderbolt: false,
       },
     ]),
     preflight: vi.fn(async () => ({ findings: [], network: null })),

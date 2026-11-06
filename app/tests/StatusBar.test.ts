@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/svelte";
-import { beforeEach, describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar from "../src/components/StatusBar.svelte";
 import InterfacePicker from "../src/components/InterfacePicker.svelte";
 import { locale } from "../src/lib/i18n";
@@ -61,6 +62,35 @@ describe("StatusBar", () => {
     expect(screen.getByText(/Serving only 48:A9:8A:00:00:0A/)).toBeInTheDocument();
   });
 
+  it("offers to fetch unavailable kernels again", async () => {
+    const onretry = vi.fn();
+    render(StatusBar, {
+      props: {
+        ...base,
+        running: true,
+        kernels: { state: "unavailable", code: "kernels_unavailable", params: { cause: "network" } },
+        onretry,
+      },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Retry download" }));
+    expect(onretry).toHaveBeenCalled();
+  });
+
+  it("shows blocking findings as things to do until Start is tried", () => {
+    const report: PreflightReport = {
+      network: null,
+      findings: [{ severity: "error", code: "no_ipv4", params: { interface: "en7" } }],
+    };
+    const { rerender } = render(StatusBar, { props: { ...base, report } });
+    const finding = () => screen.getByText("en7 has no IPv4 address.").closest(".finding")!;
+    expect(finding()).toHaveClass("todo");
+    expect(finding()).not.toHaveClass("error");
+    expect(finding()).toHaveTextContent("To do:");
+    rerender({ ...base, report, attempted: true });
+    expect(finding()).toHaveClass("error");
+    expect(finding()).not.toHaveTextContent("To do:");
+  });
+
   it("explains missing kernels", () => {
     render(StatusBar, {
       props: { ...base, running: true, kernels: { state: "unavailable", code: "kernels_unavailable", params: { cause: "network" } } },
@@ -71,12 +101,31 @@ describe("StatusBar", () => {
 });
 
 const IFACES: InterfaceView[] = [
-  { name: "en7", display_name: "USB LAN", kind: "ethernet", mac: null, ipv4: [{ address: "192.168.88.1", prefix: 24 }], up: true, running: true, default_route: false },
-  { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true },
-  { name: "bridge0", display_name: null, kind: "bridge", mac: null, ipv4: [], up: true, running: true, default_route: false },
+  { name: "en7", display_name: "USB LAN", kind: "ethernet", mac: null, ipv4: [{ address: "192.168.88.1", prefix: 24 }], up: true, running: true, default_route: false, thunderbolt: false },
+  { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true, thunderbolt: false },
+  { name: "bridge0", display_name: null, kind: "bridge", mac: null, ipv4: [], up: true, running: true, default_route: false, thunderbolt: false },
 ];
 
 describe("InterfacePicker", () => {
+  it("has a translated label on the refresh button", () => {
+    locale.set("hu");
+    render(InterfacePicker, { props: { interfaces: IFACES, selected: "en7", showAll: false, onrefresh: () => {} } });
+    expect(screen.getByRole("button", { name: "Csatolólista frissítése" })).toBeInTheDocument();
+  });
+
+  it("lists Thunderbolt ports last, with a hint", () => {
+    const tb: InterfaceView = { ...IFACES[0]!, name: "en1", display_name: "Thunderbolt 1", ipv4: [], thunderbolt: true };
+    render(InterfacePicker, {
+      props: { interfaces: [tb, ...IFACES], selected: "en7", showAll: false, onrefresh: () => {} },
+    });
+    const options = screen.getAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual([
+      "en7 – USB LAN · 192.168.88.1/24",
+      "en1 – Thunderbolt 1 · no IPv4 address · (Thunderbolt)",
+    ]);
+    expect(options[1]).toHaveClass("dim");
+  });
+
   it("hides Wi-Fi, bridges and the like unless asked", () => {
     expect(visibleInterfaces(IFACES, false, null).map((i) => i.name)).toEqual(["en7"]);
     expect(visibleInterfaces(IFACES, false, "en0").map((i) => i.name)).toEqual(["en7", "en0"]);

@@ -86,6 +86,12 @@ export function logEntry(e: EngineEvent, at: number): LogEntry | null {
       };
     case "ignored":
       return { at, level: "info", mac: e.mac, key: "log.ignored", values: { reason: e.reason } };
+    case "forgotten":
+      return { at, level: "info", mac: e.mac, key: "log.forgotten" };
+    case "only_mac_changed":
+      return e.mac
+        ? { at, level: "info", key: "log.only_mac", values: { mac: e.mac } }
+        : { at, level: "info", key: "log.all_macs" };
     case "device": {
       const { event: _event, mac, ...state } = e;
       const s = state as DeviceState;

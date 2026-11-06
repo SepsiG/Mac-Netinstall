@@ -16,6 +16,8 @@
     running,
     profile,
     onlyMac,
+    cooldownSecs = 0,
+    stale = false,
     onerror,
   }: {
     rows: DeviceRow[];
@@ -23,6 +25,11 @@
     /** The selected profile, used by Flash. */
     profile: string | null;
     onlyMac: string | null;
+    /** The engine's post-flash cooldown: a done device cannot be
+     *  forgotten during it (the engine refuses with `device_in_cooldown`). */
+    cooldownSecs?: number;
+    /** The rows are the last known state of a stopped engine. */
+    stale?: boolean;
     onerror: (f: Failure) => void;
   } = $props();
 
@@ -54,6 +61,10 @@
     return s === "preparing" || s === "flashing" || (s === "waiting" && d.state.reason === "concurrency");
   }
 
+  function inCooldown(d: DeviceRow): boolean {
+    return d.state.state === "done" && now - d.updated_ms < cooldownSecs * 1000;
+  }
+
   function status(d: DeviceRow): string {
     if (d.state.state === "done") {
       return $t("status.done_ago", { ago: ago(d.updated_ms, now, $locale) });
@@ -68,7 +79,10 @@
   }
 </script>
 
-<div class="table-wrap">
+<div class="table-wrap" class:stale>
+  {#if stale && rows.length > 0}
+    <div class="stale-note secondary">{$t("devices.stale")}</div>
+  {/if}
   <table>
     <thead>
       <tr>
@@ -116,9 +130,13 @@
                 {$t("action.cancel")}
               </button>
             {:else}
-              <button class="small" disabled={!running} onclick={() => run(() => backend.forget(d.mac))}>
-                {$t("action.forget")}
-              </button>
+              {@const cooling = inCooldown(d)}
+              <!-- A disabled button shows no tooltip: the wrapper does. -->
+              <span title={cooling ? $t("devices.forget_cooldown") : undefined}>
+                <button class="small" disabled={!running || cooling} onclick={() => run(() => backend.forget(d.mac))}>
+                  {$t("action.forget")}
+                </button>
+              </span>
             {/if}
             {#if running}
               {#if onlyMac === d.mac}
@@ -204,8 +222,15 @@
   .actions-col {
     text-align: right;
   }
-  .actions-col button + button {
+  .actions-col > * + * {
     margin-left: 4px;
+  }
+  .stale table {
+    opacity: 0.6;
+  }
+  .stale-note {
+    padding: 4px 12px;
+    font-size: 12px;
   }
   .state-failed {
     color: var(--danger);

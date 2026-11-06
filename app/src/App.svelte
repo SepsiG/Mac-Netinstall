@@ -12,7 +12,7 @@
   import { toFailure, type Backend, type Unlisten } from "./lib/api";
   import { setBackend } from "./lib/context";
   import { locale, pickLanguage, t } from "./lib/i18n";
-  import { suitable } from "./lib/interfaces";
+  import { defaultInterface } from "./lib/interfaces";
   import { describe, hint } from "./lib/messages";
   import { EngineState } from "./lib/state.svelte";
   import type { Failure, InterfaceView, PreflightReport, Profile, Settings, StartRequest } from "./lib/types";
@@ -36,6 +36,10 @@
   let editing = $state<{ profile: Profile | null } | null>(null);
   let settingsOpen = $state(false);
   let quitAsk = $state<number | null>(null);
+  /** Devices being prepared or flashed when Stop was pressed. */
+  let stopAsk = $state<string[] | null>(null);
+  /** Start was pressed for the current choice (findings turn red). */
+  let attempted = $state(false);
   let logOpen = $state(true);
   let ready = $state(false);
 
@@ -49,6 +53,19 @@
     }
   }
 
+  /** Run a command; `false` (and the error shown) if it failed. Commands
+   *  without a result resolve to nothing, so the result itself cannot say. */
+  async function succeeded(action: () => Promise<unknown>): Promise<boolean> {
+    try {
+      error = null;
+      await action();
+      return true;
+    } catch (e) {
+      error = toFailure(e);
+      return false;
+    }
+  }
+
   function applyLanguage() {
     locale.set(pickLanguage(settings?.language ?? null, preferred));
   }
@@ -57,9 +74,7 @@
     const list = await attempt(() => backend.listInterfaces());
     if (!list) return;
     interfaces = list;
-    if (!iface || !list.some((i) => i.name === iface)) {
-      iface = list.find(suitable)?.name ?? null;
-    }
+    iface = defaultInterface(list, iface);
   }
 
   async function loadProfiles() {
@@ -111,6 +126,7 @@
       return;
     }
     const mine = ++checkSeq;
+    attempted = false;
     checking = true;
     backend.preflight(req).then(
       (r) => {
@@ -126,40 +142,88 @@
 
   const blocked = $derived(report?.findings.some((f) => f.severity === "error") ?? false);
 
+  /** `MAC · model` of each device being prepared or flashed. */
+  function busyDevices(): string[] {
+    return engine.rows
+      .filter((d) => d.state.state === "preparing" || d.state.state === "flashing")
+      .map((d) => (d.info ? `${d.mac} · ${d.info.model}` : d.mac));
+  }
+
   async function startStop() {
-    busy = true;
     if (engine.running) {
-      await attempt(() => backend.stop());
-    } else {
-      const req = request();
-      if (req) await attempt(() => backend.start(req));
+      const affected = busyDevices();
+      if (affected.length > 0) {
+        stopAsk = affected; // confirmed in the dialog
+        return;
+      }
+      await stop();
+      return;
     }
+    attempted = true;
+    const req = request();
+    if (!req || blocked) return; // the findings now show as errors
+    busy = true;
+    const info = await attempt(() => backend.start(req));
+    if (info && settings) engine.cooldownSecs = settings.cooldown_secs;
     busy = false;
   }
 
-  async function chooseProfile(name: string | null) {
+  async function stop() {
+    stopAsk = null;
+    busy = true;
+    await attempt(() => backend.stop());
+    busy = false;
+  }
+
+  /** Change the selected profile; while running the engine must accept it
+   *  first, else the previous one stays selected. */
+  async function chooseProfile(name: string | null): Promise<boolean> {
+    const before = { profile, autoRepeat };
     profile = name;
     if (!name) autoRepeat = false;
-    if (engine.running) {
-      await attempt(() => backend.setActiveProfile(name));
-      engine.profile = name;
-      if (!name) engine.autoRepeat = false;
+    if (!engine.running) return true;
+    if (!(await succeeded(() => backend.setActiveProfile(name)))) {
+      profile = before.profile;
+      autoRepeat = before.autoRepeat;
+      return false;
     }
+    engine.profile = name;
+    if (!name) engine.autoRepeat = false;
+    return true;
+  }
+
+  /** Fetch unavailable boot kernels again (same profile, same spec). */
+  function retryKernels() {
+    void attempt(() => backend.setActiveProfile(profile));
   }
 
   async function toggleAutoRepeat(on: boolean) {
     autoRepeat = on;
     if (engine.running) {
-      const ok = await attempt(() => backend.setAutoRepeat(on));
-      if (ok === undefined) autoRepeat = !on;
+      if (!(await succeeded(() => backend.setAutoRepeat(on)))) autoRepeat = !on;
     }
   }
 
   async function profileClosed(result: { saved?: string; deleted?: string }) {
+    const edited = editing?.profile?.name ?? null;
+    const activeEdited = edited !== null && edited === profile;
     editing = null;
     await loadProfiles();
-    if (result.saved) await chooseProfile(result.saved);
+    if (result.saved) {
+      // While running, saving changes the active profile only if it is the
+      // one edited (maybe renamed): then it is applied again. Stopped, the
+      // saved profile is selected.
+      if (!engine.running || activeEdited) await chooseProfile(result.saved);
+    }
     if (result.deleted && profile === result.deleted) await chooseProfile(null);
+  }
+
+  /** Open Settings on what is stored now (a start since loading may have
+   *  changed the remembered choices). */
+  async function openSettings() {
+    const fresh = await attempt(() => backend.getSettings());
+    if (fresh) settings = fresh;
+    if (settings) settingsOpen = true;
   }
 
   function settingsClosed(saved: Settings | null) {
@@ -190,7 +254,7 @@
       <button
         class="primary start"
         class:stop={engine.running}
-        disabled={busy || (!engine.running && (!iface || blocked))}
+        disabled={busy || (!engine.running && !iface)}
         onclick={startStop}
       >
         {engine.running ? $t("toolbar.stop") : $t("toolbar.start")}
@@ -216,7 +280,7 @@
         {$t("toolbar.auto_repeat")}
       </label>
       <span class="spacer"></span>
-      <button class="small" onclick={() => (settingsOpen = true)} disabled={!settings}>{$t("toolbar.settings")}</button>
+      <button class="small" onclick={openSettings} disabled={!settings}>{$t("toolbar.settings")}</button>
     </div>
   </header>
 
@@ -228,6 +292,8 @@
     onlyMac={engine.onlyMac}
     {report}
     {checking}
+    {attempted}
+    onretry={retryKernels}
   />
 
   {#if error}
@@ -236,11 +302,19 @@
         <div>{describe($locale, error)}</div>
         {#if hint($locale, error.code)}<div class="secondary">{hint($locale, error.code)}</div>{/if}
       </div>
-      <button class="small" onclick={() => (error = null)} aria-label="×">×</button>
+      <button class="small" onclick={() => (error = null)} aria-label={$t("banner.dismiss")} title={$t("banner.dismiss")}>×</button>
     </div>
   {/if}
 
-  <DeviceTable rows={engine.rows} running={engine.running} {profile} onlyMac={engine.onlyMac} onerror={(f) => (error = f)} />
+  <DeviceTable
+    rows={engine.rows}
+    running={engine.running}
+    {profile}
+    onlyMac={engine.onlyMac}
+    cooldownSecs={engine.cooldownSecs}
+    stale={engine.stale}
+    onerror={(f) => (error = f)}
+  />
 
   <LogPanel entries={engine.log} bind:open={logOpen} onclear={() => engine.clearLog()} onerror={(f) => (error = f)} />
 </main>
@@ -251,6 +325,19 @@
 
 {#if settingsOpen && settings}
   <SettingsDialog {settings} onclose={settingsClosed} />
+{/if}
+
+{#if stopAsk !== null}
+  <ConfirmDialog
+    title={$t("confirm.stop_title")}
+    body={$t("confirm.stop_body", { count: stopAsk.length })}
+    items={stopAsk}
+    confirmLabel={$t("confirm.stop_ok")}
+    cancelLabel={$t("confirm.keep")}
+    destructive
+    onconfirm={stop}
+    oncancel={() => (stopAsk = null)}
+  />
 {/if}
 
 {#if quitAsk !== null}

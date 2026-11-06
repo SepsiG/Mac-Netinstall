@@ -46,6 +46,10 @@ export class EngineState {
   profile = $state<string | null>(null);
   onlyMac = $state<string | null>(null);
   linkDown = $state<string | null>(null);
+  /** Post-flash cooldown of the running engine (seconds, 0 if unknown). */
+  cooldownSecs = $state(0);
+  /** The rows are from an engine that has stopped since. */
+  stale = $state(false);
   devices = $state<Record<string, DeviceRow>>({});
   log = $state<LogEntry[]>([]);
 
@@ -60,7 +64,11 @@ export class EngineState {
       .length;
   }
 
+  /** Load a snapshot. A stopped engine's snapshot has no devices: the rows
+   *  of the last run are kept then (marked stale), so a resync after
+   *  missed events does not wipe the table. */
   applySnapshot(s: Snapshot): void {
+    const keepRows = !s.running && s.devices.length === 0 && this.rows.length > 0;
     this.running = s.running;
     this.started = s.started;
     this.kernels = s.kernels;
@@ -68,6 +76,12 @@ export class EngineState {
     this.profile = s.profile;
     this.onlyMac = s.only_mac;
     this.linkDown = s.link_down;
+    if (s.running) this.cooldownSecs = s.cooldown_secs;
+    if (keepRows) {
+      this.stale = true;
+      return;
+    }
+    this.stale = !s.running && s.devices.length > 0;
     const devices: Record<string, DeviceRow> = {};
     for (const d of s.devices) devices[d.mac] = row(d);
     this.devices = devices;
@@ -104,10 +118,14 @@ export class EngineState {
         this.started = info;
         this.devices = {};
         this.linkDown = null;
+        this.onlyMac = null;
+        this.stale = false;
         break;
       }
       case "stopped":
         this.running = false;
+        this.stale = this.rows.length > 0;
+        this.onlyMac = null;
         this.kernels = { state: "idle" };
         this.linkDown = null;
         break;
@@ -137,6 +155,14 @@ export class EngineState {
         this.device(mac).info = info;
         break;
       }
+      case "forgotten": {
+        const { [e.mac]: _gone, ...rest } = this.devices;
+        this.devices = rest;
+        break;
+      }
+      case "only_mac_changed":
+        this.onlyMac = e.mac;
+        break;
       case "warning":
         if (e.code === "link_down") this.linkDown = e.params?.reason ?? "no_ip";
         if (e.code === "link_up") this.linkDown = null;

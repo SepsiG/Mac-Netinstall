@@ -113,6 +113,24 @@ describe("DeviceTable", () => {
     expect(onerror).toHaveBeenCalledWith({ code: "device_busy", params: { mac: A } });
   });
 
+  it("does not offer Forget for a device in its cooldown", () => {
+    show([dev({ state: "done" }, { updated_ms: Date.now() - 10_000 })], { cooldownSecs: 300 });
+    const forget = within(row()).getByRole("button", { name: "Forget" });
+    expect(forget).toBeDisabled();
+    expect(forget.closest("[title]")).toHaveAttribute("title", expect.stringMatching(/cooldown/));
+  });
+
+  it("offers Forget again once the cooldown is over, and for failed devices", () => {
+    show(
+      [
+        dev({ state: "done" }, { updated_ms: Date.now() - 400_000 }),
+        dev({ state: "failed", code: "cancelled" }, { mac: "48:A9:8A:00:00:0B" }),
+      ],
+      { cooldownSecs: 300 },
+    );
+    for (const b of screen.getAllByRole("button", { name: "Forget" })) expect(b).toBeEnabled();
+  });
+
   it("toggles serving only one device", async () => {
     const { backend } = show([dev({ state: "done" })]);
     await userEvent.click(screen.getByRole("button", { name: "Only this" }));

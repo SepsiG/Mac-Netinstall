@@ -24,6 +24,23 @@ function args(elements: MessageFormatElement[], out = new Set<string>()): Set<st
 const FRONTEND_CODES = ["internal", "unknown"];
 
 describe("locales", () => {
+  it("Hungarian counts use plurals and distinct words for actions and states", () => {
+    for (const key of ["confirm.quit_body", "confirm.stop_body"]) {
+      const el = parse(HU[key]!).find((e) => "options" in e);
+      expect(el, key).toBeDefined();
+    }
+    expect(HU["confirm.quit_ok"]).toBe("Kilépés így is");
+    const words = new Set([HU["action.flash"], HU["state.flashing"], HU["settings.flashing"]]);
+    expect(words.size).toBe(3);
+  });
+
+  it("busy devices are described the same way everywhere", () => {
+    for (const key of ["confirm.quit_body", "confirm.stop_body"]) {
+      expect(EN[key], key).toMatch(/being prepared or flashed/);
+      expect(HU[key], key).toMatch(/előkészítés vagy telepítés/);
+    }
+  });
+
   it("hu has exactly the keys of en", () => {
     expect(Object.keys(HU).sort()).toEqual(Object.keys(EN).sort());
   });

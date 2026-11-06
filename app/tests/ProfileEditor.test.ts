@@ -111,6 +111,37 @@ describe("ProfileEditor", () => {
     expect(onclose).toHaveBeenCalledWith({ deleted: "lab" });
   });
 
+  it("waits for typing to pause before listing packages of an exact version", async () => {
+    const { backend } = open(null);
+    await waitFor(() => expect(backend.availablePackages).toHaveBeenCalledWith("stable", "arm64"));
+    vi.mocked(backend.availablePackages).mockClear();
+    await userEvent.click(screen.getByRole("radio", { name: /Exact version/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Exact version" }), "7.25.1");
+    expect(backend.availablePackages).not.toHaveBeenCalled();
+    await waitFor(() => expect(backend.availablePackages).toHaveBeenCalledWith("7.25.1", "arm64"));
+    expect(backend.availablePackages).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks before Escape discards changes", async () => {
+    const { onclose } = open({ name: "lab", version: "stable", extra_packages: [], config: { mode: "default" } });
+    await userEvent.type(screen.getByLabelText("Name"), "2");
+    await userEvent.keyboard("{Escape}");
+    expect(onclose).not.toHaveBeenCalled();
+    const ask = screen.getAllByRole("dialog").at(-1)!;
+    expect(ask).toHaveTextContent("Discard your changes?");
+    await userEvent.click(within(ask).getByRole("button", { name: "Keep editing" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(within(screen.getAllByRole("dialog").at(-1)!).getByRole("button", { name: "Discard" }));
+    expect(onclose).toHaveBeenCalledWith({});
+  });
+
+  it("closes on Escape at once without changes", async () => {
+    const { onclose } = open({ name: "lab", version: "stable", extra_packages: [], config: { mode: "default" } });
+    await userEvent.keyboard("{Escape}");
+    expect(onclose).toHaveBeenCalledWith({});
+  });
+
   it("shows why the package list is missing", async () => {
     const backend = mockBackend({
       availablePackages: vi.fn(async () => Promise.reject({ code: "packages_unavailable", params: { cause: "network" } })),

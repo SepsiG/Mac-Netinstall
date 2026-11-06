@@ -1,6 +1,8 @@
 <script lang="ts">
   // One line of status under the toolbar: preflight findings with advice
-  // while stopped; link, kernels and selection while running.
+  // while stopped; link, kernels and selection while running. Blocking
+  // findings read as things to do until Start is tried (`attempted`), and
+  // only then as errors.
   import { percent } from "../lib/format";
   import { locale, t } from "../lib/i18n";
   import { describe, hint } from "../lib/messages";
@@ -14,6 +16,8 @@
     onlyMac,
     report,
     checking,
+    attempted = false,
+    onretry,
   }: {
     running: boolean;
     started: StartInfo | null;
@@ -22,7 +26,16 @@
     onlyMac: string | null;
     report: PreflightReport | null;
     checking: boolean;
+    /** Start was pressed (and blocked or failed) for this choice. */
+    attempted?: boolean;
+    /** Fetch unavailable kernels again. */
+    onretry?: () => void;
   } = $props();
+
+  function tone(severity: "error" | "warning"): string {
+    if (severity === "warning") return "warning";
+    return attempted ? "error" : "todo";
+  }
 
   function kernelText(k: KernelState): string {
     switch (k.state) {
@@ -64,13 +77,20 @@
       <span class="secondary">{$t("status.kernels")}:</span>
       {kernelText(kernels)}
     </span>
+    {#if running && kernels.state === "unavailable" && onretry}
+      <button class="small" onclick={onretry}>{$t("kernel.retry")}</button>
+    {/if}
   </div>
   {#each findings as f (f.code + JSON.stringify(f.params ?? {}))}
     {@const advice = hint($locale, f.code)}
-    <div class="finding {f.severity}">
-      <span class="icon">{f.severity === "error" ? "⛔" : "⚠️"}</span>
+    {@const kind = tone(f.severity)}
+    <div class="finding {kind}">
+      <span class="icon">{kind === "error" ? "⛔" : kind === "todo" ? "→" : "⚠️"}</span>
       <div>
-        <div>{describe($locale, f)}</div>
+        <div>
+          {#if kind === "todo"}<strong class="todo-label">{$t("status.todo")}</strong>{/if}
+          {describe($locale, f)}
+        </div>
         {#if advice}<div class="hint">{advice}</div>{/if}
       </div>
     </div>
@@ -111,6 +131,16 @@
   }
   .finding.error {
     color: var(--danger);
+  }
+  .finding.todo {
+    color: var(--label);
+  }
+  .finding.todo .icon {
+    color: var(--accent);
+  }
+  .todo-label {
+    font-weight: 600;
+    margin-right: 4px;
   }
   .hint {
     color: var(--secondary);

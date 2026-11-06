@@ -36,6 +36,31 @@ function snapshot(): Snapshot {
 }
 
 describe("EngineState", () => {
+  it("drops forgotten devices and follows the only-MAC selection", () => {
+    const s = new EngineState();
+    s.applySnapshot(snapshot());
+    expect(s.cooldownSecs).toBe(300);
+    s.apply({ event: "only_mac_changed", mac: B });
+    expect(s.onlyMac).toBe(B);
+    s.apply({ event: "forgotten", mac: B });
+    expect(s.rows).toEqual([]);
+    s.apply({ event: "only_mac_changed", mac: null });
+    expect(s.onlyMac).toBeNull();
+  });
+
+  it("keeps the last rows (stale) when a snapshot of a stopped engine has none", () => {
+    const s = new EngineState();
+    s.applySnapshot(snapshot());
+    s.apply({ event: "stopped" });
+    expect(s.stale).toBe(true);
+    s.applySnapshot({ ...snapshot(), running: false, devices: [] });
+    expect(s.rows.map((r) => r.mac)).toEqual([B]);
+    expect(s.stale).toBe(true);
+    s.apply({ event: "started", interface: "en7", server_ip: "192.168.88.1", bootp: "", tftp: "", netinstall: "" });
+    expect(s.rows).toEqual([]);
+    expect(s.stale).toBe(false);
+  });
+
   it("loads a snapshot", () => {
     const s = new EngineState();
     s.applySnapshot(snapshot());

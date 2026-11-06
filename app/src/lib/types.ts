@@ -87,6 +87,8 @@ export type EngineEvent =
   | ({ event: "device"; mac: string } & DeviceState)
   | ({ event: "discovered"; mac: string } & DeviceInfoView)
   | { event: "ignored"; mac: string; reason: string }
+  | { event: "forgotten"; mac: string }
+  | { event: "only_mac_changed"; mac: string | null }
   | ({ event: "error" } & Failure)
   | ({ event: "warning" } & Failure);
 
@@ -113,6 +115,8 @@ export interface InterfaceView {
   up: boolean;
   running: boolean;
   default_route: boolean;
+  /** A Thunderbolt networking port (`Thunderbolt 1`), not an adapter. */
+  thunderbolt: boolean;
 }
 
 export type ConfigMode = { mode: "default" } | { mode: "custom_script"; local_name: string };

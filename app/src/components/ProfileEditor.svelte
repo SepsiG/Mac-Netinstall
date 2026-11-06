@@ -31,6 +31,13 @@
   let saveError = $state<Failure | null>(null);
   let tried = $state(false);
   let askDelete = $state(false);
+  let askDiscard = $state(false);
+  const pristine = JSON.stringify(toForm(initial));
+  const dirty = $derived(JSON.stringify($state.snapshot(form)) !== pristine);
+
+  /** Wait this long after typing an exact version before asking for its
+   *  packages (no request per keystroke). */
+  const TYPING_PAUSE_MS = 300;
 
   const errors = $derived(formErrors(form));
   const spec = $derived(form.useChannel ? form.channel : form.exact.trim());
@@ -38,13 +45,25 @@
   const choices = $derived([...new Set([...(available ?? []), ...form.packages])].sort());
 
   let request = 0;
+  let firstList = true;
   $effect(() => {
     const version = spec;
     const a = arch;
-    if (!form.useChannel && errors.version) return;
+    const typed = !form.useChannel;
+    if (typed && errors.version) return;
     const mine = ++request;
     available = null;
     listError = null;
+    if (!typed || firstList) {
+      firstList = false;
+      list(mine, version, a);
+      return;
+    }
+    const timer = setTimeout(() => list(mine, version, a), TYPING_PAUSE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  function list(mine: number, version: string, a: string) {
     backend.availablePackages(version, a).then(
       (r) => {
         if (mine === request) available = r.packages;
@@ -56,7 +75,13 @@
         }
       },
     );
-  });
+  }
+
+  /** Escape: close at once, or ask first if there are unsaved changes. */
+  function requestClose() {
+    if (dirty) askDiscard = true;
+    else onclose({});
+  }
 
   function toggle(name: string, on: boolean) {
     form.packages = on ? [...form.packages, name] : form.packages.filter((p) => p !== name);
@@ -95,11 +120,18 @@
   }
 </script>
 
-<Modal title={initial ? $t("profile.edit_title") : $t("profile.new_title")} onclose={() => onclose({})} width={520}>
+<Modal title={initial ? $t("profile.edit_title") : $t("profile.new_title")} onclose={requestClose} width={520}>
   <form class="grid" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <label for="p-name">{$t("profile.name")}</label>
     <div>
-      <input id="p-name" type="text" bind:value={form.name} autocomplete="off" aria-invalid={tried && !!errors.name} />
+      <input
+        id="p-name"
+        type="text"
+        bind:value={form.name}
+        autocomplete="off"
+        aria-invalid={tried && !!errors.name}
+        data-autofocus
+      />
       {#if tried && errors.name}<div class="field-error" role="alert">{$t(errors.name)}</div>{/if}
     </div>
 
@@ -185,6 +217,18 @@
     <button class="primary" onclick={save}>{$t("profile.save")}</button>
   {/snippet}
 </Modal>
+
+{#if askDiscard}
+  <ConfirmDialog
+    title={$t("profile.discard_title")}
+    body={$t("profile.discard_body")}
+    confirmLabel={$t("profile.discard_ok")}
+    cancelLabel={$t("profile.keep_editing")}
+    destructive
+    onconfirm={() => onclose({})}
+    oncancel={() => (askDiscard = false)}
+  />
+{/if}
 
 {#if askDelete && initial}
   <ConfirmDialog
