@@ -88,9 +88,11 @@ impl Version {
         (nums, rank, num)
     }
 
-    /// Whether MikroTik publishes `<file>.sha256` checksums for this
-    /// version: from 7.15 on (7.14 and older answer 404; verified on the
-    /// download server). Pre-releases of 7.15 count as older.
+    /// Whether a published `<file>.sha256` is *required* for this version:
+    /// from 7.15 on (7.15 final included; its betas and rcs count as
+    /// older), where MikroTik publishes one for every file. Older versions
+    /// may or may not have one (e.g. 7.14.3 does, 7.12.1 does not); a
+    /// checksum that is present is verified for every version.
     pub fn has_published_checksums(&self) -> bool {
         *self >= Version("7.15".into())
     }
