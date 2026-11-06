@@ -142,7 +142,11 @@ pub struct Interface {
     pub ipv4: Vec<(Ipv4Addr, Ipv4Addr)>,
     /// `IFF_UP`: administratively up.
     pub is_up: bool,
-    /// `IFF_RUNNING`: resources allocated (on macOS: link is active).
+    /// `IFF_RUNNING`: resources allocated. **Not a carrier indication on
+    /// macOS**: Ethernet ports without a cable (`ifconfig` "status:
+    /// inactive") are often still `RUNNING`. A manually configured IPv4
+    /// address, however, is removed while there is no carrier, so a
+    /// missing address is the reliable "no link" signal.
     pub is_running: bool,
     /// `IFF_LOOPBACK`.
     pub is_loopback: bool,
