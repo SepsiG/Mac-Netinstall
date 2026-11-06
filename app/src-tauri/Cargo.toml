@@ -1,0 +1,40 @@
+[package]
+name = "mac-netinstall"
+description = "Mac Netinstall: the desktop app (Tauri) over ni-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Tauri 2.12 needs Rust 1.90 (the other crates keep the workspace's 1.88).
+rust-version = "1.90"
+publish = false
+
+[lib]
+name = "mac_netinstall_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mac-netinstall"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+core-foundation.workspace = true
+core-foundation-sys.workspace = true
+ni-assets.workspace = true
+ni-engine.workspace = true
+ni-net.workspace = true
+ni-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { workspace = true, features = [] }
+tauri-plugin-dialog.workspace = true
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "std"] }
+
+[dev-dependencies]
+ni-assets = { workspace = true, features = ["testing"] }
+ni-sim = { workspace = true, features = ["lan"] }

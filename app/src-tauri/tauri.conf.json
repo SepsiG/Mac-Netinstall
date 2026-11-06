@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Mac Netinstall",
+  "version": "0.1.0",
+  "identifier": "io.github.sepsig.mac-netinstall",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Mac Netinstall",
+        "width": 1040,
+        "height": 680,
+        "minWidth": 820,
+        "minHeight": 520
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "freezePrototype": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
+    "category": "public.app-category.utilities",
+    "shortDescription": "MikroTik Netinstall for macOS",
+    "copyright": "GPL-3.0-only",
+    "license": "GPL-3.0-only",
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
+  }
+}

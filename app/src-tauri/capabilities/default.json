@@ -1,0 +1,38 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window may call the app's own commands and listen to its events; no shell, file system, HTTP or dialog access from the web view.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-list-interfaces",
+    "allow-preflight",
+    "allow-start",
+    "allow-stop",
+    "allow-flash",
+    "allow-retry",
+    "allow-cancel",
+    "allow-forget",
+    "allow-set-auto-repeat",
+    "allow-set-active-profile",
+    "allow-set-only-mac",
+    "allow-set-max-parallel",
+    "allow-set-cooldown",
+    "allow-snapshot",
+    "allow-list-profiles",
+    "allow-save-profile",
+    "allow-delete-profile",
+    "allow-available-packages",
+    "allow-pick-script",
+    "allow-get-settings",
+    "allow-set-settings",
+    "allow-cache-info",
+    "allow-clear-cache",
+    "allow-export-log",
+    "allow-preferred-languages",
+    "allow-quit"
+  ]
+}
