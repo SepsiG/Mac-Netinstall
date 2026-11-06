@@ -59,9 +59,10 @@ fn ioreg_macs() -> HashMap<String, String> {
     out
 }
 
-/// CI runners are virtual machines with other NICs and MAC masking (see
-/// `ni-net`'s `test_env`): skipped where `CI` is set, unless
-/// `NI_HARDWARE_TESTS=1`.
+/// CI runners are virtual machines with other NICs and MAC masking:
+/// skipped where `CI` is set, unless `NI_HARDWARE_TESTS=1`. Twin of
+/// `skip_hardware_test` in `crates/ni-net/src/test_env.rs` (an integration
+/// test cannot use that `cfg(test)` module); keep the two rules the same.
 fn skip_on_ci() -> bool {
     let ci = std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "false" && v != "0");
     let forced = std::env::var("NI_HARDWARE_TESTS").is_ok_and(|v| v == "1");

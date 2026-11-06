@@ -3,12 +3,15 @@
 //! bounce when a device finishes or fails while the app is in the
 //! background.
 //!
-//! [`DockTracker`] follows the engine's events (and a snapshot after
-//! missed events); `lib.rs` applies its [`DockUpdate`]s to the window.
+//! [`follow`] keeps a [`DockTracker`] in step with the engine (its events,
+//! and a snapshot whenever events were missed or the engine task was
+//! replaced); `lib.rs` applies the [`DockUpdate`]s to the window.
 
 use ni_engine::{DeviceState, DeviceView, EngineEvent};
 use ni_proto::Mac;
 use std::collections::BTreeSet;
+use std::future::Future;
+use tokio::sync::broadcast::{self, error::RecvError};
 
 /// The devices being prepared or flashed, as the engine reported them.
 #[derive(Debug, Default)]
@@ -31,9 +34,66 @@ pub fn badge_label(busy: usize) -> Option<String> {
 }
 
 /// Bounce the Dock icon once (informational) only for a finished device
-/// while the app is not in front; the user is looking otherwise.
-pub fn should_bounce(finished: bool, app_focused: bool) -> bool {
-    finished && !app_focused
+/// while the app is not in front (the user is looking otherwise) and not
+/// quitting.
+pub fn should_bounce(finished: bool, app_focused: bool, quitting: bool) -> bool {
+    finished && !app_focused && !quitting
+}
+
+/// Where [`follow`] gets the engine's events and devices from (the
+/// current engine task; a fake in tests).
+pub trait DockSource {
+    /// A new subscription to the current engine task's events.
+    fn subscribe(&mut self) -> broadcast::Receiver<EngineEvent>;
+    /// The current engine task's devices (`None`: it did not answer).
+    fn devices(&self) -> impl Future<Output = Option<Vec<DeviceView>>> + Send;
+    /// Resolves when the engine task is replaced: `true`, or `false` when
+    /// there will be no more engine (the app is quitting).
+    fn replaced(&mut self) -> impl Future<Output = bool> + Send;
+}
+
+/// Follow the engine for the Dock tile and pass every change to `apply`,
+/// until the source ends.
+///
+/// Missed events (a lagging subscription) and a replaced engine task are
+/// handled in order, in this loop: drop the old subscription (what is
+/// still queued there is older than anything a new snapshot shows),
+/// subscribe again, *then* ask for the snapshot and apply it before any
+/// event of the new subscription. Every event from after the snapshot is
+/// therefore applied after it, and events between subscribing and the
+/// snapshot only replay transitions that end where the snapshot is, so
+/// the count cannot go stale (a device finishing during the resync is not
+/// lost, and an old `flashing` cannot bring back a finished device).
+pub async fn follow<S: DockSource>(mut source: S, mut apply: impl FnMut(DockUpdate)) {
+    let mut dock = DockTracker::default();
+    loop {
+        let mut events = source.subscribe();
+        if let Some(devices) = source.devices().await {
+            apply(dock.resync(&devices));
+        }
+        loop {
+            tokio::select! {
+                // Queued events first: they happened before a replacement.
+                biased;
+                r = events.recv() => match r {
+                    Ok(e) => apply(dock.on_event(&e)),
+                    Err(RecvError::Lagged(_)) => break,
+                    Err(RecvError::Closed) => {
+                        if !source.replaced().await {
+                            return;
+                        }
+                        break;
+                    }
+                },
+                alive = source.replaced() => {
+                    if !alive {
+                        return;
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl DockTracker {
@@ -212,8 +272,167 @@ mod tests {
 
     #[test]
     fn the_dock_bounces_only_for_a_finished_device_in_the_background() {
-        assert!(should_bounce(true, false));
-        assert!(!should_bounce(true, true));
-        assert!(!should_bounce(false, false));
+        assert!(should_bounce(true, false, false));
+        assert!(!should_bounce(true, true, false), "in front");
+        assert!(!should_bounce(false, false, false), "nothing finished");
+        assert!(!should_bounce(true, false, true), "quitting");
+    }
+
+    /// A fake engine: its events channel, and a snapshot that runs
+    /// `during` (events the engine sends while the snapshot is on its
+    /// way) before answering with `devices`.
+    struct Fake {
+        tx: broadcast::Sender<EngineEvent>,
+        snapshots: std::sync::Arc<std::sync::Mutex<Vec<Snap>>>,
+        replaced: tokio::sync::mpsc::UnboundedReceiver<bool>,
+    }
+
+    struct Snap {
+        during: Vec<EngineEvent>,
+        devices: Vec<DeviceView>,
+    }
+
+    impl DockSource for Fake {
+        fn subscribe(&mut self) -> broadcast::Receiver<EngineEvent> {
+            self.tx.subscribe()
+        }
+
+        fn devices(&self) -> impl Future<Output = Option<Vec<DeviceView>>> + Send {
+            let next = {
+                let mut all = self.snapshots.lock().unwrap();
+                (!all.is_empty()).then(|| all.remove(0))
+            };
+            let tx = self.tx.clone();
+            async move {
+                let snap = next?;
+                for e in snap.during {
+                    tx.send(e).unwrap();
+                }
+                tokio::task::yield_now().await;
+                Some(snap.devices)
+            }
+        }
+
+        fn replaced(&mut self) -> impl Future<Output = bool> + Send {
+            let rx = &mut self.replaced;
+            async move { rx.recv().await.unwrap_or(false) }
+        }
+    }
+
+    /// Run [`follow`] over `fake`; returns the updates and the tracker's
+    /// final badge once `fake`'s engine is gone.
+    async fn run(fake: Fake) -> Vec<DockUpdate> {
+        let mut got = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            follow(fake, |u| got.push(u)),
+        )
+        .await
+        .expect("follow ends with the engine");
+        got
+    }
+
+    fn fake(
+        capacity: usize,
+        snapshots: Vec<Snap>,
+    ) -> (Fake, tokio::sync::mpsc::UnboundedSender<bool>) {
+        let (tx, _) = broadcast::channel(capacity);
+        let (replace, replaced) = tokio::sync::mpsc::unbounded_channel();
+        let fake = Fake {
+            tx,
+            snapshots: std::sync::Arc::new(std::sync::Mutex::new(snapshots)),
+            replaced,
+        };
+        (fake, replace)
+    }
+
+    /// The badge after all `updates`, starting from none.
+    fn final_badge(updates: &[DockUpdate]) -> Option<String> {
+        updates.iter().rev().find_map(|u| u.badge.clone()).flatten()
+    }
+
+    #[tokio::test]
+    async fn a_device_finishing_while_the_snapshot_is_on_its_way_is_not_lost() {
+        // The snapshot was taken while A was flashing; A finished right
+        // after (its `done` arrives while the snapshot is on its way).
+        // Applying the snapshot after that event would leave A busy.
+        let (f, replace) = fake(
+            16,
+            vec![Snap {
+                during: vec![device(A, DeviceState::Done)],
+                devices: vec![view(A, flashing())],
+            }],
+        );
+        let tx = f.tx.clone();
+        let task = tokio::spawn(run(f));
+        tokio::task::yield_now().await;
+        drop(tx);
+        replace.send(false).unwrap();
+        let updates = task.await.unwrap();
+        assert_eq!(final_badge(&updates), None, "{updates:?}");
+        assert!(
+            updates.iter().any(|u| u.finished),
+            "A finished: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_events_from_before_a_lag_do_not_bring_back_a_finished_device() {
+        // The forwarder lags: what is still queued (A flashing) is older
+        // than the snapshot taken afterwards, which shows A done.
+        let (f, replace) = fake(
+            2,
+            vec![
+                Snap {
+                    during: vec![],
+                    devices: vec![],
+                },
+                Snap {
+                    during: vec![],
+                    devices: vec![view(A, DeviceState::Done)],
+                },
+            ],
+        );
+        let tx = f.tx.clone();
+        let task = tokio::spawn(run(f));
+        // Let it subscribe and take the first snapshot, then overflow.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        for e in [
+            device(B, preparing()),
+            device(B, DeviceState::Discovered),
+            device(A, preparing()),
+            device(A, flashing()),
+        ] {
+            tx.send(e).unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        replace.send(false).unwrap();
+        let updates = task.await.unwrap();
+        assert_eq!(final_badge(&updates), None, "{updates:?}");
+        assert!(!updates.iter().any(|u| u.finished), "{updates:?}");
+    }
+
+    #[tokio::test]
+    async fn a_replaced_engine_is_recounted_from_its_snapshot() {
+        let (f, replace) = fake(
+            16,
+            vec![
+                Snap {
+                    during: vec![],
+                    devices: vec![view(A, flashing())],
+                },
+                Snap {
+                    during: vec![],
+                    devices: vec![view(B, preparing()), view(A, preparing())],
+                },
+            ],
+        );
+        let task = tokio::spawn(run(f));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        replace.send(true).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        replace.send(false).unwrap();
+        let updates = task.await.unwrap();
+        assert_eq!(final_badge(&updates).as_deref(), Some("2"), "{updates:?}");
     }
 }
