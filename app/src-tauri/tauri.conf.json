@@ -51,7 +51,12 @@
         "Resources/en.lproj/InfoPlist.strings": "./locales/en.lproj/InfoPlist.strings",
         "Resources/hu.lproj/InfoPlist.strings": "./locales/hu.lproj/InfoPlist.strings"
       },
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "dmg": {
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 180 },
+        "applicationFolderPosition": { "x": 480, "y": 180 }
+      }
     }
   }
 }

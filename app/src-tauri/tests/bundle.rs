@@ -242,3 +242,29 @@ fn the_app_is_a_regular_dock_app() {
             && !lib.contains("ActivationPolicy::Prohibited")
     );
 }
+
+#[test]
+fn the_dmg_offers_drag_to_applications() {
+    // The app on the left, the Applications link on the right, in a
+    // window that fits both. Finder applies the layout through AppleScript,
+    // which `CI=true` builds skip: they get the same two items without
+    // the layout (see README, "Building a release").
+    let conf = json("tauri.conf.json");
+    let dmg = &conf["bundle"]["macOS"]["dmg"];
+    let (w, h) = (
+        dmg["windowSize"]["width"].as_u64().unwrap(),
+        dmg["windowSize"]["height"].as_u64().unwrap(),
+    );
+    assert!(
+        (500..=900).contains(&w) && (300..=600).contains(&h),
+        "{w}x{h}"
+    );
+    let app = &dmg["appPosition"];
+    let apps = &dmg["applicationFolderPosition"];
+    assert_eq!(app["y"], apps["y"], "side by side");
+    let (ax, bx) = (app["x"].as_u64().unwrap(), apps["x"].as_u64().unwrap());
+    assert!(
+        ax < bx && bx < w,
+        "app left of Applications, inside the window"
+    );
+}
