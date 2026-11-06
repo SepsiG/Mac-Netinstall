@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/ni-proto"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+rust-version = "1.80"
+
+[workspace.dependencies]
+bytes = "1"
+thiserror = "2"
+proptest = "1"
+ni-proto = { path = "crates/ni-proto" }
