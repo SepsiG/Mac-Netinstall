@@ -269,6 +269,16 @@ impl AppCore {
         Ok(preflight::run(&cfg, Some(engine.assets()), cfg.profile.as_ref()).await)
     }
 
+    /// The quick, local preflight (interface, link, configured address):
+    /// no port is bound and nothing is downloaded, so the window can repeat
+    /// it every few seconds.
+    pub async fn check_interface(&self, req: &StartRequest) -> Result<PreflightReport, Failure> {
+        let cfg = self.engine_config(req)?;
+        tokio::task::spawn_blocking(move || preflight::run_local(&cfg))
+            .await
+            .map_err(|e| Failure::new("interface_list_failed").with("detail", e))
+    }
+
     /// Start serving; remembers the interface, profile and auto-repeat.
     pub async fn start(&self, req: &StartRequest) -> Result<StartInfo, Failure> {
         let cfg = self.engine_config(req)?;

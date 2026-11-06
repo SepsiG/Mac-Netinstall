@@ -306,6 +306,19 @@ pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
 
 /// Everything: network (with `cfg.interfaces`), the default route, ports,
 /// and the assets of `profile` if given.
+/// The quick, local part of [`run`]: the interface, its link and
+/// addresses, and the default route. Binds no port and needs no network,
+/// so it can run every few seconds.
+pub fn run_local(cfg: &EngineConfig) -> PreflightReport {
+    let ifaces = cfg.interfaces.list().unwrap_or_default();
+    let (mut findings, network) = check_network(&ifaces, cfg);
+    if network.is_some() {
+        let routed = ni_net::default_route_interfaces().unwrap_or_default();
+        findings.extend(check_default_route(&routed, cfg));
+    }
+    PreflightReport { findings, network }
+}
+
 pub async fn run(
     cfg: &EngineConfig,
     assets: Option<&Assets>,
@@ -559,6 +572,32 @@ mod tests {
             codes(&check_ports(&cfg)),
             [("unknown_interface", Severity::Error)]
         );
+    }
+
+    #[tokio::test]
+    async fn the_local_check_binds_no_port_and_needs_no_assets() {
+        let held = bind_udp(&BindOptions::new(0).addr(Ipv4Addr::LOCALHOST)).unwrap();
+        let mut cfg = EngineConfig::new("lo0");
+        cfg.server_mac = Some(MAC);
+        cfg.ports.bind_ip = Ipv4Addr::LOCALHOST;
+        cfg.ports.bootp = 0;
+        cfg.ports.tftp = held.local_addr().unwrap().port();
+        cfg.ports.netinstall = 0;
+        let full = run(&cfg, None, None).await;
+        assert!(full
+            .findings
+            .iter()
+            .any(|f| f.failure.code == "port_in_use"));
+        let local = run_local(&cfg);
+        assert!(local
+            .findings
+            .iter()
+            .all(|f| f.failure.code != "port_in_use"));
+        assert_eq!(
+            codes(&local.findings),
+            [("unsuitable_interface", Severity::Warning)]
+        );
+        assert_eq!(local.network, full.network);
     }
 
     #[tokio::test]

@@ -28,7 +28,13 @@
   let profiles = $state<Profile[]>([]);
   let profile = $state<string | null>(null);
   let autoRepeat = $state(false);
-  let report = $state<PreflightReport | null>(null);
+  /** The last full preflight (interface, ports, assets). */
+  let fullReport = $state<PreflightReport | null>(null);
+  /** A quick local re-check since then (interface, link, address). */
+  let localReport = $state<PreflightReport | null>(null);
+  /** What the status line shows: the full report with its interface part
+   *  replaced by the newer local check. */
+  const report = $derived(mergeReports(fullReport, localReport));
   let checking = $state(false);
   let busy = $state(false);
   let error = $state<Failure | null>(null);
@@ -41,10 +47,60 @@
   let attempted = $state(false);
   let logOpen = $state(true);
   let ready = $state(false);
-  /** Bumped while stopped so the adapter list and the preflight follow
+  /** While stopped the adapter list and a quick local check follow
    *  changes in macOS (a cable, the adapter's TCP/IP settings). */
-  let refreshTick = $state(0);
   const REFRESH_MS = 5_000;
+
+  /** Codes the local check (`check_interface`) decides. */
+  const LOCAL_CODES = new Set([
+    "unknown_interface",
+    "interface_down",
+    "link_down",
+    "interface_not_ethernet",
+    "unsuitable_interface",
+    "no_manual_ipv4",
+    "ipv4_dhcp",
+    "no_ipv4",
+    "server_ip_not_on_interface",
+    "no_mac",
+    "invalid_netmask",
+    "server_ip_not_host",
+    "pool_inverted",
+    "pool_outside_subnet",
+    "pool_includes_reserved",
+    "invalid_network",
+    "default_route",
+  ]);
+
+  function mergeReports(full: PreflightReport | null, local: PreflightReport | null): PreflightReport | null {
+    if (!local) return full;
+    if (!full) return local;
+    return {
+      network: local.network,
+      findings: [...local.findings, ...full.findings.filter((f) => !LOCAL_CODES.has(f.code))],
+    };
+  }
+
+  /** Explicit refresh (↻): the interface list and the full preflight. */
+  let fullTick = $state(0);
+  async function refresh() {
+    await loadInterfaces();
+    fullTick++;
+  }
+
+  /** The timer's quick, local re-check: no ports, no downloads. */
+  async function quickCheck() {
+    await loadInterfaces();
+    const req = request();
+    if (!req || engine.running) return;
+    const mine = checkSeq;
+    try {
+      const r = await backend.checkInterface(req);
+      if (mine === checkSeq) localReport = r;
+    } catch {
+      // the next full check reports it
+    }
+  }
 
   async function attempt<T>(action: () => Promise<T>): Promise<T | undefined> {
     try {
@@ -114,7 +170,7 @@
     })();
     const timer = setInterval(() => {
       if (ready && !engine.running) {
-        void loadInterfaces().then(() => refreshTick++);
+        void quickCheck();
       }
     }, REFRESH_MS);
     return () => {
@@ -132,9 +188,10 @@
   let checkedKey = "";
   $effect(() => {
     const req = request();
-    void refreshTick;
+    void fullTick;
     if (!ready || engine.running || !req) {
-      report = null;
+      fullReport = null;
+      localReport = null;
       return;
     }
     const mine = ++checkSeq;
@@ -145,7 +202,10 @@
     checking = true;
     backend.preflight(req).then(
       (r) => {
-        if (mine === checkSeq) report = r;
+        if (mine === checkSeq) {
+          fullReport = r;
+          localReport = null;
+        }
       },
       (e) => {
         if (mine === checkSeq) error = toFailure(e);
@@ -155,7 +215,6 @@
     });
   });
 
-  const blocked = $derived(report?.findings.some((f) => f.severity === "error") ?? false);
 
   /** `MAC · model` of each device being prepared or flashed. */
   function busyDevices(): string[] {
@@ -176,8 +235,19 @@
     }
     attempted = true;
     const req = request();
-    if (!req || blocked) return; // the findings now show as errors
+    if (!req) return;
     busy = true;
+    // The full check again right before starting (ports, downloads).
+    const mine = ++checkSeq;
+    const fresh = await attempt(() => backend.preflight(req));
+    if (fresh && mine === checkSeq) {
+      fullReport = fresh;
+      localReport = null;
+    }
+    if (!fresh || fresh.findings.some((f) => f.severity === "error")) {
+      busy = false;
+      return; // the findings now show as errors
+    }
     const info = await attempt(() => backend.start(req));
     if (info && settings) engine.cooldownSecs = settings.cooldown_secs;
     busy = false;
@@ -255,7 +325,7 @@
 <main>
   <header class="toolbar">
     <div class="row">
-      <InterfacePicker {interfaces} bind:selected={iface} disabled={engine.running} onrefresh={loadInterfaces} />
+      <InterfacePicker {interfaces} bind:selected={iface} disabled={engine.running} onrefresh={refresh} />
       <span class="spacer"></span>
       <button
         class="primary start"

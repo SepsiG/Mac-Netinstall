@@ -243,6 +243,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_interfaces,
             commands::preflight,
+            commands::check_interface,
             commands::start,
             commands::stop,
             commands::flash,

@@ -28,6 +28,11 @@ pub async fn preflight(core: State<'_, AppCore>, req: StartRequest) -> R<Preflig
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn check_interface(core: State<'_, AppCore>, req: StartRequest) -> R<PreflightReport> {
+    core.check_interface(&req).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn start(core: State<'_, AppCore>, req: StartRequest) -> R<StartInfo> {
     core.start(&req).await
 }

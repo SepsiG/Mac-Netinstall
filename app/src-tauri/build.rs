@@ -7,6 +7,7 @@
 const COMMANDS: &[&str] = &[
     "list_interfaces",
     "preflight",
+    "check_interface",
     "start",
     "stop",
     "flash",

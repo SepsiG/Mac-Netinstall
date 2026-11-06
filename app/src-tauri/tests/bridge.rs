@@ -172,6 +172,18 @@ async fn start_flash_and_remember_the_choices() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_quick_interface_check_makes_no_requests() {
+    let rig = rig("bridge-local-check").await;
+    let before = rig.srv.paths().len();
+    let report = rig.core.check_interface(&request()).await.unwrap();
+    assert!(report.network.is_some());
+    assert_eq!(rig.srv.paths().len(), before, "no HTTP for the quick check");
+    // The full preflight does look at the profile's assets.
+    rig.core.preflight(&request()).await.unwrap();
+    assert!(rig.srv.paths().len() > before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn errors_are_codes_without_paths() {
     let rig = rig("bridge-errors").await;
     let err = rig.core.flash("nope", "test").await.unwrap_err();

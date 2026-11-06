@@ -109,6 +109,19 @@ describe("App", () => {
     expect(backend.setActiveProfile).toHaveBeenCalledWith("lab");
   });
 
+  it("runs the full preflight again right before starting", async () => {
+    const backend = await start();
+    const full = vi.mocked(backend.preflight).mock.calls.length;
+    vi.mocked(backend.preflight).mockResolvedValueOnce({
+      network: null,
+      findings: [{ severity: "error", code: "port_in_use", params: { service: "tftp", port: "69" } }],
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(vi.mocked(backend.preflight).mock.calls.length).toBe(full + 1);
+    expect(backend.start).not.toHaveBeenCalled();
+    expect(await screen.findByText("Port 69 (TFTP) is used by another program.")).toBeInTheDocument();
+  });
+
   it("shows preflight problems as things to do, and as errors once Start is tried", async () => {
     const backend = await start({
       preflight: vi.fn(async () => ({
@@ -316,10 +329,21 @@ describe("App", () => {
     try {
       const backend = await start();
       const lists = vi.mocked(backend.listInterfaces).mock.calls.length;
-      const checks = vi.mocked(backend.preflight).mock.calls.length;
+      const full = vi.mocked(backend.preflight).mock.calls.length;
+      // The adapter loses its address (cable out, settings changed).
+      vi.mocked(backend.checkInterface).mockResolvedValue({
+        network: null,
+        findings: [{ severity: "error", code: "no_manual_ipv4", params: { interface: "en7", service: "USB LAN" } }],
+      });
       await vi.advanceTimersByTimeAsync(5_000);
-      await waitFor(() => expect(vi.mocked(backend.preflight).mock.calls.length).toBeGreaterThan(checks));
+      await waitFor(() => expect(backend.checkInterface).toHaveBeenCalled());
       expect(vi.mocked(backend.listInterfaces).mock.calls.length).toBeGreaterThan(lists);
+      // Only the quick local check: no full preflight (ports, downloads).
+      expect(vi.mocked(backend.preflight).mock.calls.length).toBe(full);
+      expect(await screen.findByText(/has no manual IPv4 address/)).toBeInTheDocument();
+      // ↻ runs the full check.
+      await userEvent.click(screen.getByRole("button", { name: "Refresh the interface list" }));
+      await waitFor(() => expect(vi.mocked(backend.preflight).mock.calls.length).toBe(full + 1));
     } finally {
       vi.useRealTimers();
     }

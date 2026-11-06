@@ -10,6 +10,7 @@
     "core:event:allow-unlisten",
     "allow-list-interfaces",
     "allow-preflight",
+    "allow-check-interface",
     "allow-start",
     "allow-stop",
     "allow-flash",

@@ -105,6 +105,7 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
       },
     ]),
     preflight: vi.fn(async () => ({ findings: [], network: null })),
+    checkInterface: vi.fn(async () => ({ findings: [], network: null })),
     start: vi.fn(async (req) => ({
       interface: req.interface,
       server_ip: "192.168.88.1",

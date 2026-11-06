@@ -23,7 +23,10 @@ export type Unlisten = () => void;
 
 export interface Backend {
   listInterfaces(): Promise<InterfaceView[]>;
+  /** Full preflight: interface, ports, the profile's downloads. */
   preflight(req: StartRequest): Promise<PreflightReport>;
+  /** Quick local check (interface, link, address): no ports, no network. */
+  checkInterface(req: StartRequest): Promise<PreflightReport>;
   start(req: StartRequest): Promise<StartInfo>;
   stop(): Promise<void>;
   flash(mac: string, profile: string): Promise<void>;
@@ -77,6 +80,7 @@ export function tauriBackend(): Backend {
   return {
     listInterfaces: () => invoke("list_interfaces"),
     preflight: (req) => invoke("preflight", { req }),
+    checkInterface: (req) => invoke("check_interface", { req }),
     start: (req) => invoke("start", { req }),
     stop: () => invoke("stop"),
     flash: (mac, profile) => invoke("flash", { mac, profile }),

@@ -82,7 +82,12 @@ pub struct Assets {
     events: Option<EventSink>,
     /// Verification results of cached files (see `inventory`).
     checks: inventory::Checks,
+    /// Recent channel answers: channel -> (version, when asked).
+    resolved: std::sync::Mutex<std::collections::HashMap<Channel, (Version, std::time::Instant)>>,
 }
+
+/// How long [`Assets::resolve`] reuses a channel's answer.
+pub const RESOLVE_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// Run blocking file work off the async threads; panics propagate, a
 /// runtime shutdown is [`AssetError::Cancelled`].
@@ -234,6 +239,7 @@ impl Assets {
             max_download: cfg.max_download_bytes,
             events: None,
             checks: Default::default(),
+            resolved: Default::default(),
         })
     }
 
@@ -268,13 +274,32 @@ impl Assets {
     }
 
     /// The version a profile asks for; exact versions need no network.
-    /// A channel's answer is remembered in [`CHANNELS_FILE`]
-    /// (best-effort: failing to write it does not fail the resolution).
+    /// A channel's answer is reused for [`RESOLVE_TTL`] (in memory), and
+    /// remembered in [`CHANNELS_FILE`] (best-effort: failing to write it
+    /// does not fail the resolution).
     pub async fn resolve(&self, spec: &VersionSpec) -> Result<Version, AssetError> {
         match spec {
             VersionSpec::Exact(v) => Ok(v.clone()),
             VersionSpec::Channel(c) => {
-                let version = self.latest(*c).await?.version;
+                let recent = {
+                    let memo = self.resolved.lock().unwrap_or_else(|e| e.into_inner());
+                    memo.get(c)
+                        .filter(|(_, at)| at.elapsed() < RESOLVE_TTL)
+                        .map(|(v, _)| v.clone())
+                };
+                let version = match recent {
+                    Some(v) => v,
+                    None => {
+                        let fresh = self.latest(*c).await?.version;
+                        // The answer's age counts from the request, not
+                        // from its last use.
+                        self.resolved
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(*c, (fresh.clone(), std::time::Instant::now()));
+                        fresh
+                    }
+                };
                 let (root, channel, v) = (self.root.clone(), *c, version.clone());
                 let _ = blocking(move || remember_channel(&root, channel, &v)).await;
                 Ok(version)
@@ -474,6 +499,26 @@ mod tests {
         send(a.register_local_file(Path::new("setup.rsc")));
         send(a.local_file("setup.rsc"));
         send(a.clear_downloads());
+    }
+
+    #[tokio::test]
+    async fn channel_answers_are_reused_for_a_while() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let root = tempdir("resolve-memo");
+        let a = assets(&srv, &root);
+        let stable = VersionSpec::Channel(Channel::Stable);
+        a.resolve(&stable).await.unwrap();
+        a.resolve(&stable).await.unwrap();
+        let asked = srv
+            .paths()
+            .iter()
+            .filter(|p| p.contains("NEWESTa7.stable"))
+            .count();
+        assert_eq!(asked, 1, "the second resolution is from memory");
+        // `latest` itself always asks.
+        a.latest(Channel::Stable).await.unwrap();
+        assert_eq!(srv.paths().len(), 2);
     }
 
     #[tokio::test]
