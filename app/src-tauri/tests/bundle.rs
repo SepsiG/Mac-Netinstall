@@ -27,7 +27,9 @@ fn bundle_identity_and_platform() {
 #[test]
 fn info_plist_explains_local_network_use() {
     let plist = read("Info.plist");
-    let key = plist.find("<key>NSLocalNetworkUsageDescription</key>").unwrap();
+    let key = plist
+        .find("<key>NSLocalNetworkUsageDescription</key>")
+        .unwrap();
     let text = &plist[key..];
     let start = text.find("<string>").unwrap() + "<string>".len();
     let end = text.find("</string>").unwrap();
@@ -40,7 +42,11 @@ fn info_plist_explains_local_network_use() {
 fn the_web_view_is_locked_down() {
     let conf = json("tauri.conf.json");
     let csp = conf["app"]["security"]["csp"].as_str().unwrap();
-    for part in ["default-src 'self'", "script-src 'self'", "object-src 'none'"] {
+    for part in [
+        "default-src 'self'",
+        "script-src 'self'",
+        "object-src 'none'",
+    ] {
         assert!(csp.contains(part), "CSP lacks {part}: {csp}");
     }
     assert!(!csp.contains("unsafe-eval"));
@@ -59,5 +65,8 @@ fn the_web_view_is_locked_down() {
     // Every app command is allowed; nothing else from the core or plugins.
     let build = read("build.rs");
     let listed = build.matches("    \"").count();
-    assert_eq!(perms.iter().filter(|p| p.starts_with("allow-")).count(), listed);
+    assert_eq!(
+        perms.iter().filter(|p| p.starts_with("allow-")).count(),
+        listed
+    );
 }
