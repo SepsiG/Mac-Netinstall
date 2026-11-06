@@ -43,10 +43,10 @@ extern "C-unwind" fn application_should_terminate(
     _cmd: Sel,
     _sender: *mut AnyObject,
 ) -> usize {
-    match HOOK.get() {
+    crate::terminate_reply_guarded(|| match HOOK.get() {
         Some(hook) => (hook.reply)(&hook.app),
         None => crate::NS_TERMINATE_NOW,
-    }
+    })
 }
 
 /// Install `applicationShouldTerminate:` on the app delegate's class; it

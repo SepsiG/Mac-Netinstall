@@ -79,6 +79,19 @@ pub fn terminate_reply(confirmed: bool, busy: usize, ask: impl FnOnce(usize)) ->
     }
 }
 
+/// Run `reply` (the `applicationShouldTerminate:` decision); a panic must
+/// not unwind into AppKit: it is logged and the app may quit
+/// (`NSTerminateNow`), as it would without the guard.
+pub fn terminate_reply_guarded(reply: impl FnOnce() -> usize) -> usize {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(reply)) {
+        Ok(r) => r,
+        Err(_) => {
+            tracing::error!("panic while deciding whether to quit; quitting");
+            NS_TERMINATE_NOW
+        }
+    }
+}
+
 /// Id of the app menu's Quit item.
 const QUIT_MENU_ID: &str = "quit";
 /// How long quitting waits for the engine to stop (or a snapshot).
@@ -209,8 +222,13 @@ pub fn run() {
                     Forwarded::Lagged(n) => handle.emit(ENGINE_LAGGED, n),
                 };
             }));
+            // Without the guard the app still works; only Dock Quit and
+            // logout then skip the confirmation (the close button and the
+            // Quit menu item still ask).
             #[cfg(target_os = "macos")]
-            macos::guard_termination(app.handle().clone(), should_terminate)?;
+            if let Err(e) = macos::guard_termination(app.handle().clone(), should_terminate) {
+                tracing::error!("termination guard not installed: {e}");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -289,6 +307,16 @@ mod tests {
         assert_eq!((reply, asked), (NS_TERMINATE_NOW, None), "confirmed");
         // AppKit's NSApplicationTerminateReply values.
         assert_eq!((NS_TERMINATE_CANCEL, NS_TERMINATE_NOW), (0, 1));
+    }
+
+    #[test]
+    fn a_panic_while_asked_to_terminate_lets_the_app_quit() {
+        assert_eq!(
+            terminate_reply_guarded(|| NS_TERMINATE_CANCEL),
+            NS_TERMINATE_CANCEL
+        );
+        let reply = terminate_reply_guarded(|| panic!("boom"));
+        assert_eq!(reply, NS_TERMINATE_NOW);
     }
 
     #[test]
