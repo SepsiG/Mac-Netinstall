@@ -21,10 +21,12 @@ pub enum PoolError {
 /// per new lease, and O(1) to report exhaustion.
 #[derive(Debug, Clone)]
 pub struct LeasePool {
+    start: u64,
     /// Next candidate address (u64 so `end = 255.255.255.255` cannot wrap).
     next: u64,
     end: u64,
-    /// Excluded at construction plus quarantined later.
+    /// Excluded at construction plus quarantined later; only addresses
+    /// inside `start..=end` are ever stored.
     blocked: HashSet<Ipv4Addr>,
     leases: HashMap<Mac, Ipv4Addr>,
 }
@@ -34,12 +36,27 @@ impl LeasePool {
         if u32::from(start) > u32::from(end) {
             return Err(PoolError::Inverted { start, end });
         }
-        Ok(LeasePool {
+        let mut pool = LeasePool {
+            start: u32::from(start).into(),
             next: u32::from(start).into(),
             end: u32::from(end).into(),
-            blocked: exclude.iter().copied().collect(),
+            blocked: HashSet::new(),
             leases: HashMap::new(),
-        })
+        };
+        for &ip in exclude {
+            pool.quarantine(ip);
+        }
+        Ok(pool)
+    }
+
+    fn contains(&self, ip: Ipv4Addr) -> bool {
+        (self.start..=self.end).contains(&u64::from(u32::from(ip)))
+    }
+
+    /// Size of the range minus excluded and quarantined addresses
+    /// (addresses already leased still count).
+    pub fn usable(&self) -> u64 {
+        self.end - self.start + 1 - self.blocked.len() as u64
     }
 
     /// Address for `mac`: its existing lease, else the lowest address not
@@ -65,9 +82,13 @@ impl LeasePool {
         self.leases.get(mac).copied()
     }
 
-    /// Never hand out `ip` (again) for this pool's lifetime.
+    /// Never hand out `ip` (again) for this pool's lifetime. Addresses
+    /// outside the pool are ignored (nothing to protect, and the blocked
+    /// set must not grow from arbitrary input).
     pub fn quarantine(&mut self, ip: Ipv4Addr) {
-        self.blocked.insert(ip);
+        if self.contains(ip) {
+            self.blocked.insert(ip);
+        }
     }
 
     /// The client declined its address (DHCPDECLINE: someone else uses
@@ -159,10 +180,34 @@ mod tests {
     fn quarantined_future_address_is_skipped() {
         let mut pool = LeasePool::new(ip(10), ip(12), &[]).unwrap();
         pool.quarantine(ip(11));
-        pool.quarantine(ip(99)); // outside the pool: harmless
         assert_eq!(pool.lease(mac(1)), Some(ip(10)));
         assert_eq!(pool.lease(mac(2)), Some(ip(12)));
         assert_eq!(pool.lease(mac(3)), None);
+    }
+
+    #[test]
+    fn addresses_outside_the_pool_are_never_blocked() {
+        let mut pool = LeasePool::new(ip(10), ip(12), &[ip(1), ip(11)]).unwrap();
+        assert_eq!(pool.blocked.len(), 1, "out-of-range exclusion dropped");
+        for last in [0, 9, 13, 255] {
+            pool.quarantine(ip(last));
+        }
+        pool.quarantine(Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(pool.blocked.len(), 1);
+    }
+
+    #[test]
+    fn usable_counts_addresses_minus_exclusions() {
+        assert_eq!(LeasePool::new(ip(10), ip(12), &[]).unwrap().usable(), 3);
+        assert_eq!(
+            LeasePool::new(ip(10), ip(12), &[ip(11), ip(11), ip(99)])
+                .unwrap()
+                .usable(),
+            2
+        );
+        assert_eq!(LeasePool::new(ip(1), ip(1), &[ip(1)]).unwrap().usable(), 0);
+        let all = LeasePool::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, &[]).unwrap();
+        assert_eq!(all.usable(), 1 << 32);
     }
 
     #[test]

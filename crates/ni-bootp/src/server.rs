@@ -30,7 +30,7 @@ pub enum BootpEvent {
     /// DHCPDECLINE: the lease was dropped and `ip` quarantined.
     Declined {
         mac: Mac,
-        ip: Option<Ipv4Addr>,
+        ip: Ipv4Addr,
     },
     /// Sending a reply failed (e.g. the interface went down).
     SendFailed {
