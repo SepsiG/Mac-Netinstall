@@ -268,3 +268,41 @@ fn the_dmg_offers_drag_to_applications() {
         "app left of Applications, inside the window"
     );
 }
+
+#[test]
+fn one_version_everywhere() {
+    // The workspace's `[workspace.package] version` is the single source;
+    // a release bumps it, tauri.conf.json, app/package.json (+ lock) and
+    // adds its CHANGELOG.md section (README, "Releasing").
+    let version = env!("CARGO_PKG_VERSION");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let text = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
+    let workspace = text("Cargo.toml");
+    let section = &workspace[workspace.find("[workspace.package]").unwrap()..];
+    assert!(
+        section.contains(&format!("\nversion = \"{version}\"\n")),
+        "Cargo.toml [workspace.package]"
+    );
+    for dir in std::fs::read_dir(root.join("crates")).unwrap() {
+        let manifest = dir.unwrap().path().join("Cargo.toml");
+        let m = std::fs::read_to_string(&manifest).unwrap();
+        assert!(
+            m.contains("\nversion.workspace = true\n"),
+            "{}",
+            manifest.display()
+        );
+    }
+    assert_eq!(json("tauri.conf.json")["version"], version);
+    let package: Value = serde_json::from_str(&text("app/package.json")).unwrap();
+    assert_eq!(package["version"], version, "app/package.json");
+    let lock: Value = serde_json::from_str(&text("app/package-lock.json")).unwrap();
+    assert_eq!(lock["version"], version, "app/package-lock.json");
+    assert_eq!(lock["packages"][""]["version"], version);
+    let changelog = text("CHANGELOG.md");
+    assert!(
+        changelog
+            .lines()
+            .any(|l| l.starts_with(&format!("## [{version}] - "))),
+        "CHANGELOG.md has no section for {version}"
+    );
+}
