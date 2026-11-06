@@ -17,6 +17,7 @@ pub const APP_FAILURES: &[&str] = &[
     "profile_exists",
     "script_failed",
     "settings_io",
+    "settings_newer",
 ];
 
 /// The engine's catalog plus [`APP_FAILURES`].

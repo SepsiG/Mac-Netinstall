@@ -187,6 +187,9 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub struct SettingsStore {
     path: PathBuf,
+    /// The version of a file written by a newer app (0: none): it is read
+    /// but never overwritten (see [`SettingsStore::save`]).
+    newer: std::sync::Arc<AtomicU64>,
 }
 
 fn io_failure(op: &str, e: std::io::Error) -> Failure {
@@ -195,7 +198,10 @@ fn io_failure(op: &str, e: std::io::Error) -> Failure {
 
 impl SettingsStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        SettingsStore { path: path.into() }
+        SettingsStore {
+            path: path.into(),
+            newer: Default::default(),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -205,6 +211,12 @@ impl SettingsStore {
     /// The stored settings ([`SettingsStore::load_checked`]).
     pub fn load(&self) -> Settings {
         self.load_checked().settings
+    }
+
+    /// The file was written by a newer app and is left alone: saving
+    /// fails with `settings_newer` (`version`, `supported`).
+    pub fn is_read_only(&self) -> bool {
+        self.newer.load(Ordering::Relaxed) != 0
     }
 
     /// Where a file that could not be used completely is kept
@@ -245,6 +257,17 @@ impl SettingsStore {
                 loaded.problems.push(field.to_string());
             }
         }
+        let version = obj.get("version").and_then(|v| v.as_u64());
+        if let Some(v) = version.filter(|v| *v > u64::from(SETTINGS_VERSION)) {
+            // From a newer app: use what we understand, change nothing.
+            tracing::warn!(
+                version = v,
+                "settings file from a newer app; it will not be changed"
+            );
+            self.newer.store(v, Ordering::Relaxed);
+            loaded.settings.version = SETTINGS_VERSION;
+            return loaded;
+        }
         let known = |k: &str| {
             FIELDS.contains(&k)
                 || ["pool_start", "pool_end", "version"].contains(&k)
@@ -256,7 +279,6 @@ impl SettingsStore {
         if !loaded.problems.is_empty() {
             self.keep_backup(&data, &loaded.problems);
         }
-        let version = obj.get("version").and_then(|v| v.as_u64());
         if version.is_none_or(|v| v < u64::from(SETTINGS_VERSION)) {
             // Older than versioned settings: 4 was the default then, not a
             // choice.
@@ -290,6 +312,12 @@ impl SettingsStore {
     /// Validate and write: a temporary file next to it, flushed to disk,
     /// then renamed over the old one (never a half-written file).
     pub fn save(&self, settings: &Settings) -> Result<(), Failure> {
+        let newer = self.newer.load(Ordering::Relaxed);
+        if newer != 0 {
+            return Err(Failure::new("settings_newer")
+                .with("version", newer)
+                .with("supported", SETTINGS_VERSION));
+        }
         settings.validate()?;
         let settings = &Settings {
             version: SETTINGS_VERSION,
@@ -382,6 +410,27 @@ mod tests {
             assert!(stored.get(gone).is_none(), "{gone} is still stored");
         }
         assert!(!SettingsStore::new(&path).backup_path().exists());
+    }
+
+    #[test]
+    fn a_file_from_a_newer_app_is_read_but_never_overwritten() {
+        let dir = tempdir("settings-newer");
+        let path = dir.join("settings.json");
+        let text = r#"{"version": 99, "language": "hu", "max_parallel": 3, "hologram": true}"#;
+        std::fs::write(&path, text).unwrap();
+        let store = SettingsStore::new(&path);
+        let loaded = store.load_checked();
+        assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+        assert_eq!(loaded.settings.max_parallel, 3);
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert!(store.is_read_only());
+        let err = store.save(&loaded.settings).unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("version")),
+            ("settings_newer", Some("99"))
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "untouched");
+        assert!(!store.backup_path().exists());
     }
 
     #[test]

@@ -324,11 +324,13 @@
   "code.profile_exists": "A profile named “{name}” already exists.",
   "code.script_failed": "The script cannot be used: {cause}.",
   "code.settings_io": "Could not save the settings.",
+  "code.settings_newer": "The settings were written by a newer version of Mac Netinstall (settings version {version}; this app knows {supported}). They are used, but not changed, so the newer app's file stays intact.",
   "code.internal": "Unexpected error: {detail}",
   "code.unknown": "Error: {code}",
 
   "hint.no_ipv4": "Give it a fixed address: System Settings → Network → the adapter → Details → TCP/IP → Configure IPv4: Manually (IP address 192.168.88.1, subnet mask 255.255.255.0).",
   "hint.no_manual_ipv4": "Open System Settings → Network → {service} → Details → TCP/IP, set Configure IPv4 to Manually, IP address 192.168.88.1, subnet mask 255.255.255.0, then click OK.",
+  "hint.settings_newer": "Update Mac Netinstall to change the settings.",
   "hint.ipv4_dhcp": "Switch it to a fixed address: System Settings → Network → {service} → Details → TCP/IP, set Configure IPv4 to Manually, IP address 192.168.88.1, subnet mask 255.255.255.0.",
   "hint.port_in_use": "Another DHCP or TFTP server is running, most likely Internet Sharing (System Settings → General → Sharing). Turn it off and try again.",
   "hint.link_down": "Plug in the cable and power on the router. macOS hides a fixed address while there is no cable; you can start anyway.",

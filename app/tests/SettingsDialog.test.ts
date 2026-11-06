@@ -145,4 +145,14 @@ describe("SettingsDialog", () => {
     expect(advanced).toContainElement(screen.getByLabelText("Download timeout (minutes)"));
     expect(advanced).toHaveTextContent("Only needs increasing on very slow connections.");
   });
+
+  it("explains that a newer app's settings file is left alone", async () => {
+    const backend = mockBackend({
+      setSettings: vi.fn(async () => Promise.reject({ code: "settings_newer", params: { version: "3", supported: "2" } })),
+    });
+    const { onclose } = open(backend);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/written by a newer version of Mac Netinstall/)).toBeInTheDocument();
+    expect(onclose).not.toHaveBeenCalled();
+  });
 });

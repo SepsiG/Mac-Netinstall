@@ -168,6 +168,7 @@
     "packages_unavailable",
     "profile_exists",
     "script_failed",
-    "settings_io"
+    "settings_io",
+    "settings_newer"
   ]
 }

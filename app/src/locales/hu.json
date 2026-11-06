@@ -324,11 +324,13 @@
   "code.profile_exists": "Már van ilyen nevű profil: „{name}”.",
   "code.script_failed": "A szkript nem használható: {cause}.",
   "code.settings_io": "Nem sikerült menteni a beállításokat.",
+  "code.settings_newer": "A beállításokat a Mac Netinstall egy újabb verziója írta (beállítás-verzió: {version}; ez az alkalmazás ezt ismeri: {supported}). Használja őket, de nem módosítja, hogy az újabb alkalmazás fájlja épen maradjon.",
   "code.internal": "Váratlan hiba: {detail}",
   "code.unknown": "Hiba: {code}",
 
   "hint.no_ipv4": "Adj neki fix címet: Rendszerbeállítások → Hálózat → az adapter → Részletek → TCP/IP → IPv4 konfigurálása: Kézzel (IP-cím 192.168.88.1, alhálózati maszk 255.255.255.0).",
   "hint.no_manual_ipv4": "Nyisd meg: Rendszerbeállítások → Hálózat → {service} → Részletek → TCP/IP, és állítsd be: IPv4 konfigurálása: Kézzel, IP-cím 192.168.88.1, alhálózati maszk 255.255.255.0, majd kattints az OK gombra.",
+  "hint.settings_newer": "A beállítások módosításához frissítsd a Mac Netinstallt.",
   "hint.ipv4_dhcp": "Állítsd át fix címre: Rendszerbeállítások → Hálózat → {service} → Részletek → TCP/IP → IPv4 konfigurálása: Kézzel, IP-cím 192.168.88.1, alhálózati maszk 255.255.255.0.",
   "hint.port_in_use": "Egy másik DHCP- vagy TFTP-szerver fut, valószínűleg az Internetmegosztás (Rendszerbeállítások → Általános → Megosztás). Kapcsold ki, és próbáld újra.",
   "hint.link_down": "Dugd be a kábelt, és kapcsold be a routert. Kábel nélkül a macOS elrejti a fix címet; így is elindíthatod.",
