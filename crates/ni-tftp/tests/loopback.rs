@@ -415,3 +415,110 @@ async fn data_source_ip_is_the_server_ip() {
     assert_eq!(tid.ip(), std::net::IpAddr::V4(server_ip));
     assert_ne!(tid.port(), s.addr.port());
 }
+
+/// ACK every DATA block from `first` on until the short last block;
+/// returns the reassembled file. Retransmitted blocks are re-ACKed.
+async fn finish(sock: &UdpSocket, tid: SocketAddr, first: Packet) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut expect = 1u16;
+    let mut pkt = first;
+    loop {
+        let Packet::Data { block, data: chunk } = pkt else {
+            panic!("{pkt:?}")
+        };
+        if block == expect {
+            data.extend_from_slice(&chunk);
+            expect = expect.wrapping_add(1);
+        }
+        sock.send_to(&Packet::Ack(block).encode(), tid)
+            .await
+            .unwrap();
+        if block == expect.wrapping_sub(1) && chunk.len() < 512 {
+            return data;
+        }
+        let (next, from) = recv(sock).await;
+        assert_eq!(from, tid);
+        pkt = next;
+    }
+}
+
+#[tokio::test]
+async fn lost_oack_is_retransmitted_and_transfer_completes() {
+    let mut s = start(fast()).await;
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    sock.send_to(&rrq("kernel", &[("tsize", "0")]), s.addr)
+        .await
+        .unwrap();
+    // First OACK "lost": not acknowledged. The server retransmits it.
+    let (first, tid) = recv(&sock).await;
+    assert_eq!(first, Packet::Oack(vec![("tsize".into(), "1600".into())]));
+    let (again, from) = recv(&sock).await;
+    assert_eq!((again, from), (first, tid));
+    sock.send_to(&Packet::Ack(0).encode(), tid).await.unwrap();
+    let (pkt, _) = recv(&sock).await;
+    assert_eq!(finish(&sock, tid, pkt).await, content(1600).to_vec());
+    assert!(matches!(
+        next_event(&mut s).await,
+        TftpEvent::Started { .. }
+    ));
+    assert!(matches!(
+        next_event(&mut s).await,
+        TftpEvent::Completed { size: 1600, .. }
+    ));
+}
+
+#[tokio::test]
+async fn missing_ack_0_fails_with_timeout() {
+    let mut s = start(fast()).await;
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    sock.send_to(&rrq("kernel", &[("tsize", "0")]), s.addr)
+        .await
+        .unwrap();
+    assert!(matches!(
+        next_event(&mut s).await,
+        TftpEvent::Started { .. }
+    ));
+    match next_event(&mut s).await {
+        TftpEvent::Failed { file, error, .. } => {
+            assert_eq!(file, "kernel");
+            assert_eq!(error, TransferError::Timeout { retransmits: 2 });
+        }
+        other => panic!("{other:?}"),
+    }
+    // 1 OACK + 2 retransmits, never any DATA.
+    for _ in 0..3 {
+        assert!(matches!(recv(&sock).await.0, Packet::Oack(_)));
+    }
+}
+
+#[tokio::test]
+async fn client_error_mid_transfer_aborts_it() {
+    let mut s = start(fast()).await;
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    sock.send_to(&rrq("kernel", &[]), s.addr).await.unwrap();
+    let (pkt, tid) = recv(&sock).await;
+    assert!(matches!(pkt, Packet::Data { block: 1, .. }));
+    sock.send_to(&Packet::Ack(1).encode(), tid).await.unwrap();
+    let (pkt, _) = recv(&sock).await;
+    assert!(matches!(pkt, Packet::Data { block: 2, .. }));
+    let abort = Packet::Error {
+        code: ErrorCode::DiskFull,
+        message: "disk full".into(),
+    };
+    sock.send_to(&abort.encode(), tid).await.unwrap();
+    assert!(matches!(
+        next_event(&mut s).await,
+        TftpEvent::Started { .. }
+    ));
+    assert_eq!(
+        next_event(&mut s).await,
+        TftpEvent::Failed {
+            peer: sock.local_addr().unwrap(),
+            file: "kernel".into(),
+            error: TransferError::ClientError {
+                code: 3,
+                message: "disk full".into()
+            },
+        }
+    );
+}

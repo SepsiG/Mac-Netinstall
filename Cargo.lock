@@ -201,6 +201,7 @@ version = "0.1.0"
 dependencies = [
  "ni-net",
  "ni-proto",
+ "proptest",
  "thiserror",
  "tokio",
 ]
@@ -239,6 +240,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "ni-net",
+ "proptest",
  "thiserror",
  "tokio",
 ]
