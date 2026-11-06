@@ -4,8 +4,10 @@
 
 mod elf;
 mod files;
+mod mirror;
 mod server;
 
 pub use elf::*;
 pub use files::*;
+pub use mirror::*;
 pub use server::*;

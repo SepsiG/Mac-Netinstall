@@ -5,6 +5,7 @@
 
 pub mod arch;
 pub mod archive;
+pub mod assets;
 pub mod cache;
 pub mod error;
 pub mod events;
@@ -19,6 +20,7 @@ mod testutil;
 
 pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;
+pub use assets::{default_cache_root, kernel_file_name, Assets, BUNDLE_ID};
 pub use cache::{Entry, Index};
 pub use error::AssetError;
 pub use events::{AssetEvent, EventSink, PROGRESS_STEP};
