@@ -23,21 +23,26 @@ pub struct BindOptions {
     pub interface: Option<String>,
     /// Set `SO_BROADCAST` (needed to send to `255.255.255.255`).
     pub broadcast: bool,
-    /// Set `SO_REUSEADDR` and `SO_REUSEPORT`. A port held by a process
-    /// that did not set them (e.g. `bootpd`) still fails with
-    /// [`NetError::AddrInUse`].
+    /// Set `SO_REUSEADDR` and `SO_REUSEPORT`. **Off by default, and keep it
+    /// off for the listeners on :67, :69 and :5000**: on BSD a second bind
+    /// to a port succeeds when *both* sockets set `SO_REUSEPORT`, so a
+    /// listener with reuse on would silently share the port with another
+    /// server that also uses it (and split its traffic). Without reuse,
+    /// any existing holder of the port, with or without `SO_REUSEPORT`,
+    /// is reported as [`NetError::AddrInUse`]. Per-transfer TFTP sockets
+    /// (ephemeral ports) do not need reuse either.
     pub reuse: bool,
 }
 
 impl BindOptions {
-    /// `0.0.0.0:port`, no interface, no broadcast, reuse on.
+    /// `0.0.0.0:port`, no interface, no broadcast, reuse **off**.
     pub fn new(port: u16) -> Self {
         BindOptions {
             addr: Ipv4Addr::UNSPECIFIED,
             port,
             interface: None,
             broadcast: false,
-            reuse: true,
+            reuse: false,
         }
     }
 
@@ -105,6 +110,39 @@ pub fn bind_udp(opts: &BindOptions) -> Result<UdpSocket, NetError> {
     UdpSocket::from_std(socket.into()).map_err(io_err("tokio register"))
 }
 
+/// Receive-error policy shared by the BOOTP and TFTP runners: `true` if a
+/// failed `recv_from` should be reported and the loop continued, `false`
+/// if the socket is unusable and the server should stop.
+///
+/// Transient (keep serving):
+/// - `WouldBlock`, `Interrupted`: spurious wakeups / signals;
+/// - `ConnectionReset`, `ConnectionRefused`, `EHOSTUNREACH`,
+///   `ENETUNREACH`, `EHOSTDOWN`: an ICMP error for an earlier send;
+/// - `ENETDOWN`: the link flapped (cable replugged during a reboot);
+/// - `ENOBUFS`, `ENOMEM`: momentary kernel buffer shortage.
+///
+/// Everything else (e.g. `EBADF`, `ENOTSOCK`, `EINVAL`) is fatal.
+pub fn is_transient_recv_error(e: &io::Error) -> bool {
+    use io::ErrorKind::*;
+    if matches!(
+        e.kind(),
+        WouldBlock | Interrupted | ConnectionReset | ConnectionRefused
+    ) {
+        return true;
+    }
+    matches!(
+        e.raw_os_error(),
+        Some(
+            nix::libc::ENOBUFS
+                | nix::libc::ENOMEM
+                | nix::libc::EHOSTUNREACH
+                | nix::libc::ENETUNREACH
+                | nix::libc::EHOSTDOWN
+                | nix::libc::ENETDOWN
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,8 +180,30 @@ mod tests {
 
     #[tokio::test]
     async fn port_held_without_reuse_reports_addr_in_use() {
-        let holder = bind_udp(&lo0(0).reuse(false)).unwrap();
+        let holder = bind_udp(&lo0(0)).unwrap();
         let port = holder.local_addr().unwrap().port();
+        let err = bind_udp(&lo0(port)).unwrap_err();
+        assert!(
+            matches!(err, NetError::AddrInUse { port: p } if p == port),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn reuse_is_off_by_default() {
+        assert!(!BindOptions::new(67).reuse);
+    }
+
+    /// A server that set `SO_REUSEPORT` itself must still be detected:
+    /// our default bind (no reuse) fails with `AddrInUse`.
+    #[tokio::test]
+    async fn port_held_with_so_reuseport_reports_addr_in_use() {
+        let holder = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        holder.set_reuse_address(true).unwrap();
+        holder.set_reuse_port(true).unwrap();
+        let any = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+        holder.bind(&any.into()).unwrap();
+        let port = holder.local_addr().unwrap().as_socket().unwrap().port();
         let err = bind_udp(&lo0(port)).unwrap_err();
         assert!(
             matches!(err, NetError::AddrInUse { port: p } if p == port),
@@ -153,15 +213,39 @@ mod tests {
 
     #[tokio::test]
     async fn two_reuse_sockets_can_share_a_port() {
-        let first = bind_udp(&lo0(0)).unwrap();
+        let first = bind_udp(&lo0(0).reuse(true)).unwrap();
         let port = first.local_addr().unwrap().port();
-        bind_udp(&lo0(port)).unwrap();
+        bind_udp(&lo0(port).reuse(true)).unwrap();
     }
 
     #[tokio::test]
     async fn unknown_interface_fails_before_bind() {
         let err = bind_udp(&BindOptions::new(0).interface("nosuch0")).unwrap_err();
         assert!(matches!(err, NetError::UnknownInterface(_)));
+    }
+
+    #[test]
+    fn transient_recv_errors() {
+        use io::ErrorKind::*;
+        for kind in [WouldBlock, Interrupted, ConnectionReset, ConnectionRefused] {
+            assert!(is_transient_recv_error(&io::Error::from(kind)), "{kind:?}");
+        }
+        for errno in [
+            nix::libc::ENOBUFS,
+            nix::libc::ENOMEM,
+            nix::libc::EHOSTUNREACH,
+            nix::libc::ENETUNREACH,
+            nix::libc::EHOSTDOWN,
+            nix::libc::ENETDOWN,
+        ] {
+            let e = io::Error::from_raw_os_error(errno);
+            assert!(is_transient_recv_error(&e), "{e}");
+        }
+        for errno in [nix::libc::EBADF, nix::libc::ENOTSOCK, nix::libc::EINVAL] {
+            let e = io::Error::from_raw_os_error(errno);
+            assert!(!is_transient_recv_error(&e), "{e}");
+        }
+        assert!(!is_transient_recv_error(&io::Error::other("boom")));
     }
 
     #[tokio::test]
