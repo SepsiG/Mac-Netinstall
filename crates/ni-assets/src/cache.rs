@@ -99,7 +99,7 @@ pub struct CacheDir {
 
 /// Read at most `max` bytes of `path`; `None` if it cannot be read or is
 /// longer.
-fn read_capped(path: &Path, max: u64) -> Option<Vec<u8>> {
+pub(crate) fn read_capped(path: &Path, max: u64) -> Option<Vec<u8>> {
     let file = std::fs::File::open(path).ok()?;
     let mut data = Vec::new();
     file.take(max.saturating_add(1))
