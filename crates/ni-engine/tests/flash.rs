@@ -4,8 +4,9 @@
 mod common;
 
 use common::*;
-use ni_engine::{ConfigMode, DeviceState, EngineEvent, WaitReason};
+use ni_engine::{AfterInstall, ConfigMode, DeviceState, EngineEvent, WaitReason};
 use ni_proto::message::CONFIG_SCRIPT_NAME;
+use ni_proto::Offer;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_device_is_booted_and_flashed_with_packages_and_script() {
@@ -73,7 +74,34 @@ async fn one_device_is_booted_and_flashed_with_packages_and_script() {
     assert_eq!(snap.devices.len(), 1);
     assert_eq!(snap.devices[0].state, DeviceState::Done);
     assert_eq!(snap.devices[0].profile.as_deref(), Some("test"));
+    assert_eq!(snap.devices[0].config.as_deref(), Some("script"));
     assert_eq!(snap.devices[0].boot_arch.as_deref(), Some("arm64"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_profile_options_reach_the_device() {
+    let mut p = profile();
+    p.config = ConfigMode::Keep;
+    p.remove_branding = true;
+    p.license_key = Some("KEY-1".into());
+    p.after_install = AfterInstall::Shutdown;
+    let mut rig = rig(|cfg| cfg.profile = Some(p)).await;
+    let sim = boot(&rig, A, sim_config(A)).await;
+    rig.lan.add(sim).await;
+    state(&mut rig.events, A, "done").await;
+    let report = rig.lan.wait_terminated(A, WAIT).await.unwrap();
+    assert_eq!(
+        report.offer,
+        Some(Offer {
+            license_key: "KEY-1".into(),
+            keep_config: true,
+            remove_branding: true
+        })
+    );
+    assert_eq!(report.after_install, Some(ni_proto::AfterInstall::Shutdown));
+    assert_eq!(report.received.len(), 2, "packages only");
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert_eq!(snap.devices[0].config.as_deref(), Some("keep"));
 }
 
 /// Consecutive duplicates removed (progress repeats the `flashing` state).

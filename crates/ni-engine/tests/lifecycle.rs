@@ -298,6 +298,27 @@ async fn a_device_that_stops_before_the_last_file_is_flash_ended_early() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_newer_min_os_is_only_a_warning() {
+    let mut rig = rig(|_| {}).await;
+    let mut newer = sim_config(A);
+    newer.info.min_os = "7.99".into();
+    let sim = boot(&rig, A, newer).await;
+    rig.lan.add(sim).await;
+    let w = next(
+        &mut rig.events,
+        |e| matches!(e, EngineEvent::Warning(f) if f.code == "min_os_newer"),
+    )
+    .await;
+    let EngineEvent::Warning(f) = w else {
+        unreachable!()
+    };
+    assert_eq!(f.param("min_os"), Some("7.99"));
+    assert_eq!(f.param("version"), Some("7.25.1"));
+    assert_eq!(f.param("mac"), Some("48:A9:8A:00:00:0A"));
+    state(&mut rig.events, A, "done").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_device_that_netboots_again_is_reflashed() {
     let mut rig = rig(|_| {}).await;
     let sim = boot(&rig, A, sim_config(A)).await;

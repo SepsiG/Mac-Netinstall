@@ -46,6 +46,9 @@ pub struct DeviceView {
     pub info: Option<DeviceInfoView>,
     /// Name of the profile assigned with `flash` (or in use).
     pub profile: Option<String>,
+    /// That profile's configuration mode: `keep`, `default`, `empty` or
+    /// `script`.
+    pub config: Option<String>,
     /// RouterOS version of the current (or last) install attempt, once
     /// resolved.
     pub version: Option<String>,

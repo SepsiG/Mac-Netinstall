@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
-pub const SERVER_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0x01]);
 pub const A: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0a]);
 pub const B: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0b]);
 pub const C: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0c]);
@@ -60,7 +59,6 @@ pub fn profile() -> Profile {
 /// Engine settings for `lo0`: ephemeral ports, replies to `lan`.
 pub fn config(lan: &SimLan) -> EngineConfig {
     let mut cfg = EngineConfig::new("lo0");
-    cfg.server_mac = Some(SERVER_MAC);
     cfg.ports = Ports {
         bootp: 0,
         tftp: 0,

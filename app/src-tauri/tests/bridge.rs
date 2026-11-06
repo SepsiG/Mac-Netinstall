@@ -47,7 +47,6 @@ async fn rig(name: &str) -> Rig {
     let core = AppCore::new(Paths::under(&dir), http(&srv))
         .unwrap()
         .with_config_hook(Arc::new(move |cfg| {
-            cfg.server_mac = Some(Mac([2, 0, 0, 0, 0, 1]));
             cfg.ports = Ports {
                 bootp: 0,
                 tftp: 0,

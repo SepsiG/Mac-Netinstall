@@ -62,7 +62,6 @@
     "ipv4_dhcp",
     "no_ipv4",
     "server_ip_not_on_interface",
-    "no_mac",
     "invalid_netmask",
     "server_ip_not_host",
     "pool_inverted",

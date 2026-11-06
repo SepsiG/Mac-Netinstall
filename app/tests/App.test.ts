@@ -19,6 +19,7 @@ function view(mac: string, state: DeviceState): DeviceView {
     boot_arch: "arm64",
     info: { model: "RB5009UG+S+", arch: "arm64", license_id: "X", min_os: "7" },
     profile: "lab",
+    config: "default",
     version: "7.25.1",
     attempt: 1,
     first_seen_ms: Date.now(),

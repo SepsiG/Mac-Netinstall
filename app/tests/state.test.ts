@@ -25,6 +25,7 @@ function snapshot(): Snapshot {
         boot_arch: "arm64",
         info: null,
         profile: null,
+        config: null,
         version: null,
         attempt: 1,
         first_seen_ms: 1,

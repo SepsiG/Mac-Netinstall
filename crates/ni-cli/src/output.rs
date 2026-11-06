@@ -122,10 +122,6 @@ pub fn hint(code: &str) -> Option<&'static str> {
         ),
         "no_ipv4" => Some("give the interface a static IPv4 address in System Settings > Network"),
         "unsuitable_interface" => Some("RouterBOARDs boot over wired Ethernet only"),
-        "no_mac" => Some(
-            "the interface's real MAC address is unknown (macOS hides it from some apps); \
-             use a wired Ethernet interface",
-        ),
         _ => None,
     }
 }
@@ -284,6 +280,5 @@ mod tests {
              server is running (Internet Sharing's bootpd?); stop it first"
         );
         assert_eq!(hint("flash_timeout"), None);
-        assert!(hint("no_mac").is_some_and(|h| h.contains("MAC")));
     }
 }

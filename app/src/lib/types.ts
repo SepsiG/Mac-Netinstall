@@ -47,7 +47,6 @@ export interface NetPlan {
   netmask: string;
   pool_start: string;
   pool_end: string;
-  server_mac: string;
 }
 
 export interface DeviceView {
@@ -56,6 +55,8 @@ export interface DeviceView {
   boot_arch: string | null;
   info: DeviceInfoView | null;
   profile: string | null;
+  /** The profile's configuration mode: keep, default, empty or script. */
+  config: string | null;
   version: string | null;
   attempt: number;
   first_seen_ms: number;

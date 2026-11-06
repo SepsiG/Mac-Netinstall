@@ -94,7 +94,6 @@ pub fn engine_config(net: &NetArgs) -> EngineConfig {
     cfg.allow_non_ethernet = net.allow_any_interface;
     cfg.netmask = net.netmask;
     cfg.pool = net.pool;
-    cfg.server_mac = net.server_mac;
     let p = &mut cfg.ports;
     if let Some(ip) = net.bind_ip {
         p.bind_ip = ip;
@@ -206,8 +205,8 @@ async fn preflight(ctx: &Ctx, net: &NetArgs, profile: Option<&str>) -> Outcome {
     if !ctx.json {
         if let Some(n) = &report.network {
             println!(
-                "server {} / {}, pool {} - {}, MAC {}",
-                n.server_ip, n.netmask, n.pool_start, n.pool_end, n.server_mac
+                "server {} / {}, pool {} - {}",
+                n.server_ip, n.netmask, n.pool_start, n.pool_end
             );
         }
         println!(
@@ -388,8 +387,6 @@ mod tests {
             "preflight",
             "--iface",
             "lo0",
-            "--server-mac",
-            "02:00:00:00:00:01",
             "--bootp-port",
             "6700",
             "--tftp-port",
@@ -412,7 +409,6 @@ mod tests {
         let cfg = engine_config(&net);
         assert_eq!(cfg.interface, "lo0");
         assert_eq!(cfg.server_ip, Some("127.0.0.1".parse().unwrap()));
-        assert_eq!(cfg.server_mac, Some(ni_proto::Mac([2, 0, 0, 0, 0, 1])));
         assert_eq!(
             (cfg.ports.bootp, cfg.ports.tftp, cfg.ports.netinstall),
             (6700, 6900, 0)
@@ -426,7 +422,6 @@ mod tests {
             server_ip: None,
             netmask: None,
             pool: None,
-            server_mac: None,
             bind_ip: None,
             bootp_port: None,
             tftp_port: None,

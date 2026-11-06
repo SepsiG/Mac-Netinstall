@@ -47,7 +47,7 @@ pub const FAILURES: &[&str] = &[
     "link_up",
     "mode_script_with_keep",
     "no_ipv4",
-    "no_mac",
+    "min_os_newer",
     "no_manual_ipv4",
     "no_profile",
     "not_cancellable",

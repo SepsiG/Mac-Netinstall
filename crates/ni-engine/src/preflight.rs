@@ -70,7 +70,7 @@ impl PreflightReport {
 }
 
 /// Interface and address checks. Errors: `unknown_interface`,
-/// `interface_down`, `no_ipv4`, `server_ip_not_on_interface`, `no_mac`,
+/// `interface_down`, `no_ipv4`, `server_ip_not_on_interface`,
 /// `invalid_netmask`, `server_ip_not_host`, `pool_inverted`,
 /// `pool_outside_subnet`, `pool_includes_reserved` (the network or
 /// broadcast address), `invalid_network` (what `ni-bootp` refuses, e.g. a
@@ -579,7 +579,6 @@ mod tests {
     async fn the_local_check_binds_no_port_and_needs_no_assets() {
         let held = bind_udp(&BindOptions::new(0).addr(Ipv4Addr::LOCALHOST)).unwrap();
         let mut cfg = EngineConfig::new("lo0");
-        cfg.server_mac = Some(MAC);
         cfg.ports.bind_ip = Ipv4Addr::LOCALHOST;
         cfg.ports.bootp = 0;
         cfg.ports.tftp = held.local_addr().unwrap().port();
@@ -641,7 +640,6 @@ mod tests {
     #[tokio::test]
     async fn run_on_loopback_warns_about_the_interface_kind() {
         let mut cfg = EngineConfig::new("lo0");
-        cfg.server_mac = Some(MAC);
         cfg.ports.bootp = 0;
         cfg.ports.tftp = 0;
         cfg.ports.netinstall = 0;

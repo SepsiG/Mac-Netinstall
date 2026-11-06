@@ -383,6 +383,7 @@ mod tests {
                 min_os: "7".into(),
             }),
             profile: None,
+            config: None,
             version: None,
             attempt: 1,
             first_seen_ms: 0,

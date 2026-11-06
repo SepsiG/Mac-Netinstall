@@ -35,10 +35,9 @@ count is reached are waited for. With --json, errors are also printed to stdout 
 pub const TESTING_ENV: &str = "NI_CLI_TESTING";
 
 /// Hidden testing flags that redirect downloads or frames
-/// (`--download-base`, `--upgrade-base`, `--netinstall-dest`,
-/// `--server-mac`) are refused unless [`TESTING_ENV`] is `1`: pointed at
-/// the wrong place they would install foreign files or impersonate
-/// another machine. Error: `testing_flag_not_allowed` (`flag`, `env`).
+/// (`--download-base`, `--upgrade-base`, `--netinstall-dest`) are refused
+/// unless [`TESTING_ENV`] is `1`: pointed at the wrong place they would
+/// install foreign files or send frames elsewhere. Error: `testing_flag_not_allowed` (`flag`, `env`).
 pub fn check_testing_flags(cli: &Cli, allowed: bool) -> Result<(), ni_engine::Failure> {
     if allowed {
         return Ok(());
@@ -55,7 +54,6 @@ pub fn check_testing_flags(cli: &Cli, allowed: bool) -> Result<(), ni_engine::Fa
             "--netinstall-dest",
             net.is_some_and(|n| n.netinstall_dest.is_some()),
         ),
-        ("--server-mac", net.is_some_and(|n| n.server_mac.is_some())),
     ];
     match used.iter().find(|(_, on)| *on) {
         Some((flag, _)) => Err(ni_engine::Failure::new("testing_flag_not_allowed")
@@ -203,9 +201,6 @@ pub struct NetArgs {
     /// Address range handed out, as FIRST-LAST [default: the subnet's hosts].
     #[arg(long, value_parser = parse_pool)]
     pub pool: Option<(Ipv4Addr, Ipv4Addr)>,
-    /// Testing: our Netinstall source MAC (for interfaces without one).
-    #[arg(long, hide = true)]
-    pub server_mac: Option<Mac>,
     /// Testing: listener address [default: 0.0.0.0].
     #[arg(long, hide = true)]
     pub bind_ip: Option<Ipv4Addr>,
@@ -446,8 +441,6 @@ mod tests {
             "lo0",
             "--version",
             "7.25.1",
-            "--server-mac",
-            "02:00:00:00:00:01",
             "--bootp-port",
             "0",
             "--tftp-port",
@@ -505,15 +498,6 @@ mod tests {
         for args in [
             &["--download-base", "http://x/", "interfaces"][..],
             &["--upgrade-base", "http://x/", "interfaces"],
-            &[
-                "flash",
-                "--iface",
-                "en7",
-                "--version",
-                "stable",
-                "--server-mac",
-                "02:00:00:00:00:01",
-            ],
             &[
                 "preflight",
                 "--iface",

@@ -135,8 +135,6 @@ pub struct EngineConfig {
     pub netmask: Option<Ipv4Addr>,
     /// First and last address handed out; default: see [`auto_pool`].
     pub pool: Option<(Ipv4Addr, Ipv4Addr)>,
-    /// Source MAC of our Netinstall frames; default: the interface's MAC.
-    pub server_mac: Option<Mac>,
     /// The active profile: given to new devices when auto-repeat is on.
     /// Its version also selects the boot kernels (stable without one).
     pub profile: Option<Profile>,
@@ -182,7 +180,6 @@ impl EngineConfig {
             server_ip: None,
             netmask: None,
             pool: None,
-            server_mac: None,
             profile: None,
             auto_repeat: false,
             only_mac: None,
@@ -220,8 +217,6 @@ pub struct NetPlan {
     pub netmask: Ipv4Addr,
     pub pool_start: Ipv4Addr,
     pub pool_end: Ipv4Addr,
-    #[serde(with = "crate::event::mac_str")]
-    pub server_mac: Mac,
 }
 
 /// Network and broadcast address of `ip`/`mask` (`mask` must be a prefix).
@@ -258,9 +253,11 @@ pub fn auto_pool(server_ip: Ipv4Addr, netmask: Ipv4Addr) -> Result<(Ipv4Addr, Ip
 }
 
 /// Resolve `cfg` against the interface list. Codes: `unknown_interface`,
-/// `no_ipv4`, `server_ip_not_on_interface`, `no_mac` (neither a configured
-/// server MAC nor a known interface MAC; placeholders such as
-/// `02:00:00:00:00:00` count as unknown), `pool_includes_reserved`.
+/// `no_ipv4`, `server_ip_not_on_interface`, `pool_includes_reserved`.
+///
+/// No MAC address is needed: our Netinstall frames carry the device's
+/// fields, never our own MAC (as the official tool's), so an interface
+/// whose MAC macOS masks works too.
 ///
 /// A configured `server_ip` that is not on the interface is accepted
 /// (with `cfg.netmask`, default [`DEFAULT_NETMASK`]) while the interface
@@ -323,19 +320,11 @@ pub(crate) fn resolve_addresses(
         Some(pool) => pool,
         None => auto_pool(server_ip, netmask)?,
     };
-    // Never fall back to a placeholder: macOS may mask link addresses as
-    // 02:00:00:00:00:00, and frames from it would collide between Macs.
-    let server_mac = cfg
-        .server_mac
-        .or(iface.mac)
-        .and_then(ni_net::known_mac)
-        .ok_or_else(|| Failure::new("no_mac").with("interface", &iface.name))?;
     Ok(NetPlan {
         server_ip,
         netmask,
         pool_start,
         pool_end,
-        server_mac,
     })
 }
 
@@ -464,7 +453,6 @@ mod tests {
                 netmask: MASK24,
                 pool_start: ip(2),
                 pool_end: ip(254),
-                server_mac: MAC,
             }
         );
     }
@@ -478,42 +466,26 @@ mod tests {
         let mut cfg = EngineConfig::new("en7");
         cfg.server_ip = Some(ip(2));
         cfg.pool = Some((ip(100), ip(110)));
-        cfg.server_mac = Some(Mac([2; 6]));
         let plan = resolve_network(&ifaces, &cfg).unwrap();
         assert_eq!(
-            (
-                plan.server_ip,
-                plan.pool_start,
-                plan.pool_end,
-                plan.server_mac
-            ),
-            (ip(2), ip(100), ip(110), Mac([2; 6]))
+            (plan.server_ip, plan.pool_start, plan.pool_end),
+            (ip(2), ip(100), ip(110))
         );
         let code = |cfg: &EngineConfig| resolve_network(&ifaces, cfg).unwrap_err().code;
         cfg.server_ip = Some(ip(3));
         assert_eq!(code(&cfg), "server_ip_not_on_interface");
         assert_eq!(code(&EngineConfig::new("en9")), "unknown_interface");
         assert_eq!(code(&EngineConfig::new("en8")), "no_ipv4");
-        let ifaces = [iface("en8", &[(ip(1), MASK24)], None)];
-        let err = resolve_network(&ifaces, &EngineConfig::new("en8")).unwrap_err();
-        assert_eq!(err, Failure::new("no_mac").with("interface", "en8"));
     }
 
     #[test]
-    fn placeholder_macs_count_as_unknown() {
-        // macOS masks link addresses as 02:00:00:00:00:00; never send
-        // frames from it (or from all-zero).
-        for placeholder in [ni_net::MASKED_MAC, Mac::ZERO] {
-            let ifaces = [iface("en8", &[(ip(1), MASK24)], Some(placeholder))];
-            let err = resolve_network(&ifaces, &EngineConfig::new("en8")).unwrap_err();
-            assert_eq!(err, Failure::new("no_mac").with("interface", "en8"));
-            let mut cfg = EngineConfig::new("en8");
-            cfg.server_mac = Some(placeholder);
-            let err = resolve_network(&ifaces, &cfg).unwrap_err();
-            assert_eq!(err.code, "no_mac");
-            // An explicit real MAC still works (the loopback tests use one).
-            cfg.server_mac = Some(MAC);
-            assert_eq!(resolve_network(&ifaces, &cfg).unwrap().server_mac, MAC);
+    fn an_unknown_or_masked_mac_is_fine() {
+        // Our frames never carry our MAC, so macOS masking it
+        // (02:00:00:00:00:00) or not reporting one does not matter.
+        for mac in [None, Some(ni_net::MASKED_MAC), Some(Mac::ZERO)] {
+            let ifaces = [iface("en8", &[(ip(1), MASK24)], mac)];
+            let plan = resolve_network(&ifaces, &EngineConfig::new("en8")).unwrap();
+            assert_eq!(plan.server_ip, ip(1));
         }
     }
 

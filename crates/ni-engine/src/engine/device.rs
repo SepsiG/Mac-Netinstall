@@ -86,17 +86,19 @@ impl Device {
         self.is("done") || self.is("failed")
     }
 
+    /// The profile of the current attempt, else the assigned one.
+    fn profile(&self) -> Option<&Profile> {
+        self.using.as_ref().or(self.assigned.as_ref())
+    }
+
     pub fn view(&self) -> Option<DeviceView> {
         Some(DeviceView {
             mac: self.mac,
             ip: self.ip,
             boot_arch: self.boot_arch.map(|a| a.as_str().to_string()),
             info: self.info.as_ref().map(DeviceInfoView::from),
-            profile: self
-                .using
-                .as_ref()
-                .or(self.assigned.as_ref())
-                .map(|p| p.name.clone()),
+            profile: self.profile().map(|p| p.name.clone()),
+            config: self.profile().map(|p| p.config.name().to_string()),
             version: self.version.as_ref().map(|v| v.to_string()),
             attempt: self.attempt,
             first_seen_ms: unix_ms(self.first_seen),
@@ -197,6 +199,16 @@ mod tests {
             (2, 1_000, 2_500)
         );
         assert_eq!(unix_ms(UNIX_EPOCH - Duration::from_secs(1)), 0);
+        assert_eq!((v.profile, v.config), (None, None));
+        let mut p = Profile::new(
+            "lab",
+            ni_assets::VersionSpec::Exact("7.25.1".parse().unwrap()),
+        );
+        p.config = crate::ConfigMode::Empty;
+        d.assigned = Some(p);
+        let v = d.view().unwrap();
+        assert_eq!(v.profile.as_deref(), Some("lab"));
+        assert_eq!(v.config.as_deref(), Some("empty"));
     }
 
     #[test]

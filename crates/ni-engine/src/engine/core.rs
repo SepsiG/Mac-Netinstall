@@ -886,10 +886,22 @@ impl Core {
         if dev.attempt != attempt || !dev.is("preparing") {
             return;
         }
+        let mut newer = None;
         let state = match result {
             Err(f) => DeviceState::failed(f),
             Ok((version, plan)) => {
                 let info = dev.info.clone().expect("prepared devices have said hello");
+                // The official tool does not enforce the device's minimum
+                // version either; say so and go on.
+                newer = Version::parse(&info.min_os)
+                    .ok()
+                    .filter(|min| *min > version)
+                    .map(|min| {
+                        Failure::new("min_os_newer")
+                            .with("mac", mac)
+                            .with("min_os", min)
+                            .with("version", &version)
+                    });
                 dev.version = Some(version.clone());
                 match ServerSession::new(info, &plan, session_cfg, Instant::now()) {
                     Ok(session) => {
@@ -906,6 +918,9 @@ impl Core {
                 }
             }
         };
+        if let Some(f) = newer {
+            self.warning(f);
+        }
         self.set_state(mac, state);
         self.admit();
     }
@@ -943,12 +958,12 @@ impl Core {
 
     fn on_datagram(&mut self, r: io::Result<(usize, SocketAddr)>, buf: &[u8], io: &mut Option<Io>) {
         let now = Instant::now();
-        let n = match r {
-            Ok((n, _)) => {
+        let (n, from) = match r {
+            Ok((n, from)) => {
                 if let Some(io) = io.as_mut() {
                     io.recv_errors.on_success();
                 }
-                n
+                (n, from)
             }
             Err(e) => {
                 let Some(guard) = io.as_mut().map(|io| &mut io.recv_errors) else {
@@ -980,8 +995,15 @@ impl Core {
             return;
         };
         let Some(run) = self.run.as_mut() else { return };
-        if frame.src == run.net.server_mac {
-            return; // our own broadcast
+        // Our own broadcasts come back from our address and port. (Their
+        // MAC fields are the device's, so they cannot be told apart by
+        // MAC; sessions would ignore them anyway: `ack` is `seq - 2`.)
+        let own_port = io
+            .as_ref()
+            .and_then(|io| io.socket.local_addr().ok())
+            .map(|a| a.port());
+        if from.ip() == IpAddr::V4(run.net.server_ip) && Some(from.port()) == own_port {
+            return;
         }
         if let Some(session) = run
             .devices
