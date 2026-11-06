@@ -14,6 +14,7 @@ re-installing devices.
 ### Non-goals (MVP)
 
 - Intel Macs, Windows, Linux builds
+- x86 (PXE) and ARM64-UEFI devices
 - Privileged BPF helper (only added if hardware validation proves plain UDP insufficient)
 - Auto-update of the app
 - RouterOS configuration beyond what Netinstall itself supports (packages + config script)
@@ -28,7 +29,7 @@ re-installing devices.
 | GUI shell | Tauri 2 |
 | Async runtime | tokio |
 | Protocol reference | [pyNetinstall](https://github.com/rfdrake/pynetinstall) (GPL-3.0), based on merlinthemagic's reverse engineering. Porting its logic is allowed since this project is GPL-3.0. |
-| Boot kernels | Never bundled. Downloaded at runtime from mikrotik.com (official Netinstall package for a chosen version: primarily the Windows `netinstall.exe` archive, as pyNetinstall does; Linux `netinstall-cli` tarball as alternative source), extracted locally (embedded resources), cached. |
+| Boot kernels | Never bundled. Downloaded at runtime from mikrotik.com (official `netinstall-<ver>.tar.gz`), carved out statically as embedded ELF images (verified feasible, see roadmap "Facts"), cached. Supported: mipsbe, mmips, powerpc (generic/e500/440), arm, arm64, tile. x86 (PXE) and ARM64 UEFI are out of MVP. |
 | RouterOS packages (.npk) | Downloaded at runtime from mikrotik.com by version + arch, cached. User may also supply local files. |
 | Network access | Plain UDP sockets bound to the selected interface (`IP_BOUND_IF`), no root. Behind a `Transport` trait so a BPF transport can be added later. |
 | UI language | English default, Hungarian translation. Auto-detect from macOS locale, switchable in settings. |
@@ -153,9 +154,10 @@ Views:
 
 - **ni-proto:** unit tests, golden byte fixtures, `cargo-fuzz` target for the parser.
 - **ni-bootp / ni-tftp:** unit tests + loopback integration tests.
-- **ni-sim validation chain:** first validate ni-sim against pyNetinstall (running on macOS), then
-  test our engine against ni-sim — including multiple simulated devices in parallel, auto-repeat
-  cooldown, and fault injection.
+- **ni-sim validation chain:** ni-sim is written from pyNetinstall's (hardware-proven) code and
+  validated against the official `netinstall-cli` in a Linux x86 VM (roadmap Plan 5; pyNetinstall
+  itself cannot run on macOS unmodified). Our engine is tested against ni-sim — including multiple
+  simulated devices in parallel, auto-repeat cooldown, and packet-loss injection.
 - **Hardware phase (later, when devices are available):** manual checklist, one device per arch
   available; pcap captures become regression fixtures. This phase also decides whether a BPF
   transport is needed.
@@ -177,6 +179,7 @@ Views:
 | Risk | Mitigation |
 |---|---|
 | Netinstall needs raw L2 frames that UDP sockets cannot produce/receive | `Transport` trait; BPF transport via privileged helper as fallback, decided in hardware phase |
+| Config modes (keep / no-default / empty) are not implemented by pyNetinstall; official tool encodes them in `OFFR` fields / `mode.scr` | Plan 5: capture official `netinstall-cli` ↔ ni-sim in a Linux VM; until then only "custom script" (`autorun.scr`) and default behaviour are offered |
 | pyNetinstall is incomplete for some arch/RouterOS versions | Hardware phase with pcaps; compare with official `netinstall-cli` in a Linux VM if needed |
 | mikrotik.com download URLs / package layout change | URL scheme isolated in ni-assets; local-file fallback always available |
 | No test hardware during development | ni-sim + pyNetinstall validation chain; CLI ready for quick hardware validation |
