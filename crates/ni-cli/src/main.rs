@@ -4,6 +4,7 @@
 //! [`cli::exit`].
 
 mod cli;
+mod logging;
 mod output;
 
 use clap::Parser;
@@ -23,6 +24,18 @@ fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
+    let _log_guard = cli
+        .log_dir
+        .clone()
+        .or_else(logging::default_log_dir)
+        .and_then(|dir| match logging::init(&dir, &cli.log_level) {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                eprintln!("warning: logging disabled: {e}");
+                None
+            }
+        });
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "ni-cli started");
     eprintln!("not implemented yet: {:?}", cli.command);
     ExitCode::from(cli::exit::ERROR)
 }
