@@ -52,6 +52,12 @@ pub enum AssetError {
         expected: String,
         actual: String,
     },
+    /// The bytes read back from disk differ from the bytes received.
+    #[error("{file} changed on disk while it was being verified")]
+    DiskMismatch { file: String },
+    /// The runtime shut down while file work was pending.
+    #[error("the operation was cancelled")]
+    Cancelled,
     /// MikroTik publishes checksums from 7.15 on, but this one is missing.
     #[error("{url} is missing; MikroTik publishes checksums for this version")]
     ChecksumMissing { url: String },
@@ -99,6 +105,8 @@ impl AssetError {
             AssetError::BadResponse { .. } => "bad_response",
             AssetError::ChecksumMismatch { .. } => "checksum_mismatch",
             AssetError::ChecksumMissing { .. } => "checksum_missing",
+            AssetError::DiskMismatch { .. } => "disk_mismatch",
+            AssetError::Cancelled => "cancelled",
             AssetError::Npk(NpkError::NotAnNpk { .. }) => "not_npk",
             AssetError::Npk(NpkError::LengthMismatch { .. }) => "npk_length",
             AssetError::Archive(ArchiveError::MissingCli) => "archive_missing_cli",
@@ -162,6 +170,8 @@ mod tests {
                 actual: "b".into(),
             },
             AssetError::ChecksumMissing { url: "u".into() },
+            AssetError::DiskMismatch { file: "f".into() },
+            AssetError::Cancelled,
             AssetError::Npk(NpkError::NotAnNpk { name: "n".into() }),
             AssetError::Npk(NpkError::LengthMismatch {
                 name: "n".into(),
@@ -206,6 +216,8 @@ mod tests {
                 "bad_response",
                 "checksum_mismatch",
                 "checksum_missing",
+                "disk_mismatch",
+                "cancelled",
                 "not_npk",
                 "npk_length",
                 "archive_missing_cli",

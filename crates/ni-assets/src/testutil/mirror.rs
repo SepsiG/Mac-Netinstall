@@ -91,3 +91,20 @@ pub fn recording(a: Assets) -> (Assets, Arc<Mutex<Vec<AssetEvent>>>) {
     let a = a.with_events(Arc::new(move |e| sink.lock().unwrap().push(e)));
     (a, events)
 }
+
+/// Names of `*.part` files anywhere under `root`.
+pub fn parts(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "part") {
+                out.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    out
+}

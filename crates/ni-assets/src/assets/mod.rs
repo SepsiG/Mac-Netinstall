@@ -1,19 +1,33 @@
 //! The asset manager: version resolution, boot kernels, packages and
 //! user-supplied files, all behind one cache.
+//!
+//! # Concurrency
+//!
+//! There is no global lock. Each target (a package file, a version's kernel
+//! set, a package list, a local file) is downloaded and written under its
+//! own lock ([`crate::lock`]), shared by every `Assets` in this process and
+//! by other processes using the same cache root. After taking a target's
+//! lock the cache is checked again, so a target fetched meanwhile by
+//! another holder is not downloaded twice. Cached reads take no lock and
+//! never wait for downloads. The index is changed by short read-merge-write
+//! updates ([`CacheDir::update`]). Blocking file work holds the target lock
+//! itself, so cancelling a call never releases a lock while its file work
+//! still runs; a cancelled download's part file is removed.
 
 use crate::archive;
-use crate::cache::{CacheDir, Entry, Lookup};
+use crate::cache::{CacheDir, Entry, Lookup, LOCK_DIR, PART_SUFFIX};
 use crate::error::AssetError;
 use crate::events::{AssetEvent, EventSink};
-use crate::http::{Http, HttpConfig};
+use crate::http::{Downloaded, Http, HttpConfig};
 use crate::kernel::{extract_kernels, KernelSet};
-use crate::npk::parse_sha256_file;
+use crate::lock::{self, TargetLock};
+use crate::npk::{parse_sha256_file, sha256_hex};
 use crate::urls;
 use crate::version::{parse_newest, Channel, Release, Version, VersionSpec};
 use ni_bootp::BootArch;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use tokio::sync::Mutex;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 mod local;
 mod packages;
@@ -22,6 +36,10 @@ pub use local::{LocalFile, LocalKind, MAX_SCRIPT_SIZE};
 
 /// Cache directory name under `~/Library/Caches`.
 pub const BUNDLE_ID: &str = "io.github.sepsig.mac-netinstall";
+
+/// Part files older than this, whose target is not locked, are removed by
+/// [`Assets::new`] (left behind by a crash).
+pub const STALE_PART_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// `~/Library/Caches/io.github.sepsig.mac-netinstall`, or `None` if `HOME`
 /// is not set.
@@ -37,9 +55,9 @@ pub fn kernel_file_name(arch: BootArch) -> String {
 
 /// Downloads, verifies and caches everything an install needs.
 ///
-/// Cache-changing operations are serialized by an internal lock, so one
-/// `Assets` can be shared (`Arc`) between tasks. Two processes sharing a
-/// cache root are not coordinated.
+/// One `Assets` can be shared (`Arc`) between tasks, and several instances
+/// (in one or more processes) can share a cache root; see the module docs
+/// for how they coordinate.
 pub struct Assets {
     root: PathBuf,
     http: Http,
@@ -47,43 +65,134 @@ pub struct Assets {
     upgrade_base: String,
     max_download: u64,
     events: Option<EventSink>,
-    lock: Mutex<()>,
 }
 
-/// Run blocking file work off the async threads; panics propagate.
-async fn blocking<T, F>(f: F) -> T
+/// Run blocking file work off the async threads; panics propagate, a
+/// runtime shutdown is [`AssetError::Cancelled`].
+async fn blocking<T, F>(f: F) -> Result<T, AssetError>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     match tokio::task::spawn_blocking(f).await {
-        Ok(v) => v,
-        Err(e) => std::panic::resume_unwind(e.into_panic()),
+        Ok(v) => Ok(v),
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Err(_) => Err(AssetError::Cancelled),
     }
 }
 
-fn check_published(file: &str, published: &Option<String>, actual: &str) -> Result<(), AssetError> {
-    match published {
-        Some(expected) if expected != actual => Err(AssetError::ChecksumMismatch {
-            file: file.into(),
-            expected: expected.clone(),
-            actual: actual.into(),
-        }),
-        _ => Ok(()),
+/// A part file that is removed when dropped, unless it was committed.
+struct PartFile(Option<PathBuf>);
+
+impl PartFile {
+    fn path(&self) -> &Path {
+        self.0.as_deref().expect("part file still owned")
+    }
+    /// The file was renamed away; nothing to remove.
+    fn committed(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for PartFile {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.take() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// A finished download, still under its part name, with its target lock.
+struct Fetched {
+    part: PartFile,
+    got: Downloaded,
+    published: Option<String>,
+    url: String,
+    _lock: Arc<TargetLock>,
+}
+
+impl Fetched {
+    /// Read the part file back from disk and check it against the stream
+    /// hash and the published checksum. Returns the bytes and their hash.
+    fn verify(&self, file: &str) -> Result<(Vec<u8>, String), AssetError> {
+        let path = self.part.path();
+        let data = std::fs::read(path).map_err(AssetError::io("read", path))?;
+        let actual = sha256_hex(&data);
+        if data.len() as u64 != self.got.size || actual != self.got.sha256 {
+            return Err(AssetError::DiskMismatch { file: file.into() });
+        }
+        if let Some(expected) = &self.published {
+            if *expected != actual {
+                return Err(AssetError::ChecksumMismatch {
+                    file: file.into(),
+                    expected: expected.clone(),
+                    actual,
+                });
+            }
+        }
+        Ok((data, actual))
+    }
+}
+
+/// Target file of a part file name (`<target>.<pid>.<n>.part`).
+fn part_target(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(PART_SUFFIX)?;
+    let (rest, n) = stem.rsplit_once('.')?;
+    let (target, pid) = rest.rsplit_once('.')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (digits(n) && digits(pid) && !target.is_empty()).then_some(target)
+}
+
+/// Remove part files under `root/<dir>/` older than `age` whose target
+/// lock is free. Errors are ignored: this is housekeeping.
+pub(crate) fn remove_stale_parts(root: &Path, age: Duration) {
+    let Ok(dirs) = std::fs::read_dir(root) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for dir in dirs.flatten() {
+        let Ok(kind) = dir.file_type() else { continue };
+        if !kind.is_dir() || dir.file_name() == LOCK_DIR {
+            continue;
+        }
+        let cache = CacheDir::new(dir.path());
+        for entry in std::fs::read_dir(dir.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name();
+            let Some(target) = name.to_str().and_then(part_target) else {
+                continue;
+            };
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| now.duration_since(t).is_ok_and(|d| d >= age));
+            if !old || !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
+            if let Ok(Some(_free)) = lock::try_lock_file(&cache.lock_path(target)) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 }
 
 impl Assets {
     /// An asset manager caching under `root` (created on first write).
+    /// Part files left behind by a crash (older than [`STALE_PART_AGE`]
+    /// and not being written) are removed.
     pub fn new(root: impl Into<PathBuf>, cfg: HttpConfig) -> Result<Self, AssetError> {
+        let root = root.into();
+        remove_stale_parts(&root, STALE_PART_AGE);
         Ok(Self {
-            root: root.into(),
+            root,
             http: Http::new(&cfg)?,
             download_base: cfg.download_base.trim_end_matches('/').to_string(),
             upgrade_base: cfg.upgrade_base.trim_end_matches('/').to_string(),
             max_download: cfg.max_download_bytes,
             events: None,
-            lock: Mutex::new(()),
         })
     }
 
@@ -149,58 +258,76 @@ impl Assets {
         }
     }
 
+    /// Download `file` of `version` into a fresh part file of `dir` while
+    /// holding `lock`, then fetch its published checksum. The part file is
+    /// removed on any failure or cancellation.
+    async fn fetch(
+        &self,
+        dir: &CacheDir,
+        version: &Version,
+        file: &str,
+        lock: Arc<TargetLock>,
+    ) -> Result<Fetched, AssetError> {
+        {
+            let dir = dir.clone();
+            blocking(move || dir.create()).await??;
+        }
+        let url = urls::file(&self.download_base, version, file);
+        let part = PartFile(Some(dir.part_path(file)));
+        let got = self
+            .http
+            .download(&url, part.path(), file, &|e| self.emit(e))
+            .await?;
+        let published = self.published_checksum(version, &url, file).await?;
+        Ok(Fetched {
+            part,
+            got,
+            published,
+            url,
+            _lock: lock,
+        })
+    }
+
     /// Boot kernels for every [`BootArch`], from the cache or carved out of
     /// `netinstall-<ver>.tar.gz` (which is not kept).
     pub async fn ensure_kernels(&self, version: &Version) -> Result<KernelSet, AssetError> {
-        let _guard = self.lock.lock().await;
         let dir = self.version_dir(version);
         let tarball = urls::tarball_name(version);
         let cached = {
             let dir = dir.clone();
-            blocking(move || load_kernels(&dir)).await
+            blocking(move || load_kernels(&dir)).await?
         };
         if let Some(set) = cached {
             self.emit(AssetEvent::CacheHit { file: tarball });
             return Ok(set);
         }
-        let url = urls::file(&self.download_base, version, &tarball);
-        let part = dir.path(&format!("{tarball}.part"));
-        {
+        let lock = lock::lock_target(dir.lock_path(&tarball)).await?;
+        let cached = {
             let dir = dir.clone();
-            blocking(move || dir.create()).await?;
-        }
-        let got = self
-            .http
-            .download(&url, &part, &tarball, &|e| self.emit(e))
-            .await?;
-        let published = match self.published_checksum(version, &url, &tarball).await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = std::fs::remove_file(&part);
-                return Err(e);
-            }
+            blocking(move || load_kernels(&dir)).await?
         };
+        if let Some(set) = cached {
+            self.emit(AssetEvent::CacheHit { file: tarball });
+            return Ok(set);
+        }
+        let fetched = self.fetch(&dir, version, &tarball, lock).await?;
         blocking(move || {
-            let result = (|| {
-                check_published(&tarball, &published, &got.sha256)?;
-                let file = std::fs::File::open(&part).map_err(AssetError::io("open", &part))?;
-                let cli = archive::netinstall_cli_from_tar_gz(BufReader::new(file))?;
-                Ok::<_, AssetError>(extract_kernels(&cli)?)
-            })();
-            let _ = std::fs::remove_file(&part);
-            let set = result?;
-            let mut index = dir.load();
+            let (data, _) = fetched.verify(&tarball)?;
+            let cli = archive::netinstall_cli_from_tar_gz(&data[..])?;
+            drop(data);
+            let set = extract_kernels(&cli)?;
+            let mut entries = Vec::with_capacity(set.len());
             for (arch, image) in &set {
                 let name = kernel_file_name(*arch);
                 dir.write_atomic(&name, image)?;
-                index
-                    .files
-                    .insert(name, Entry::new(image, url.clone(), published.is_some()));
+                let entry = Entry::new(image, fetched.url.clone(), fetched.published.is_some());
+                entries.push((name, entry));
             }
-            dir.save(&index)?;
+            dir.update(|index| index.files.extend(entries))?;
+            drop(fetched);
             Ok(set)
         })
-        .await
+        .await?
     }
 }
 
@@ -221,6 +348,7 @@ fn load_kernels(dir: &CacheDir) -> Option<KernelSet> {
 mod tests {
     use super::*;
     use crate::testutil::*;
+    use std::time::Duration;
 
     #[test]
     fn default_root_is_under_library_caches() {
@@ -395,5 +523,79 @@ mod tests {
             a.ensure_kernels(&missing).await.unwrap_err().code(),
             "not_found"
         );
+    }
+
+    #[tokio::test]
+    async fn two_instances_carving_kernels_at_once_agree() {
+        let srv = TestServer::start().await;
+        let ver = v();
+        let (tarball, _, _) = mirror(&srv);
+        srv.route(
+            &format!("/dl/{V}/netinstall-{V}.tar.gz"),
+            Reply::Slow {
+                body: tarball.clone(),
+                chunk: (tarball.len() / 10).max(1),
+                delay: Duration::from_millis(20),
+            },
+        );
+        let root = tempdir("race-kernels");
+        let (a, b) = (assets(&srv, &root), assets(&srv, &root));
+        let late_b = async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            b.ensure_kernels(&ver).await
+        };
+        let (ra, rb) = tokio::join!(a.ensure_kernels(&ver), late_b);
+        let (ra, rb) = (ra.unwrap(), rb.unwrap());
+        assert_eq!(ra, rb);
+        for (arch, image) in synthetic_kernels() {
+            assert_eq!(ra[&arch].as_ref(), image.as_slice(), "{arch}");
+            let on_disk = std::fs::read(root.join(V).join(kernel_file_name(arch))).unwrap();
+            assert_eq!(on_disk, image, "{arch}");
+        }
+        let downloads = srv
+            .paths()
+            .iter()
+            .filter(|p| p.ends_with(".tar.gz"))
+            .count();
+        assert_eq!(downloads, 1);
+        assert_eq!(parts(&root), Vec::<String>::new());
+    }
+
+    #[test]
+    fn part_targets_are_parsed_from_unique_names() {
+        assert_eq!(part_target("a.npk.12.3.part"), Some("a.npk"));
+        assert_eq!(part_target("index.json.1.0.part"), Some("index.json"));
+        assert_eq!(part_target("a.npk.part"), None);
+        assert_eq!(part_target("a.npk.x.3.part"), None);
+        assert_eq!(part_target(".1.2.part"), None);
+    }
+
+    #[tokio::test]
+    async fn stale_part_files_from_a_crash_are_removed_at_startup() {
+        let srv = TestServer::start().await;
+        let root = tempdir("stale");
+        let dir = CacheDir::new(root.join(V));
+        dir.create().unwrap();
+        let two_hours_ago = SystemTime::now() - Duration::from_secs(2 * 3600);
+        let make = |name: &str, old: bool| {
+            let path = dir.path(name);
+            let f = std::fs::File::create(&path).unwrap();
+            if old {
+                f.set_modified(two_hours_ago).unwrap();
+            }
+            path
+        };
+        let stale = make("routeros-7.25.1-arm64.npk.4242.0.part", true);
+        let fresh = make("wireless-7.25.1-arm64.npk.4242.1.part", false);
+        let busy = make("container-7.25.1-arm64.npk.4242.2.part", true);
+        let other = make("notes.txt", true);
+        let _held = lock::try_lock_file(&dir.lock_path("container-7.25.1-arm64.npk"))
+            .unwrap()
+            .unwrap();
+        let _a = assets(&srv, &root);
+        assert!(!stale.exists(), "old and unlocked: removed");
+        assert!(fresh.exists(), "may still be written");
+        assert!(busy.exists(), "its target is locked");
+        assert!(other.exists(), "not a part file");
     }
 }

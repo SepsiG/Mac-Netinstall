@@ -768,6 +768,7 @@ dependencies = [
  "flate2",
  "ni-bootp",
  "ni-proto",
+ "nix",
  "proptest",
  "reqwest",
  "serde",

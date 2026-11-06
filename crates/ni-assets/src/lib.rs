@@ -20,6 +20,7 @@ pub mod error;
 pub mod events;
 pub mod http;
 pub mod kernel;
+mod lock;
 pub mod npk;
 pub mod urls;
 pub mod version;

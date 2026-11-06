@@ -3,6 +3,7 @@
 use super::{blocking, Assets};
 use crate::cache::{CacheDir, Entry, Lookup};
 use crate::error::AssetError;
+use crate::lock;
 use crate::npk::check_npk;
 use crate::version::Version;
 use bytes::Bytes;
@@ -53,10 +54,11 @@ impl Assets {
             LocalKind::Package => self.max_download,
             LocalKind::Script => MAX_SCRIPT_SIZE,
         };
-        let _guard = self.lock.lock().await;
         let dir = CacheDir::new(self.root.join(LOCAL_DIR));
+        let lock = lock::lock_target(dir.lock_path(&name)).await?;
         let path = path.to_path_buf();
         blocking(move || {
+            let _lock = lock;
             let len = std::fs::metadata(&path)
                 .map_err(AssetError::io("read", &path))?
                 .len();
@@ -69,9 +71,9 @@ impl Assets {
             }
             let entry = Entry::new(&data, format!("file://{}", path.display()), false);
             dir.write_atomic(&name, &data)?;
-            let mut index = dir.load();
-            index.files.insert(name.clone(), entry.clone());
-            dir.save(&index)?;
+            dir.update(|index| {
+                index.files.insert(name.clone(), entry.clone());
+            })?;
             Ok(LocalFile {
                 name,
                 kind,
@@ -79,15 +81,14 @@ impl Assets {
                 sha256: entry.sha256,
             })
         })
-        .await
+        .await?
     }
 
     /// The contents of a registered local file, verified.
     pub async fn local_file(&self, name: &str) -> Result<Bytes, AssetError> {
-        let _guard = self.lock.lock().await;
         let dir = CacheDir::new(self.root.join(LOCAL_DIR));
         let key = name.to_string();
-        match blocking(move || dir.lookup(&dir.load(), &key)).await {
+        match blocking(move || dir.lookup(&dir.load(), &key)).await? {
             Lookup::Valid(data) => Ok(data),
             Lookup::Missing => Err(AssetError::LocalMissing { name: name.into() }),
             Lookup::Corrupt => Err(AssetError::LocalCorrupt { name: name.into() }),
@@ -97,7 +98,6 @@ impl Assets {
     /// Delete all downloaded versions (directories named like a version);
     /// registered local files are kept.
     pub async fn clear_downloads(&self) -> Result<(), AssetError> {
-        let _guard = self.lock.lock().await;
         let root = self.root.clone();
         blocking(move || {
             let entries = match std::fs::read_dir(&root) {
@@ -117,7 +117,7 @@ impl Assets {
             }
             Ok(())
         })
-        .await
+        .await?
     }
 }
 

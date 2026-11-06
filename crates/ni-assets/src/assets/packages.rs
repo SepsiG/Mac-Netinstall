@@ -1,11 +1,12 @@
 //! Packages: the extra-package list and `.npk` downloads.
 
-use super::{blocking, check_published, Assets};
+use super::{blocking, Assets};
 use crate::arch::PkgArch;
 use crate::archive::{self, ArchiveError};
-use crate::cache::{unix_now, CacheDir, Entry, Lookup};
+use crate::cache::{unix_now, CacheDir, Entry, Index, Lookup};
 use crate::error::AssetError;
 use crate::events::AssetEvent;
+use crate::lock;
 use crate::npk::{check_npk, package_names, valid_package_name};
 use crate::urls::{self, MAIN_PACKAGE};
 use crate::version::Version;
@@ -17,6 +18,16 @@ const ZIP_TAIL: u64 = 64 * 1024;
 /// Largest ZIP central directory we are willing to fetch.
 const MAX_ZIP_DIRECTORY: u64 = 4 << 20;
 
+/// The cached package list for `arch`, if present and made only of valid
+/// package names (a hand-edited index cannot smuggle names into URLs).
+fn cached_list(index: &Index, arch: PkgArch) -> Option<Vec<String>> {
+    index
+        .package_lists
+        .get(arch.as_str())
+        .filter(|names| names.iter().all(|n| valid_package_name(n)))
+        .cloned()
+}
+
 impl Assets {
     /// Names of the extra packages published for `arch` (e.g. `wireless`,
     /// `container`), read from the directory of `all_packages-<arch>-<ver>.zip`
@@ -27,25 +38,20 @@ impl Assets {
         version: &Version,
         arch: PkgArch,
     ) -> Result<Vec<String>, AssetError> {
-        let _guard = self.lock.lock().await;
-        self.package_list(version, arch).await
-    }
-
-    async fn package_list(
-        &self,
-        version: &Version,
-        arch: PkgArch,
-    ) -> Result<Vec<String>, AssetError> {
         let dir = self.version_dir(version);
-        let mut index = dir.load();
-        if let Some(list) = index.package_lists.get(arch.as_str()) {
-            return Ok(list.clone());
+        let load = || {
+            let dir = dir.clone();
+            blocking(move || cached_list(&dir.load(), arch))
+        };
+        if let Some(list) = load().await? {
+            return Ok(list);
         }
-        let url = urls::file(
-            &self.download_base,
-            version,
-            &urls::all_packages_name(version, arch),
-        );
+        let zip_name = urls::all_packages_name(version, arch);
+        let lock = lock::lock_target(dir.lock_path(&zip_name)).await?;
+        if let Some(list) = load().await? {
+            return Ok(list);
+        }
+        let url = urls::file(&self.download_base, version, &zip_name);
         let (tail, total) = self.http.tail(&url, ZIP_TAIL).await?;
         let entries = match archive::zip_entry_names(&tail, total) {
             Err(ArchiveError::NeedMore { needed }) if needed <= MAX_ZIP_DIRECTORY => {
@@ -55,10 +61,15 @@ impl Assets {
             other => other?,
         };
         let names = package_names(&entries, version.as_str(), arch.as_str());
-        index
-            .package_lists
-            .insert(arch.as_str().to_string(), names.clone());
-        blocking(move || dir.save(&index)).await?;
+        let list = names.clone();
+        blocking(move || {
+            let _lock = lock;
+            dir.create()?;
+            dir.update(|index| {
+                index.package_lists.insert(arch.as_str().to_string(), list);
+            })
+        })
+        .await??;
         Ok(names)
     }
 
@@ -81,9 +92,8 @@ impl Assets {
                 names.push(name.clone());
             }
         }
-        let _guard = self.lock.lock().await;
         if names.len() > 1 {
-            let available = self.package_list(version, arch).await?;
+            let available = self.available_packages(version, arch).await?;
             if let Some(missing) = names[1..].iter().find(|n| !available.contains(n)) {
                 return Err(AssetError::UnknownPackage {
                     name: missing.clone(),
@@ -107,56 +117,41 @@ impl Assets {
         version: &Version,
         file: &str,
     ) -> Result<Bytes, AssetError> {
-        let lookup = {
+        let lookup = || {
             let (dir, file) = (dir.clone(), file.to_string());
-            blocking(move || dir.lookup(&dir.load(), &file)).await
+            blocking(move || dir.lookup(&dir.load(), &file))
         };
-        if let Lookup::Valid(data) = lookup {
+        if let Lookup::Valid(data) = lookup().await? {
             self.emit(AssetEvent::CacheHit { file: file.into() });
             return Ok(data);
         }
-        let url = urls::file(&self.download_base, version, file);
-        {
-            let dir = dir.clone();
-            blocking(move || dir.create()).await?;
+        let lock = lock::lock_target(dir.lock_path(file)).await?;
+        if let Lookup::Valid(data) = lookup().await? {
+            self.emit(AssetEvent::CacheHit { file: file.into() });
+            return Ok(data);
         }
-        let part = dir.path(&format!("{file}.part"));
-        let got = self
-            .http
-            .download(&url, &part, file, &|e| self.emit(e))
-            .await?;
-        let published = match self.published_checksum(version, &url, file).await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = std::fs::remove_file(&part);
-                return Err(e);
-            }
-        };
+        let fetched = self.fetch(dir, version, file, lock).await?;
         let (dir, file) = (dir.clone(), file.to_string());
         blocking(move || {
-            let result = (|| {
-                check_published(&file, &published, &got.sha256)?;
-                let data = std::fs::read(&part).map_err(AssetError::io("read", &part))?;
-                check_npk(&file, &data)?;
-                dir.commit(&part, &file)?;
-                let mut index = dir.load();
-                let entry = Entry {
-                    size: got.size,
-                    sha256: got.sha256,
-                    source: url,
-                    published_checksum: published.is_some(),
-                    fetched_at: unix_now(),
-                };
+            let (data, sha256) = fetched.verify(&file)?;
+            check_npk(&file, &data)?;
+            let entry = Entry {
+                size: data.len() as u64,
+                sha256,
+                source: fetched.url.clone(),
+                published_checksum: fetched.published.is_some(),
+                fetched_at: unix_now(),
+            };
+            let super::Fetched { part, _lock, .. } = fetched;
+            dir.commit(part.path(), &file)?;
+            part.committed();
+            dir.update(|index| {
                 index.files.insert(file.clone(), entry);
-                dir.save(&index)?;
-                Ok(Bytes::from(data))
-            })();
-            if result.is_err() {
-                let _ = std::fs::remove_file(&part);
-            }
-            result
+            })?;
+            drop(_lock);
+            Ok(Bytes::from(data))
         })
-        .await
+        .await?
     }
 }
 
@@ -166,6 +161,7 @@ mod tests {
     use crate::cache::INDEX_FILE;
     use crate::testutil::*;
     use ni_proto::InstallPlan;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn lists_extra_packages_from_the_zip_directory() {
@@ -334,5 +330,163 @@ mod tests {
         let files = a.ensure_packages(&v(), PkgArch::Arm64, &[]).await.unwrap();
         assert_eq!(files[0].data.as_ref(), main.as_slice());
         assert_eq!(std::fs::read(&path).unwrap(), main);
+    }
+
+    fn slow(body: &[u8]) -> Reply {
+        Reply::Slow {
+            body: body.to_vec(),
+            chunk: 500,
+            delay: Duration::from_millis(20),
+        }
+    }
+
+    #[tokio::test]
+    async fn two_instances_downloading_the_same_package_never_corrupt_it() {
+        let srv = TestServer::start().await;
+        let ver = v();
+        let (_, main, _) = mirror(&srv);
+        let file = format!("routeros-{V}-arm64.npk");
+        srv.route(&format!("/dl/{V}/{file}"), slow(&main));
+        let root = tempdir("race-npk");
+        let (a, b) = (assets(&srv, &root), assets(&srv, &root));
+        let late_b = async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            b.ensure_packages(&ver, PkgArch::Arm64, &[]).await
+        };
+        let (ra, rb) = tokio::join!(a.ensure_packages(&ver, PkgArch::Arm64, &[]), late_b);
+        assert_eq!(ra.unwrap()[0].data.as_ref(), main.as_slice());
+        assert_eq!(rb.unwrap()[0].data.as_ref(), main.as_slice());
+        assert_eq!(std::fs::read(root.join(V).join(&file)).unwrap(), main);
+        let index = CacheDir::new(root.join(V)).load();
+        assert_eq!(index.files[&file].sha256, crate::npk::sha256_hex(&main));
+        let downloads = srv.paths().iter().filter(|p| p.ends_with(".npk")).count();
+        assert_eq!(downloads, 1, "the second instance waits and uses the cache");
+        assert_eq!(parts(&root), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn a_lock_held_elsewhere_is_waited_for_and_the_cache_rechecked() {
+        let srv = TestServer::start().await;
+        let ver = v();
+        let (_, main, _) = mirror(&srv);
+        let file = format!("routeros-{V}-arm64.npk");
+        let root = tempdir("lock-elsewhere");
+        let dir = CacheDir::new(root.join(V));
+        // Another process holds the file lock while it downloads.
+        let held = crate::lock::try_lock_file(&dir.lock_path(&file))
+            .unwrap()
+            .expect("free");
+        let a = assets(&srv, &root);
+        let fut = a.ensure_packages(&ver, PkgArch::Arm64, &[]);
+        tokio::pin!(fut);
+        let waited = tokio::time::timeout(Duration::from_millis(300), &mut fut).await;
+        assert!(waited.is_err(), "must wait for the lock");
+        // ... and finishes the file before releasing it.
+        dir.write_atomic(&file, &main).unwrap();
+        dir.update(|index| {
+            index
+                .files
+                .insert(file.clone(), Entry::new(&main, "elsewhere", true));
+        })
+        .unwrap();
+        drop(held);
+        let files = fut.await.unwrap();
+        assert_eq!(files[0].data.as_ref(), main.as_slice());
+        assert!(
+            !srv.paths().iter().any(|p| p.ends_with(".npk")),
+            "{:?}",
+            srv.paths()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_download_leaves_the_cache_usable() {
+        let srv = TestServer::start().await;
+        let ver = v();
+        let (_, main, wireless) = mirror(&srv);
+        let root = tempdir("cancel");
+        let a = assets(&srv, &root);
+        a.ensure_packages(&ver, PkgArch::Arm64, &[]).await.unwrap();
+        let wl = format!("wireless-{V}-arm64.npk");
+        srv.route(&format!("/dl/{V}/{wl}"), slow(&wireless));
+        let extras = ["wireless".to_string()];
+        let cut = tokio::time::timeout(
+            Duration::from_millis(80),
+            a.ensure_packages(&ver, PkgArch::Arm64, &extras),
+        )
+        .await;
+        assert!(cut.is_err(), "dropped mid-download");
+        assert_eq!(parts(&root), Vec::<String>::new(), "no stray part file");
+        srv.route(&format!("/dl/{V}/{wl}"), Reply::Body(wireless.clone()));
+        let files = a
+            .ensure_packages(&ver, PkgArch::Arm64, &extras)
+            .await
+            .unwrap();
+        assert_eq!(files[0].data.as_ref(), main.as_slice());
+        assert_eq!(files[1].data.as_ref(), wireless.as_slice());
+        let index = CacheDir::new(root.join(V)).load();
+        assert!(index.files.contains_key(&format!("routeros-{V}-arm64.npk")));
+        assert!(index.files.contains_key(&wl));
+        assert_eq!(index.package_lists["arm64"], ["container", "wireless"]);
+    }
+
+    #[tokio::test]
+    async fn one_instance_serves_concurrent_requests_and_keeps_every_index_entry() {
+        let srv = TestServer::start().await;
+        let ver = v();
+        let (_, main, wireless) = mirror(&srv);
+        let d = format!("/dl/{V}");
+        srv.route(&format!("{d}/routeros-{V}-arm64.npk"), slow(&main));
+        let root = tempdir("concurrent");
+        let a = assets(&srv, &root);
+        let extras = ["wireless".to_string()];
+        let (k, p1, p2, list) = tokio::join!(
+            a.ensure_kernels(&ver),
+            a.ensure_packages(&ver, PkgArch::Arm64, &extras),
+            a.ensure_packages(&ver, PkgArch::Arm64, &[]),
+            a.available_packages(&ver, PkgArch::Arm64),
+        );
+        assert_eq!(k.unwrap().len(), 8);
+        let p1 = p1.unwrap();
+        assert_eq!(p1[1].data.as_ref(), wireless.as_slice());
+        assert_eq!(p2.unwrap()[0].data.as_ref(), main.as_slice());
+        assert_eq!(list.unwrap(), ["container", "wireless"]);
+        let index = CacheDir::new(root.join(V)).load();
+        let mut names: Vec<&str> = index.files.keys().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(names.len(), 10, "{names:?}");
+        assert!(index.package_lists.contains_key("arm64"));
+    }
+
+    #[tokio::test]
+    async fn a_stalled_download_does_not_block_cached_reads() {
+        let srv = TestServer::start().await;
+        let ver = v();
+        mirror(&srv);
+        let root = tempdir("stall");
+        let a = assets(&srv, &root);
+        a.ensure_kernels(&ver).await.unwrap();
+        let script = root.join("s.rsc");
+        std::fs::write(&script, b"#").unwrap();
+        a.register_local_file(&script).await.unwrap();
+        srv.route(&format!("/dl/{V}/routeros-{V}-arm64.npk"), Reply::Stall);
+        let stalled = a.ensure_packages(&ver, PkgArch::Arm64, &[]);
+        let others = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let limit = Duration::from_secs(2);
+            let local = tokio::time::timeout(limit, a.local_file("s.rsc")).await;
+            let kernels = tokio::time::timeout(limit, a.ensure_kernels(&ver)).await;
+            let list =
+                tokio::time::timeout(limit, a.available_packages(&ver, PkgArch::Arm64)).await;
+            (local, kernels, list)
+        };
+        tokio::select! {
+            _ = stalled => panic!("the stalled download finished"),
+            (local, kernels, list) = others => {
+                assert_eq!(local.expect("local_file blocked").unwrap().as_ref(), b"#");
+                assert_eq!(kernels.expect("cached kernels blocked").unwrap().len(), 8);
+                list.expect("package list blocked").unwrap();
+            }
+        }
     }
 }
