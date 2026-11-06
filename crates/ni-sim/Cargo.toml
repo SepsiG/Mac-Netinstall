@@ -1,0 +1,11 @@
+[package]
+name = "ni-sim"
+description = "Simulated MikroTik device (Netinstall client side) for tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytes.workspace = true
+ni-proto.workspace = true
