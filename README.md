@@ -23,7 +23,18 @@ Settings say otherwise.
 `ni-cli interfaces` lists the interfaces a RouterBOARD can be netinstalled
 through (`--all`: every interface). `ni-cli flash` flashes one device at a
 time; `--max-parallel N` allows more. `--server-ip`/`--netmask` override the
-adapter's manual IPv4 from macOS (advanced).
+adapter's manual IPv4 from macOS (advanced). `flash`/`preflight
+--allow-any-interface` (advanced) accepts an interface that is not a wired
+Ethernet adapter, with a warning; the app never offers one.
+
+## Release notes
+
+- **One device at a time by default.** `max_parallel` now defaults to 1 (it
+  was 4) in the app, the engine and `ni-cli flash`. Settings saved by an
+  older app with the old default 4 are changed to 1 the first time the new
+  app starts (written back as settings version 2); any other value you chose
+  is kept. To flash several devices at once, raise "Devices at once" in
+  Settings (or pass `--max-parallel`).
 
 ## Development
 

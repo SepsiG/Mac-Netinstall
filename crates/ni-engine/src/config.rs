@@ -167,6 +167,10 @@ pub struct EngineConfig {
     pub interface_grace: Duration,
     /// Where the interface list comes from (default: the OS).
     pub interfaces: InterfaceSource,
+    /// Advanced override (CLI `--allow-any-interface`): serve on an
+    /// interface that is not a real wired Ethernet adapter;
+    /// `interface_not_ethernet` is then only a preflight warning.
+    pub allow_non_ethernet: bool,
 }
 
 impl EngineConfig {
@@ -192,6 +196,7 @@ impl EngineConfig {
             link_check: Some(Duration::from_secs(2)),
             interface_grace: Duration::from_secs(10),
             interfaces: InterfaceSource::system(),
+            allow_non_ethernet: false,
         }
     }
 

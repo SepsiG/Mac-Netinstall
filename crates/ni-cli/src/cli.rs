@@ -187,6 +187,11 @@ pub struct NetArgs {
     /// Interface the routers are connected to, e.g. en7.
     #[arg(long)]
     pub iface: String,
+    /// Advanced: allow an interface that is not a wired Ethernet adapter
+    /// (Wi-Fi, a Thunderbolt IP port, a bridge, a virtual one); it is then
+    /// only a warning. RouterBOARDs netinstall over wired Ethernet only.
+    #[arg(long)]
+    pub allow_any_interface: bool,
     /// Advanced override of our IPv4 address on it. By default it is the
     /// adapter's manual IPv4 from macOS (System Settings → Network → TCP/IP;
     /// known even before the cable is plugged in), else its first address.
@@ -284,6 +289,25 @@ mod tests {
     #[test]
     fn definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn any_interface_only_on_request() {
+        let flash = |extra: &[&str]| {
+            let mut args = vec!["flash", "--iface", "en1", "--version", "stable"];
+            args.extend(extra);
+            let Command::Flash(f) = parse(&args).unwrap().command else {
+                panic!("flash expected")
+            };
+            f.net.allow_any_interface
+        };
+        assert!(!flash(&[]));
+        assert!(flash(&["--allow-any-interface"]));
+        let cli = parse(&["preflight", "--iface", "en1", "--allow-any-interface"]).unwrap();
+        let Command::Preflight { net, .. } = cli.command else {
+            panic!("preflight expected")
+        };
+        assert!(net.allow_any_interface);
     }
 
     #[test]

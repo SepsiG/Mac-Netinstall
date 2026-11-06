@@ -124,7 +124,11 @@ pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>,
         }
     }
     if let Some(f) = not_ethernet(iface) {
-        out.push(Finding::error(f));
+        out.push(if cfg.allow_non_ethernet {
+            Finding::warning(f)
+        } else {
+            Finding::error(f)
+        });
     } else if iface.kind != InterfaceKind::Ethernet {
         // Loopback: tests and simulations only.
         out.push(Finding::warning(
@@ -366,6 +370,17 @@ mod tests {
         );
         assert_eq!(findings[0].failure.param("reason"), Some("no_carrier"));
         assert_eq!(findings[1].failure.param("kind"), Some("wifi"));
+        assert!(plan.is_some());
+        // The advanced override makes it a warning.
+        let mut port = iface("en1", &[(ip(1), MASK24)], Some(MAC));
+        port.kind = InterfaceKind::Virtual;
+        let mut cfg = EngineConfig::new("en1");
+        cfg.allow_non_ethernet = true;
+        let (findings, plan) = check_network(&[port], &cfg);
+        assert_eq!(
+            codes(&findings),
+            [("interface_not_ethernet", Severity::Warning)]
+        );
         assert!(plan.is_some());
         for kind in [
             InterfaceKind::ThunderboltIp,

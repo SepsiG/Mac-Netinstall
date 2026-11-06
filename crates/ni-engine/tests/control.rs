@@ -703,12 +703,16 @@ async fn start_refuses_an_interface_that_cannot_netinstall() {
     let (source, _cell) = fake_interfaces(Some(port));
     let mut cfg = config(&lan);
     cfg.interfaces = source;
+    let mut allowed = cfg.clone();
     let err = engine.start(cfg).await.unwrap_err();
     assert_eq!(
         (err.code.as_str(), err.param("kind")),
         ("interface_not_ethernet", Some("thunderbolt_ip"))
     );
     assert!(!engine.snapshot().await.unwrap().running);
+    // The advanced override (CLI `--allow-any-interface`).
+    allowed.allow_non_ethernet = true;
+    engine.start(allowed).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

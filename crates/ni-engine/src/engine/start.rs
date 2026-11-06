@@ -80,6 +80,7 @@ pub(crate) fn start(
         .iter()
         .find(|i| i.name == cfg.interface)
         .and_then(not_ethernet)
+        .filter(|_| !cfg.allow_non_ethernet)
     {
         return Err(f);
     }
