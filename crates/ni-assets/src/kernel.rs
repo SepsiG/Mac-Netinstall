@@ -30,6 +30,9 @@ pub type KernelSet = HashMap<BootArch, Bytes>;
 
 /// Upper bound for one kernel image (real ones are 3.5–8 MiB).
 pub const MAX_KERNEL_SIZE: u64 = 32 << 20;
+/// Most program headers accepted per image (kernels have a handful); caps
+/// the work per ELF magic found.
+pub const MAX_PROGRAM_HEADERS: u64 = 256;
 
 const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 const ET_EXEC: u16 = 2;
@@ -90,9 +93,11 @@ pub fn find_elf_images(data: &[u8]) -> Vec<ElfImage> {
 /// Carve the boot kernels for every [`BootArch`] out of `data` (the
 /// `netinstall-cli` binary).
 ///
-/// Images starting inside an already accepted kernel are ignored, and
-/// executables for other machines (the i386 host program itself) are
-/// skipped. Fails if an architecture is missing or found twice.
+/// Images starting inside a kernel-machine image (accepted, or of a kernel
+/// machine but unclassified, e.g. an unknown PowerPC flavour) are ignored;
+/// executables for other machines (the i386 host program itself, which
+/// spans the whole file) are skipped without hiding what they contain.
+/// Fails if an architecture is missing or found twice.
 pub fn extract_kernels(data: &[u8]) -> Result<KernelSet, KernelError> {
     let mut set = KernelSet::new();
     let mut covered = 0;
@@ -101,13 +106,15 @@ pub fn extract_kernels(data: &[u8]) -> Result<KernelSet, KernelError> {
             continue;
         }
         let bytes = &data[img.offset..img.offset + img.len];
+        if kernel_machine(img.machine) {
+            covered = img.offset + img.len;
+        }
         let Some(arch) = classify(&img, bytes) else {
             continue;
         };
         if set.insert(arch, Bytes::copy_from_slice(bytes)).is_some() {
             return Err(KernelError::Duplicate(arch));
         }
-        covered = img.offset + img.len;
     }
     let missing: Vec<BootArch> = BootArch::ALL
         .into_iter()
@@ -118,6 +125,11 @@ pub fn extract_kernels(data: &[u8]) -> Result<KernelSet, KernelError> {
     } else {
         Err(KernelError::Missing(missing))
     }
+}
+
+/// Machines boot kernels are built for.
+fn kernel_machine(machine: u16) -> bool {
+    matches!(machine, EM_MIPS | EM_PPC | EM_ARM | EM_AARCH64 | EM_TILEGX)
 }
 
 /// Map an image to its boot architecture; `None` if it is not a kernel we
@@ -268,12 +280,22 @@ fn parse_elf(data: &[u8], offset: usize) -> Option<ElfImage> {
         )
     };
     let (want_ph, want_sh) = if class64 { (56, 64) } else { (32, 40) };
-    if phnum == 0 || phentsize != want_ph || (shnum != 0 && shentsize != want_sh) {
+    if phnum == 0
+        || phnum > MAX_PROGRAM_HEADERS
+        || phentsize != want_ph
+        || (shnum != 0 && shentsize != want_sh)
+    {
         return None;
     }
-    let mut end = ehsize
-        .max(phoff.checked_add(phnum * phentsize)?)
-        .max(shoff.checked_add(shnum * shentsize)?);
+    // Both header tables must fit in the data and the size limit before
+    // any entry is read.
+    let limit = MAX_KERNEL_SIZE.min(d.len() as u64);
+    let ph_end = phoff.checked_add(phnum * phentsize)?;
+    let sh_end = shoff.checked_add(shnum * shentsize)?;
+    if ph_end > limit || sh_end > limit {
+        return None;
+    }
+    let mut end = ehsize.max(ph_end).max(sh_end);
     for k in 0..phnum {
         let ph = phoff + k * phentsize;
         let (p_offset, p_filesz) = if class64 {
@@ -420,6 +442,59 @@ mod tests {
         let image = elf(ElfSpec::exec(false, false, EM_ARM), &[0; 64]);
         assert!(find_elf_images(&image[..image.len() - 1]).is_empty());
         assert!(find_elf_images(&image[..30]).is_empty());
+    }
+
+    /// A 32-bit little-endian ELF header claiming `phnum` program headers
+    /// right after it.
+    fn planted_header(machine: u16, phnum: u16) -> Vec<u8> {
+        let mut h = vec![0u8; 52];
+        h[..4].copy_from_slice(ELF_MAGIC);
+        h[4] = 1; // 32-bit
+        h[5] = 1; // little-endian
+        h[6] = 1;
+        h[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+        h[18..20].copy_from_slice(&machine.to_le_bytes());
+        h[28..32].copy_from_slice(&52u32.to_le_bytes()); // e_phoff
+        h[40..42].copy_from_slice(&52u16.to_le_bytes()); // e_ehsize
+        h[42..44].copy_from_slice(&32u16.to_le_bytes()); // e_phentsize
+        h[44..46].copy_from_slice(&phnum.to_le_bytes());
+        h
+    }
+
+    #[test]
+    fn many_planted_headers_are_rejected_quickly() {
+        let mut blob = vec![0u8; 4 << 20];
+        let header = planted_header(3, u16::MAX);
+        for at in (0..blob.len() - 52).step_by(256) {
+            blob[at..at + 52].copy_from_slice(&header);
+        }
+        let start = std::time::Instant::now();
+        assert!(find_elf_images(&blob).is_empty());
+        assert!(extract_kernels(&blob).is_err());
+        let took = start.elapsed();
+        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    }
+
+    #[test]
+    fn header_tables_must_fit_the_image() {
+        // 2 program headers claimed, only one present.
+        let mut image = planted_header(EM_ARM, 2);
+        image.extend_from_slice(&[0; 32]);
+        assert!(find_elf_images(&image).is_empty());
+        image.extend_from_slice(&[0; 32]);
+        assert_eq!(find_elf_images(&image).len(), 1);
+    }
+
+    #[test]
+    fn executables_nested_in_an_unknown_kernel_are_ignored() {
+        let mut kernels = synthetic_kernels();
+        let inner = elf(ElfSpec::exec(false, false, EM_ARM), b"nested arm program");
+        let mut payload = b"junk\0Linux version 5.6.3-e6500 (b@h) #1\0".to_vec();
+        payload.extend_from_slice(&inner);
+        let unknown = elf(ElfSpec::exec(false, true, EM_PPC), &payload);
+        kernels.insert(0, (BootArch::PowerPc, unknown));
+        let set = extract_kernels(&kernel_container(&kernels)).unwrap();
+        assert_eq!(set[&BootArch::Arm].as_ref(), kernels[7].1.as_slice());
     }
 
     proptest! {

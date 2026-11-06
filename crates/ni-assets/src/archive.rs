@@ -33,9 +33,15 @@ pub enum ArchiveError {
 
 /// Read `netinstall-cli` (any directory) out of a gzip-compressed tarball.
 pub fn netinstall_cli_from_tar_gz<R: Read>(reader: R) -> Result<Vec<u8>, ArchiveError> {
+    cli_from_tar_gz(reader, MAX_CLI_SIZE)
+}
+
+/// [`netinstall_cli_from_tar_gz`] with a size limit: the header size is
+/// checked first, and the read itself stops after `max + 1` bytes.
+fn cli_from_tar_gz<R: Read>(reader: R, max: u64) -> Result<Vec<u8>, ArchiveError> {
     let mut archive = tar::Archive::new(GzDecoder::new(reader));
     for entry in archive.entries().map_err(ArchiveError::Read)? {
-        let mut entry = entry.map_err(ArchiveError::Read)?;
+        let entry = entry.map_err(ArchiveError::Read)?;
         let is_cli = entry.header().entry_type().is_file()
             && entry
                 .path()
@@ -45,11 +51,17 @@ pub fn netinstall_cli_from_tar_gz<R: Read>(reader: R) -> Result<Vec<u8>, Archive
         if !is_cli {
             continue;
         }
-        if entry.size() > MAX_CLI_SIZE {
+        if entry.size() > max {
             return Err(ArchiveError::CliTooLarge);
         }
         let mut data = Vec::with_capacity(entry.size() as usize);
-        entry.read_to_end(&mut data).map_err(ArchiveError::Read)?;
+        entry
+            .take(max + 1)
+            .read_to_end(&mut data)
+            .map_err(ArchiveError::Read)?;
+        if data.len() as u64 > max {
+            return Err(ArchiveError::CliTooLarge);
+        }
         return Ok(data);
     }
     Err(ArchiveError::MissingCli)
@@ -131,6 +143,30 @@ mod tests {
         );
         let nested = tar_gz(&[("netinstall-7.1/netinstall-cli", b"nested")]);
         assert_eq!(netinstall_cli_from_tar_gz(&nested[..]).unwrap(), b"nested");
+    }
+
+    #[test]
+    fn an_oversized_cli_is_rejected() {
+        let tgz = tar_gz(&[("netinstall-cli", &[1; 11])]);
+        assert!(matches!(
+            cli_from_tar_gz(&tgz[..], 10),
+            Err(ArchiveError::CliTooLarge)
+        ));
+        assert_eq!(cli_from_tar_gz(&tgz[..], 11).unwrap(), [1; 11]);
+    }
+
+    #[test]
+    fn zip64_markers_are_rejected() {
+        for (field, len) in [(10, 2), (12, 4), (16, 4)] {
+            let mut z = zip(&[("a.npk", b"x")]);
+            let eocd = z.len() - 22;
+            z[eocd + field..eocd + field + len].fill(0xff);
+            let total = z.len() as u64;
+            assert!(
+                matches!(zip_entry_names(&z, total), Err(ArchiveError::BadZip(r)) if r.contains("zip64")),
+                "field {field}"
+            );
+        }
     }
 
     #[test]
