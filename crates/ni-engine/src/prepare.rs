@@ -43,7 +43,7 @@ pub async fn resolve_or_remembered(
 /// and sends the system package first. Returns the version installed and
 /// the plan. Errors:
 /// `assets_failed` (`cause`), `profile_version_mismatch` (`version`,
-/// `kernel_version`), `invalid_plan` (`detail`).
+/// `kernel_version`), `empty_script` (`name`), `invalid_plan` (`detail`).
 ///
 /// Why the mismatch is an error: the device already booted the kernel it
 /// was served over TFTP, so the kernel cannot be switched for this install.
@@ -77,7 +77,11 @@ pub async fn prepare(
         ConfigMode::Default => DeviceConfig::Default,
         ConfigMode::Empty => DeviceConfig::Empty,
         ConfigMode::Script { local_name } => {
-            DeviceConfig::Script(assets.local_file(local_name).await.map_err(fail)?)
+            let script = assets.local_file(local_name).await.map_err(fail)?;
+            if script.is_empty() {
+                return Err(empty_script(local_name));
+            }
+            DeviceConfig::Script(script)
         }
     };
     let mode_script = match &profile.mode_script {
@@ -96,6 +100,13 @@ pub async fn prepare(
     plan.validate()
         .map_err(|e| Failure::new("invalid_plan").with("detail", e))?;
     Ok((version, plan))
+}
+
+/// `empty_script` (`name`): the configuration script is empty. An empty
+/// `autorun.scr` is what "empty configuration" sends, so that is the choice
+/// to make instead (the UI says so).
+pub fn empty_script(name: &str) -> Failure {
+    Failure::new("empty_script").with("name", name)
 }
 
 /// `profile_version_mismatch`: installing `version` on a device that runs
@@ -235,6 +246,23 @@ mod tests {
             plan.config,
             DeviceConfig::Script(Bytes::from_static(b"/system identity set name=x\n"))
         );
+    }
+
+    #[tokio::test]
+    async fn an_empty_custom_script_is_refused() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let dir = tempdir("prepare-empty-script");
+        let a = assets(&srv, &dir);
+        let script = dir.join("empty.rsc");
+        std::fs::write(&script, b"").unwrap();
+        let mut p = profile();
+        p.config = ConfigMode::Script {
+            local_name: a.register_local_file(&script).await.unwrap().name,
+        };
+        let err = prepare(&a, &p, None, None, "arm64").await.unwrap_err();
+        assert_eq!(err.code, "empty_script");
+        assert_eq!(err.param("name"), Some("empty.rsc"));
     }
 
     #[tokio::test]

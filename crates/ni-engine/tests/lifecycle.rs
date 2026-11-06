@@ -468,12 +468,20 @@ async fn an_explicit_flash_keeps_the_queue_position() {
 async fn stop_and_start_on_fixed_ports_never_finds_them_busy() {
     let mut rig = rig(|_| {}).await;
     rig.engine.stop().await.unwrap();
-    let free = || {
-        let s = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
-        s.local_addr().unwrap().port()
-    };
+    // Three distinct free ports: bound together (one at a time, a port
+    // dropped could be handed out again at once), released together right
+    // before the first start.
+    let probes: Vec<std::net::UdpSocket> = (0..3)
+        .map(|_| std::net::UdpSocket::bind("0.0.0.0:0").unwrap())
+        .collect();
+    let ports: Vec<u16> = probes
+        .iter()
+        .map(|s| s.local_addr().unwrap().port())
+        .collect();
     let mut cfg = config(&rig.lan);
-    (cfg.ports.bootp, cfg.ports.tftp, cfg.ports.netinstall) = (free(), free(), free());
+    (cfg.ports.bootp, cfg.ports.tftp, cfg.ports.netinstall) = (ports[0], ports[1], ports[2]);
+    let slow_reaps = ni_engine::engine::reap_timeouts();
+    drop(probes);
     for round in 0..20 {
         let started = rig
             .engine
@@ -484,6 +492,11 @@ async fn stop_and_start_on_fixed_ports_never_finds_them_busy() {
         rig.engine.stop().await.unwrap();
     }
     next(&mut rig.events, |e| *e == EngineEvent::Stopped).await;
+    assert_eq!(
+        ni_engine::engine::reap_timeouts(),
+        slow_reaps,
+        "aborted engine tasks did not end in time"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

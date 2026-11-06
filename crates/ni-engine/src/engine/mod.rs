@@ -19,6 +19,14 @@ mod start;
 
 pub use device::MAX_DEVICES;
 
+/// How many times, in this process, a stop's aborted tasks (listeners) did
+/// not end in time (logged as "aborted engine tasks did not end in time";
+/// their ports may then still be busy). For tests: it should stay 0.
+#[doc(hidden)]
+pub fn reap_timeouts() -> u64 {
+    core::REAP_TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 use crate::config::{EngineConfig, NetPlan};
 use crate::event::{DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo};
 use crate::prepare::asset_failure;

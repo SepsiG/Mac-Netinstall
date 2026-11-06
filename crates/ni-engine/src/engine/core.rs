@@ -47,6 +47,11 @@ pub(crate) const FOREIGN_IP_CHECKS: u32 = 3;
 /// How long `stop` waits for aborted tasks to release their sockets.
 const REAP_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How often (in this process) aborted tasks did not end within
+/// [`REAP_TIMEOUT`]; see [`super::reap_timeouts`].
+pub(crate) static REAP_TIMEOUTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Messages from tasks the engine spawned.
 pub(crate) enum Internal {
     /// A kernel fetch knows its version (its download progress is
@@ -134,6 +139,9 @@ pub(crate) struct Running {
     pub link: Link,
     /// Index of the interface at start (`IP_BOUND_IF` binds it).
     pub link_index: u32,
+    /// The interface's IPv4 addresses (at start, then as of the last link
+    /// check): frames from any of them on our port are our own.
+    pub local_ips: Vec<std::net::Ipv4Addr>,
     /// Consecutive checks that saw other addresses but not the server IP.
     pub foreign_ip_checks: u32,
     pub send_errors: SendErrors,
@@ -326,6 +334,7 @@ impl Core {
             }
         };
         if tokio::time::timeout(REAP_TIMEOUT, all).await.is_err() {
+            REAP_TIMEOUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             warn!("aborted engine tasks did not end in time");
         }
     }
@@ -1002,14 +1011,21 @@ impl Core {
             return;
         };
         let Some(run) = self.run.as_mut() else { return };
-        // Our own broadcasts come back from our address and port. (Their
-        // MAC fields are the device's, so they cannot be told apart by
-        // MAC; sessions would ignore them anyway: `ack` is `seq - 2`.)
+        // Our own broadcasts come back from our port and an address of the
+        // interface: the server IP, or another one the interface has (the
+        // source address of a broadcast is not necessarily the server IP).
+        // Their MAC fields are the device's, so they cannot be told apart
+        // by MAC; a session would ignore them anyway (`ack` is `seq - 2`),
+        // but an echoed offer must not look like a hello.
         let own_port = io
             .as_ref()
             .and_then(|io| io.socket.local_addr().ok())
             .map(|a| a.port());
-        if from.ip() == IpAddr::V4(run.net.server_ip) && Some(from.port()) == own_port {
+        let own_ip = match from.ip() {
+            IpAddr::V4(ip) => ip == run.net.server_ip || run.local_ips.contains(&ip),
+            IpAddr::V6(_) => false,
+        };
+        if own_ip && Some(from.port()) == own_port {
             return;
         }
         if let Some(session) = run
@@ -1451,6 +1467,9 @@ impl Core {
         let server_ip = run.net.server_ip;
         let status = link_status(&ifaces, &name, server_ip);
         let found = ifaces.iter().find(|i| i.name == name);
+        if let Some(i) = found {
+            run.local_ips = i.ipv4.iter().map(|(a, _)| *a).collect();
+        }
         let index = found.map(|i| i.index);
         // Link, addresses, but not ours: a lost carrier looks different
         // (no address at all), so this one will not heal by itself.
@@ -1511,5 +1530,95 @@ impl Core {
             self.emit(EngineEvent::Error(f));
             self.stop(io);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{InterfaceSource, Ports};
+    use ni_assets::HttpConfig;
+    use std::net::Ipv4Addr;
+
+    const DEV: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x42]);
+
+    /// A core started on `lo0` (with an extra address `alias`), its I/O and
+    /// its Netinstall port.
+    fn started_core(alias: Ipv4Addr) -> (Core, Option<Io>, ni_assets::testutil::TempDir) {
+        let dir = ni_assets::testutil::tempdir("core-own-frames");
+        // Nothing listens on port 9: kernel downloads fail at once.
+        let http = HttpConfig {
+            download_base: "http://127.0.0.1:9/dl/".into(),
+            upgrade_base: "http://127.0.0.1:9/up".into(),
+            ..HttpConfig::default()
+        };
+        let assets = Arc::new(Assets::new(dir.join("cache"), http).unwrap());
+        let (events, _) = broadcast::channel(64);
+        let (internal, _) = mpsc::channel(64);
+        let mut core = Core {
+            assets,
+            events,
+            internal,
+            epoch: 0,
+            run: None,
+            aborted: Vec::new(),
+        };
+        let mut lo0 = ni_net::list_interfaces()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.name == "lo0")
+            .expect("lo0");
+        lo0.ipv4.push((alias, Ipv4Addr::new(255, 0, 0, 0)));
+        let mut cfg = EngineConfig::new("lo0");
+        cfg.ports = Ports {
+            bootp: 0,
+            tftp: 0,
+            netinstall: 0,
+            ..Ports::default()
+        };
+        cfg.link_check = None;
+        cfg.interfaces = InterfaceSource::new(move || Ok(vec![lo0.clone()]));
+        let mut io = None;
+        core.start(cfg, &mut io).unwrap();
+        (core, io, dir)
+    }
+
+    fn hello() -> Vec<u8> {
+        Frame::new(
+            DEV,
+            Mac::BROADCAST,
+            1,
+            0,
+            &b"DSCV\n\n\nhEX\nmmips\n7.1\n0\n0\n"[..],
+        )
+        .encode()
+    }
+
+    #[tokio::test]
+    async fn own_frames_from_any_interface_address_are_dropped() {
+        let alias = Ipv4Addr::new(10, 9, 9, 9);
+        let (mut core, mut io, _dir) = started_core(alias);
+        let port = io.as_ref().unwrap().socket.local_addr().unwrap().port();
+        let server_ip = core.run.as_ref().unwrap().net.server_ip;
+        let frame = hello();
+        let feed = |core: &mut Core, io: &mut Option<Io>, from: SocketAddr| {
+            core.on_datagram(Ok((frame.len(), from)), &frame, io);
+            core.run.as_ref().unwrap().devices.contains_key(&DEV)
+        };
+        // Looped back from our port, from the server IP or another address
+        // of the interface: ours, dropped.
+        assert!(!feed(
+            &mut core,
+            &mut io,
+            SocketAddr::from((server_ip, port))
+        ));
+        assert!(!feed(&mut core, &mut io, SocketAddr::from((alias, port))));
+        // The same frame from a device (any other port) is a hello.
+        assert!(feed(
+            &mut core,
+            &mut io,
+            SocketAddr::from((alias, port.wrapping_add(1)))
+        ));
+        core.stop(&mut io);
     }
 }

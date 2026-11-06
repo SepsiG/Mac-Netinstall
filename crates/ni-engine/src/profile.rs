@@ -86,6 +86,14 @@ impl ConfigMode {
             ConfigMode::Script { .. } => "script",
         }
     }
+
+    /// The configuration script's local name, for [`ConfigMode::Script`].
+    pub fn script(&self) -> Option<&str> {
+        match self {
+            ConfigMode::Script { local_name } => Some(local_name),
+            _ => None,
+        }
+    }
 }
 
 /// What the device does when the install is done.
@@ -114,26 +122,38 @@ impl From<AfterInstall> for ni_proto::AfterInstall {
 /// Longest license key, in bytes (after line breaks are removed).
 pub const MAX_LICENSE_KEY: usize = ni_proto::message::MAX_LICENSE_KEY;
 
-/// A license key from a key file's contents (the official tool's `-k`):
-/// line breaks removed. Error: `invalid_license_key` (`max`) unless the
-/// rest is 1..=[`MAX_LICENSE_KEY`] printable ASCII characters.
+/// A license key from a key file's contents
+/// ([`ni_proto::message::license_key_from_file`]). Error:
+/// `invalid_license_key` (`max`) unless the rest is 1..=[`MAX_LICENSE_KEY`]
+/// printable ASCII characters.
 pub fn license_key_from_file(data: &[u8]) -> Result<String, Failure> {
-    let key: Vec<u8> = data
-        .iter()
-        .copied()
-        .filter(|b| !matches!(b, b'\n' | b'\r'))
-        .collect();
-    let key = String::from_utf8(key).unwrap_or_default();
-    check_license_key(&key)?;
-    Ok(key)
+    ni_proto::message::license_key_from_file(data).ok_or_else(invalid_license_key)
+}
+
+fn invalid_license_key() -> Failure {
+    Failure::new("invalid_license_key").with("max", MAX_LICENSE_KEY)
 }
 
 fn check_license_key(key: &str) -> Result<(), Failure> {
-    let printable = key.bytes().all(|b| (0x20..0x7f).contains(&b));
-    if key.is_empty() || key.len() > MAX_LICENSE_KEY || !printable {
-        return Err(Failure::new("invalid_license_key").with("max", MAX_LICENSE_KEY));
+    match ni_proto::message::license_key_from_file(key.as_bytes()) {
+        Some(k) if k == key => Ok(()),
+        _ => Err(invalid_license_key()),
     }
-    Ok(())
+}
+
+/// Write `data` to a new file readable by its owner only (mode 0600):
+/// profiles may hold a license key.
+fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let _ = std::fs::remove_file(path);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(data)?;
+    f.sync_all()
 }
 
 /// A reusable install recipe.
@@ -317,7 +337,7 @@ impl ProfileStore {
         let mut json = serde_json::to_vec_pretty(profile).expect("profiles serialize");
         json.push(b'\n');
         let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        std::fs::write(&tmp, &json).map_err(|e| io_failure("write", &tmp, e))?;
+        write_private(&tmp, &json).map_err(|e| io_failure("write", &tmp, e))?;
         std::fs::rename(&tmp, &path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             io_failure("rename", &path, e)
@@ -586,6 +606,21 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(leftovers.len(), 1, "no temporary files left: {leftovers:?}");
+    }
+
+    #[test]
+    fn profile_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir("profiles-private");
+        let store = ProfileStore::new(dir.to_path_buf());
+        let file = dir.join("hap ax2 stable.json");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        store.save(&sample()).unwrap();
+        assert_eq!(mode(&file), 0o600);
+        // An older, world-readable file is replaced by a private one.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        store.save(&sample()).unwrap();
+        assert_eq!(mode(&file), 0o600);
     }
 
     #[test]

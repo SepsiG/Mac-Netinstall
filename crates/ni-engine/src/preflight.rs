@@ -270,7 +270,8 @@ pub fn bind_failure(service: &str, e: &NetError) -> Failure {
 }
 
 /// Can the profile's assets be had? Errors: `version_unavailable`
-/// (`cause`: the asset error code), `script_missing`. Warning:
+/// (`cause`: the asset error code), `script_missing`, `empty_script` (the
+/// configuration script is empty). Warning:
 /// `kernels_not_cached` (they will be downloaded at start).
 pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -293,12 +294,16 @@ pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
         }
     }
     for local_name in profile.scripts() {
-        if let Err(e) = assets.local_file(local_name).await {
-            out.push(Finding::error(
+        match assets.local_file(local_name).await {
+            Err(e) => out.push(Finding::error(
                 Failure::new("script_missing")
                     .with("name", local_name)
                     .with("cause", e.code()),
-            ));
+            )),
+            Ok(data) if data.is_empty() && profile.config.script() == Some(local_name) => {
+                out.push(Finding::error(crate::prepare::empty_script(local_name)));
+            }
+            Ok(_) => {}
         }
     }
     out
@@ -629,7 +634,14 @@ mod tests {
             ]
         );
         assert_eq!(findings[1].failure.param("name"), Some("mode.rsc"));
+        // A registered but empty script: use "empty configuration" instead.
+        let empty = dir.join("setup.rsc");
+        std::fs::write(&empty, b"").unwrap();
+        a.register_local_file(&empty).await.unwrap();
         profile.mode_script = None;
+        let findings = check_assets(&a, &profile).await;
+        assert_eq!(codes(&findings), [("empty_script", Severity::Error)]);
+        assert_eq!(findings[0].failure.param("name"), Some("setup.rsc"));
         profile.version = VersionSpec::Channel(Channel::Testing);
         profile.config = ConfigMode::Default;
         let findings = check_assets(&a, &profile).await;
