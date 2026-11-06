@@ -5,6 +5,7 @@
 
 pub mod device_info;
 pub mod frame;
+pub mod message;
 
 pub use device_info::DeviceInfo;
 pub use frame::{DecodeError, Frame, Mac, ParseMacError, HEADER_LEN, MAX_CHUNK, PORT};
