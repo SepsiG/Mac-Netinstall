@@ -94,6 +94,7 @@ pub(crate) enum Command {
     Flash(Mac, Box<Profile>, Reply<()>),
     Retry(Mac, Reply<()>),
     AutoRepeat(bool, Reply<()>),
+    ActiveProfile(Option<Box<Profile>>, Reply<()>),
     OnlyMac(Option<Mac>, Reply<()>),
     MaxParallel(usize, Reply<()>),
     Cooldown(Duration, Reply<()>),
@@ -254,6 +255,21 @@ impl EngineHandle {
     /// without one).
     pub async fn set_auto_repeat(&self, on: bool) -> Result<(), Failure> {
         self.call(|tx| Command::AutoRepeat(on, tx)).await?
+    }
+
+    /// Change the active profile while running (`None`: no profile; that
+    /// also turns auto-repeat off). A profile with another version spec
+    /// than the boot kernels were fetched for withdraws the kernels and
+    /// fetches the new ones in the background ([`EngineEvent::Kernels`]:
+    /// `downloading`, then `ready` or `unavailable`); meanwhile devices
+    /// that netboot get no boot file. Devices queued by auto-repeat (no
+    /// profile assigned with `flash`) take the new profile. A device keeps
+    /// the kernel version it booted: installing another one on it fails
+    /// with `profile_version_mismatch` until it netboots again. Errors:
+    /// `not_running`, profile validation codes.
+    pub async fn set_active_profile(&self, profile: Option<Profile>) -> Result<(), Failure> {
+        self.call(|tx| Command::ActiveProfile(profile.map(Box::new), tx))
+            .await?
     }
 
     /// Serve only `mac` from now on (`None`: every device). Others get no

@@ -32,6 +32,9 @@ pub(crate) struct Device {
     pub using: Option<Profile>,
     /// The RouterOS version of the current attempt, once known.
     pub version: Option<Version>,
+    /// Version of the boot kernels served when it netbooted (its BOOTP
+    /// reply): the only version it can install this round.
+    pub kernel: Option<Version>,
     /// `None` until the first state is set (nothing reported yet).
     pub state: Option<DeviceState>,
     /// Position in the concurrency queue while waiting for a slot.
@@ -59,6 +62,7 @@ impl Device {
             assigned: None,
             using: None,
             version: None,
+            kernel: None,
             state: None,
             queued: None,
             attempt: 0,

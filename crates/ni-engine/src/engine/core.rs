@@ -267,6 +267,9 @@ impl Core {
             Command::AutoRepeat(on, reply) => {
                 let _ = reply.send(self.set_auto_repeat(on));
             }
+            Command::ActiveProfile(profile, reply) => {
+                let _ = reply.send(self.set_active_profile(profile.map(|p| *p)));
+            }
             Command::OnlyMac(mac, reply) => {
                 let _ = reply.send(self.set_only_mac(mac));
             }
@@ -415,7 +418,8 @@ impl Core {
         if dev.is("done") {
             return Err(Failure::new("device_done").with("mac", mac));
         }
-        if let (VersionSpec::Exact(v), Some(k)) = (&profile.version, &run.kernel_version) {
+        let kernel = dev.kernel.as_ref().or(run.kernel_version.as_ref());
+        if let (VersionSpec::Exact(v), Some(k)) = (&profile.version, kernel) {
             if v != k {
                 return Err(version_mismatch(v, k));
             }
@@ -489,6 +493,33 @@ impl Core {
             .collect();
         for mac in waiting {
             self.route(mac);
+        }
+        Ok(())
+    }
+
+    fn set_active_profile(&mut self, profile: Option<Profile>) -> Result<(), Failure> {
+        if let Some(p) = &profile {
+            p.validate()?;
+        }
+        let run = self.running()?;
+        let Some(profile) = profile else {
+            if run.cfg.auto_repeat {
+                self.set_auto_repeat(false)?;
+            }
+            self.running()?.cfg.profile = None;
+            return Ok(());
+        };
+        let refetch = run.kernel_spec.as_ref() != Some(&profile.version);
+        run.cfg.profile = Some(profile.clone());
+        // Devices queued by auto-repeat take the new profile (and keep
+        // their place); ones given a profile with `flash` keep theirs.
+        for dev in run.devices.values_mut() {
+            if dev.queued.is_some() && dev.assigned.is_none() {
+                dev.using = Some(profile.clone());
+            }
+        }
+        if refetch {
+            self.fetch_kernels();
         }
         Ok(())
     }
@@ -665,8 +696,8 @@ impl Core {
         let assets = self.assets.clone();
         let internal = self.internal.clone();
         let Some(run) = self.run.as_mut() else { return };
-        let active_spec = run.cfg.profile.as_ref().map(|p| p.version.clone());
-        let kernel_version = run.kernel_version.clone();
+        let kernel_spec = run.kernel_spec.clone();
+        let served = run.kernel_version.clone();
         let Some(dev) = run.devices.get_mut(&mac) else {
             return;
         };
@@ -676,9 +707,14 @@ impl Core {
         dev.queued = None;
         dev.attempt += 1;
         let attempt = dev.attempt;
-        let version = kernel_version
-            .clone()
-            .filter(|_| active_spec.as_ref() == Some(&profile.version));
+        // The kernels it booted (those served now if it was not seen
+        // netbooting, e.g. it said hello right after a restart).
+        let kernel_version = dev.kernel.clone().or_else(|| served.clone());
+        // Known without resolving: the profile's spec is what the served
+        // kernels were resolved from, and the device runs those.
+        let version = served.filter(|v| {
+            kernel_spec.as_ref() == Some(&profile.version) && kernel_version.as_ref() == Some(v)
+        });
         dev.version = version.clone();
         let shown = version.as_ref().map(|v| v.to_string());
         run.tasks.retain(|t| !t.is_finished());
@@ -850,6 +886,7 @@ impl Core {
                 }
                 dev.boot_arch = Some(arch);
                 dev.ip = Some(ip);
+                dev.kernel = run.kernel_version.clone();
                 dev.info = None;
                 dev.queued = None;
                 self.set_state(

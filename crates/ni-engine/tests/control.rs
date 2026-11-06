@@ -4,7 +4,9 @@
 mod common;
 
 use common::*;
-use ni_engine::{EngineEvent, EngineHandle, KernelState};
+use ni_assets::testutil::{mirror_version, netinstall_tarball, Reply};
+use ni_assets::{Version, VersionSpec};
+use ni_engine::{DeviceState, EngineEvent, EngineHandle, KernelState, Profile};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> u64 {
@@ -195,4 +197,147 @@ async fn runtime_settings_need_a_running_engine() {
         .await
         .unwrap_err();
     assert_eq!(err.code, "not_running");
+}
+
+/// A profile installing exactly `version` (plus `wireless`).
+fn exact(name: &str, version: &str) -> Profile {
+    let mut p = Profile::new(name, VersionSpec::Exact(Version::parse(version).unwrap()));
+    p.extra_packages = vec!["wireless".into()];
+    p
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_active_version_withdraws_and_refetches_the_kernels() {
+    let mut rig = rig(|_| {}).await;
+    // 7.24.6 exists too; its tarball arrives slowly, so the switch is
+    // observable.
+    mirror_version(&rig.srv, "7.24.6");
+    rig.srv.route(
+        "/dl/7.24.6/netinstall-7.24.6.tar.gz",
+        Reply::Slow {
+            body: netinstall_tarball(),
+            chunk: 64 * 1024,
+            delay: Duration::from_millis(150),
+        },
+    );
+    rig.engine
+        .set_active_profile(Some(exact("old", "7.24.6")))
+        .await
+        .unwrap();
+    let e = next(&mut rig.events, |e| {
+        matches!(e, EngineEvent::Kernels { .. })
+    })
+    .await;
+    assert_eq!(
+        e,
+        EngineEvent::Kernels {
+            state: KernelState::Downloading {
+                spec: "7.24.6".into(),
+                done: 0,
+                total: None
+            }
+        }
+    );
+    // Running, but no kernels: a netbooting device gets no boot file.
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert!(snap.running);
+    assert_eq!(snap.kernel_version, None);
+    assert_eq!(snap.kernels.name(), "downloading");
+    assert_eq!(snap.profile.as_deref(), Some("old"));
+    let reply = rig
+        .lan
+        .boot(
+            A,
+            "ARM64__boot",
+            rig.started.bootp,
+            Duration::from_millis(300),
+        )
+        .await;
+    assert_eq!(reply, None);
+    let states = kernel_states(&mut rig.events).await;
+    assert!(
+        states
+            .iter()
+            .any(|s| matches!(s, KernelState::Downloading { done, .. } if *done > 0)),
+        "download progress is reported: {states:?}"
+    );
+    assert_eq!(
+        states.last(),
+        Some(&KernelState::Ready {
+            version: "7.24.6".into(),
+            offline: false
+        })
+    );
+    // Now A boots and gets 7.24.6.
+    let sim = boot(&rig, A, sim_config(A)).await;
+    rig.lan.add(sim).await;
+    let e = state(&mut rig.events, A, "flashing").await;
+    let EngineEvent::Device {
+        state: DeviceState::Flashing { version, .. },
+        ..
+    } = e
+    else {
+        unreachable!()
+    };
+    assert_eq!(version, "7.24.6");
+    state(&mut rig.events, A, "done").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_keeps_the_kernel_version_it_booted() {
+    let mut rig = rig(|cfg| cfg.auto_repeat = false).await;
+    mirror_version(&rig.srv, "7.24.6");
+    let sim = boot(&rig, A, sim_config(A)).await; // boots 7.25.1 kernels
+    rig.lan.add(sim).await;
+    state(&mut rig.events, A, "waiting").await;
+    rig.engine
+        .set_active_profile(Some(exact("old", "7.24.6")))
+        .await
+        .unwrap();
+    next(&mut rig.events, |e| {
+        matches!(e, EngineEvent::KernelsReady { .. })
+    })
+    .await;
+    let err = rig
+        .engine
+        .flash(A, exact("old", "7.24.6"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("kernel_version")),
+        ("profile_version_mismatch", Some("7.25.1"))
+    );
+    rig.engine.flash(A, exact("new", "7.25.1")).await.unwrap();
+    state(&mut rig.events, A, "done").await;
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert_eq!(snap.devices[0].version.as_deref(), Some("7.25.1"));
+    assert_eq!(snap.kernel_version.as_deref(), Some("7.24.6"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_version_spec_keeps_the_kernels_and_none_stops_auto_repeat() {
+    let mut rig = rig(|_| {}).await;
+    let mut other = profile();
+    other.name = "other".into();
+    other.extra_packages.clear();
+    rig.engine.set_active_profile(Some(other)).await.unwrap();
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert_eq!(snap.profile.as_deref(), Some("other"));
+    assert_eq!(
+        snap.kernel_version.as_deref(),
+        Some("7.25.1"),
+        "not withdrawn"
+    );
+    rig.engine.set_active_profile(None).await.unwrap();
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert_eq!((snap.profile, snap.auto_repeat), (None, false));
+    assert_eq!(snap.kernels.name(), "ready");
+    let mut bad = profile();
+    bad.name = String::new();
+    let err = rig.engine.set_active_profile(Some(bad)).await.unwrap_err();
+    assert_eq!(err.code, "invalid_name");
+    // No `kernels` event was sent for any of this.
+    while let Ok(e) = rig.events.try_recv() {
+        assert!(!matches!(e, EngineEvent::Kernels { .. }), "{e:?}");
+    }
 }
