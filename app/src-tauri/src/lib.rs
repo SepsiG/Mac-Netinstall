@@ -5,7 +5,9 @@
 //! - [`commands`]: the `#[tauri::command]` wrappers.
 //! - [`forward`]: engine events to the window.
 //! - [`settings`]: `settings.json` in Application Support.
+//! - [`codes`]: the code catalog the UI's translations are checked against.
 
+pub mod codes;
 pub mod commands;
 pub mod core;
 pub mod forward;
