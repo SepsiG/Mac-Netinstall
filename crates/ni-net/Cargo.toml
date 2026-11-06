@@ -1,0 +1,17 @@
+[package]
+name = "ni-net"
+description = "macOS networking helpers: interface list, interface-bound UDP sockets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ni-proto.workspace = true
+nix = { workspace = true, features = ["net"] }
+socket2 = { workspace = true, features = ["all"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
