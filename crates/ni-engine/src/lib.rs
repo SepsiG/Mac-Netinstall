@@ -4,6 +4,7 @@ pub mod config;
 pub mod event;
 pub mod gate;
 pub mod preflight;
+pub mod prepare;
 pub mod profile;
 
 pub use config::{
