@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "@formatjs/icu-messageformat-parser": "3.5.22",
+    "@resvg/resvg-wasm": "2.6.2",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tauri-apps/cli": "2.12.4",
     "@testing-library/jest-dom": "7.0.1",

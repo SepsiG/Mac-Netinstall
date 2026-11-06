@@ -166,3 +166,73 @@ fn handled_commands() -> BTreeSet<String> {
         .map(|s| s.trim_start_matches("commands::").to_string())
         .collect()
 }
+
+/// Width and height from a PNG's IHDR chunk.
+fn png_size(path: &Path) -> (u32, u32) {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "{}", path.display());
+    assert_eq!(&bytes[12..16], b"IHDR", "{}", path.display());
+    let be = |i: usize| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
+    (be(16), be(20))
+}
+
+#[test]
+fn the_bundle_icons_are_a_complete_macos_icon_set() {
+    // The bundler builds the .icns from these PNGs; "@2x" marks the
+    // Retina variant (twice the pixels). They are rendered from
+    // app/icon/*.svg by app/scripts/make-icon.mjs (the frontend tests check
+    // they are up to date).
+    let conf = json("tauri.conf.json");
+    let icons: Vec<&str> = conf["bundle"]["icon"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    // The first PNG is also the window icon (tauri-codegen).
+    assert_eq!(icons.first(), Some(&"icons/icon.png"));
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut slots = BTreeSet::new();
+    for icon in &icons {
+        let (w, h) = png_size(&dir.join(icon));
+        assert_eq!(w, h, "{icon} is square");
+        let name = icon.strip_prefix("icons/").unwrap();
+        let (points, scale) = match name {
+            "icon.png" => (512, 1),
+            _ => {
+                let (base, scale) = match name.strip_suffix("@2x.png") {
+                    Some(base) => (base, 2),
+                    None => (name.strip_suffix(".png").unwrap(), 1),
+                };
+                let (a, b) = base.split_once('x').unwrap();
+                assert_eq!(a, b, "{icon}");
+                (a.parse::<u32>().unwrap(), scale)
+            }
+        };
+        assert_eq!(w, points * scale, "{icon}: {w} px");
+        assert!(slots.insert((points, scale)), "{icon} duplicates a size");
+    }
+    let expected: BTreeSet<(u32, u32)> = [16, 32, 128, 256, 512]
+        .into_iter()
+        .flat_map(|p| [(p, 1), (p, 2)])
+        .collect();
+    assert_eq!(slots, expected);
+    // Nothing else lingers in icons/ (e.g. an old .icns would be used as is).
+    let on_disk: BTreeSet<String> = std::fs::read_dir(dir.join("icons"))
+        .unwrap()
+        .map(|e| format!("icons/{}", e.unwrap().file_name().to_string_lossy()))
+        .collect();
+    let listed: BTreeSet<String> = icons.iter().map(|s| s.to_string()).collect();
+    assert_eq!(on_disk, listed);
+}
+
+#[test]
+fn the_app_is_a_regular_dock_app() {
+    // It shows in the Dock and the app switcher while running: no
+    // agent/background-only keys (lib.rs also sets the Regular activation
+    // policy explicitly).
+    let plist = read("Info.plist");
+    for key in ["LSUIElement", "LSBackgroundOnly"] {
+        assert!(!plist.contains(key), "Info.plist sets {key}");
+    }
+}
