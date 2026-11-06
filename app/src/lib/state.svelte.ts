@@ -147,6 +147,8 @@ export class EngineState {
           d.ip = s.ip;
           d.boot_arch = s.boot_arch;
         }
+        // A new round: the previous install's configuration no longer applies.
+        if (s.state === "bootp_seen" || s.state === "discovered") d.config = null;
         if ((s.state === "preparing" && s.version) || s.state === "flashing") {
           d.version = s.version ?? d.version;
         }

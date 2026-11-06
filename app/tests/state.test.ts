@@ -91,6 +91,22 @@ describe("EngineState", () => {
     expect(s.log.length).toBe(5); // started, bootp_seen, discovered, preparing, done
   });
 
+  it("forgets the configuration of the previous round", () => {
+    for (const next of ["bootp_seen", "discovered"] as const) {
+      const s = new EngineState();
+      s.apply({ event: "started", interface: "en7", server_ip: "192.168.88.1", bootp: "", tftp: "", netinstall: "" });
+      s.apply({ event: "device", mac: A, state: "preparing", version: "7.25.1", config: "script" });
+      s.apply({ event: "device", mac: A, state: "done" });
+      expect(s.devices[A]!.config).toBe("script");
+      if (next === "bootp_seen") {
+        s.apply({ event: "device", mac: A, state: "bootp_seen", boot_arch: "arm64", ip: "192.168.88.2" });
+      } else {
+        s.apply({ event: "device", mac: A, state: "discovered" });
+      }
+      expect(s.devices[A]!.config, next).toBeNull();
+    }
+  });
+
   it("tracks kernels, link and stop", () => {
     const s = new EngineState();
     s.apply({ event: "started", interface: "en7", server_ip: "1.1.1.1", bootp: "", tftp: "", netinstall: "" });

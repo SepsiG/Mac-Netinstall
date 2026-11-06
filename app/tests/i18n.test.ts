@@ -53,7 +53,27 @@ describe("locales", () => {
     expect(HU["profile.config_default"]).toBe("Gyári alapkonfiguráció");
     expect(HU["profile.config_empty"]).toBe("Üres konfiguráció");
     expect(HU["profile.config_script"]).toBe("Saját szkript (.rsc)");
-    expect(HU["profile.mode_script"]).toBe("Mode script (haladó)");
+    expect(HU["profile.mode_script"]).toBe("Módszkript (mode.scr)");
+    expect(EN["profile.mode_script"]).toBe("Mode script (mode.scr)");
+  });
+
+  it("never calls the official program a device, and names the mode script one way", () => {
+    for (const [key, text] of Object.entries(HU)) {
+      // "eszköz" is the RouterBOARD; the official program is netinstall-cli.
+      expect(text, key).not.toMatch(/hivatalos eszköz/i);
+      expect(text, key).not.toMatch(/mode script/i);
+      if (/hivatalos/.test(text)) expect(text, key).toMatch(/hivatalos netinstall-cli|MikroTik hivatalos programja/);
+      if (/módszkript/i.test(text)) expect(text, key).toMatch(/[Mm]ódszkript\S* \(mode\.scr\)/);
+    }
+    for (const [key, text] of Object.entries(EN)) {
+      if (/mode script/i.test(text)) expect(text, key).toMatch(/[Mm]ode script \(mode\.scr\)/);
+    }
+    expect(HU["code.flash_ended_early"]).toMatch(/^Az eszköz abbahagyta a fogadást/);
+  });
+
+  it("does not claim what removing branding does on a device", () => {
+    expect(EN["profile.remove_branding_help"]).toMatch(/not been verified/);
+    expect(HU["profile.remove_branding_help"]).toMatch(/nem ellenőriztük/);
   });
 
   it("hu has exactly the keys of en", () => {

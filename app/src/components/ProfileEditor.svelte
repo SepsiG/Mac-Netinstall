@@ -89,10 +89,21 @@
     form.packages = on ? [...form.packages, name] : form.packages.filter((p) => p !== name);
   }
 
+  /** The configuration script picked last was empty (refused: "empty
+   *  configuration" is the way to install without one). */
+  let emptyScript = $state(false);
+
   async function pick(field: "script" | "modeScript") {
     try {
       const s = await backend.pickScript();
-      if (s) form[field] = s.name;
+      if (!s) return;
+      if (field === "script" && s.size === 0) {
+        emptyScript = true;
+        form.script = null;
+        return;
+      }
+      if (field === "script") emptyScript = false;
+      form[field] = s.name;
     } catch (e) {
       saveError = toFailure(e);
     }
@@ -207,7 +218,11 @@
             <button type="button" class="small" onclick={() => pick("script")}>{$t("profile.choose")}</button>
             <span class={form.script ? "mono" : "secondary"}>{form.script ?? $t("profile.no_script")}</span>
           </div>
-          {#if tried && errors.script}<div class="field-error" role="alert">{$t(errors.script)}</div>{/if}
+          {#if emptyScript}
+            <div class="field-error" role="alert">{$t("profile.err_script_empty")}</div>
+          {:else if tried && errors.script}
+            <div class="field-error" role="alert">{$t(errors.script)}</div>
+          {/if}
         {/if}
       {/each}
     </div>

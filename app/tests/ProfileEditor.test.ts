@@ -74,13 +74,35 @@ describe("ProfileEditor", () => {
     expect(onclose).toHaveBeenCalledWith({ saved: "hAP lab" });
   });
 
+  it("refuses an empty script and points to the empty configuration", async () => {
+    const backend = mockBackend();
+    backend.pickScript.mockResolvedValueOnce({ name: "empty.rsc", size: 0 });
+    open(null, backend);
+    await userEvent.type(screen.getByLabelText("Name"), "lab");
+    await userEvent.click(screen.getByLabelText("Run my script (.rsc)"));
+    await userEvent.click(screen.getByRole("button", { name: "Choose…" }));
+    expect(
+      await screen.findByText(
+        "This script is empty. To install the device without any configuration, choose “Empty configuration”.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("empty.rsc")).not.toBeInTheDocument();
+    expect(screen.getByText("No script chosen")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(backend.saveProfile).not.toHaveBeenCalled();
+    // A script with content clears the error.
+    await userEvent.click(screen.getByRole("button", { name: "Choose…" }));
+    expect(await screen.findByText("setup.rsc")).toBeInTheDocument();
+    expect(screen.queryByText(/This script is empty/)).not.toBeInTheDocument();
+  });
+
   it("sets the configuration, what happens afterwards and the advanced options", async () => {
     const { backend } = open(null);
     await userEvent.type(screen.getByLabelText("Name"), "x86 lab");
     expect(screen.getByLabelText("RouterOS default configuration")).toBeChecked();
     await userEvent.click(screen.getByLabelText("Empty configuration"));
     await userEvent.selectOptions(screen.getByLabelText("After install"), "Shut down");
-    await userEvent.click(screen.getByLabelText("Mode script (advanced)"));
+    await userEvent.click(screen.getByLabelText("Mode script (mode.scr)"));
     await userEvent.click(screen.getAllByRole("button", { name: "Choose…" }).at(-1)!);
     await userEvent.click(screen.getByLabelText("Remove branding"));
     await userEvent.click(screen.getByRole("button", { name: "Choose key file…" }));
@@ -103,12 +125,12 @@ describe("ProfileEditor", () => {
     expect(screen.getByText("m.rsc")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("Keep the existing configuration"));
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "A mode script cannot be used when keeping the existing configuration.",
+      "A mode script (mode.scr) cannot be used when keeping the existing configuration.",
     );
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(backend.saveProfile).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByLabelText("Mode script (advanced)"));
-    expect(screen.getByLabelText("Mode script (advanced)")).toBeDisabled();
+    await userEvent.click(screen.getByLabelText("Mode script (mode.scr)"));
+    expect(screen.getByLabelText("Mode script (mode.scr)")).toBeDisabled();
     expect(screen.queryByRole("alert")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(screen.getByText("none")).toBeInTheDocument();

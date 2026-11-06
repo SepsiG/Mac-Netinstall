@@ -459,6 +459,32 @@ async fn packages_scripts_cache_and_log() {
     assert_eq!(code(&key).param("reason"), Some("too_large"));
     std::fs::write(&key, b"\n\n").unwrap();
     assert_eq!(code(&key).code, "invalid_license_key");
+    // A FIFO (or any non-regular file) is refused without blocking on it.
+    let fifo = rig.dir.join("pipe.key");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let core = rig.core.clone();
+    let path = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(core.read_license_key(&path));
+    });
+    let err = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a FIFO must not block the read")
+        .unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("reason")),
+        ("key_file_failed", Some("not_a_file"))
+    );
+    std::fs::create_dir(rig.dir.join("dir.key")).unwrap();
+    assert_eq!(
+        code(&rig.dir.join("dir.key")).param("reason"),
+        Some("not_a_file")
+    );
 
     let view = rig.core.cache_inventory(true).await.unwrap();
     assert!(view.inventory.total > 0, "packages were cached");

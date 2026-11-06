@@ -460,18 +460,18 @@ impl AppCore {
     }
 
     /// The license key in the key file at `path` (the official tool's
-    /// `-k`). Errors: `key_file_failed` (`reason`: `unreadable`, or
-    /// `too_large` past [`MAX_KEY_FILE`] bytes), `invalid_license_key`
-    /// (`max`).
+    /// `-k`), opened once and read only if it is a regular file (a FIFO
+    /// or device never blocks the call; see
+    /// [`ni_assets::read_regular_file`]). Errors: `key_file_failed`
+    /// (`reason`: `unreadable`, `not_a_file`, or `too_large` past
+    /// [`MAX_KEY_FILE`] bytes), `invalid_license_key` (`max`).
     pub fn read_license_key(&self, path: &Path) -> Result<LicenseKeyView, Failure> {
         let failed = |reason: &str| Failure::new("key_file_failed").with("reason", reason);
-        let len = std::fs::metadata(path)
-            .map_err(|_| failed("unreadable"))?
-            .len();
-        if len > MAX_KEY_FILE {
-            return Err(failed("too_large"));
-        }
-        let data = std::fs::read(path).map_err(|_| failed("unreadable"))?;
+        let data = ni_assets::read_regular_file(path, MAX_KEY_FILE).map_err(|e| match e {
+            ni_assets::ReadFileError::Io(_) => failed("unreadable"),
+            ni_assets::ReadFileError::NotAFile => failed("not_a_file"),
+            ni_assets::ReadFileError::TooLarge => failed("too_large"),
+        })?;
         let key = license_key_from_file(&data)?;
         Ok(LicenseKeyView { key })
     }
