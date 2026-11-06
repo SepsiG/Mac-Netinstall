@@ -12,4 +12,4 @@ pub mod udp;
 
 pub use error::NetError;
 pub use iface::{interface_index, list_interfaces, Interface};
-pub use udp::{bind_udp, is_transient_recv_error, BindOptions};
+pub use udp::{bind_udp, is_transient_recv_error, BindOptions, RecvErrorAction, RecvErrorGuard};

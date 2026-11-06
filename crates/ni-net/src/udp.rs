@@ -10,6 +10,7 @@ use crate::iface::interface_index;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
 /// How to create a UDP socket with [`bind_udp`].
@@ -143,10 +144,74 @@ pub fn is_transient_recv_error(e: &io::Error) -> bool {
     )
 }
 
+/// What a receive loop should do after a failed `recv_from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecvErrorAction {
+    /// Return the error: the socket is unusable.
+    Fatal,
+    /// Sleep [`RecvErrorGuard::BACKOFF`], then receive again. With
+    /// `report: Some(n)`, emit one event covering the `n` errors since
+    /// the last report (this one included).
+    Retry { report: Option<u32> },
+}
+
+/// Receive-error bookkeeping shared by the BOOTP and TFTP runners.
+///
+/// Policy:
+/// - errors that are not [`is_transient_recv_error`] are fatal at once;
+/// - transient errors back off [`Self::BACKOFF`] before the next receive,
+///   so a persistent error cannot spin the loop;
+/// - [`Self::MAX_CONSECUTIVE`] transient errors in a row (no successful
+///   receive in between, about 2 s of backoff) are treated as fatal;
+/// - reports are coalesced: the first error is reported, then at most
+///   one report per [`Self::REPORT_INTERVAL`], carrying the count of
+///   errors since the previous report.
+#[derive(Debug, Clone, Default)]
+pub struct RecvErrorGuard {
+    consecutive: u32,
+    unreported: u32,
+    last_report: Option<Instant>,
+}
+
+impl RecvErrorGuard {
+    /// Pause after a transient error.
+    pub const BACKOFF: Duration = Duration::from_millis(20);
+    /// Transient errors in a row that end the server.
+    pub const MAX_CONSECUTIVE: u32 = 100;
+    /// Minimum time between two reports.
+    pub const REPORT_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// Classify a failed receive at `now`.
+    pub fn on_error(&mut self, e: &io::Error, now: Instant) -> RecvErrorAction {
+        if !is_transient_recv_error(e) {
+            return RecvErrorAction::Fatal;
+        }
+        self.consecutive += 1;
+        if self.consecutive >= Self::MAX_CONSECUTIVE {
+            return RecvErrorAction::Fatal;
+        }
+        self.unreported = self.unreported.saturating_add(1);
+        let due = match self.last_report {
+            None => true,
+            Some(t) => now.saturating_duration_since(t) >= Self::REPORT_INTERVAL,
+        };
+        if !due {
+            return RecvErrorAction::Retry { report: None };
+        }
+        self.last_report = Some(now);
+        let n = std::mem::take(&mut self.unreported);
+        RecvErrorAction::Retry { report: Some(n) }
+    }
+
+    /// A receive succeeded: the consecutive-error count starts over.
+    pub fn on_success(&mut self) {
+        self.consecutive = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn lo0(port: u16) -> BindOptions {
         BindOptions::new(port)
@@ -246,6 +311,75 @@ mod tests {
             assert!(!is_transient_recv_error(&e), "{e}");
         }
         assert!(!is_transient_recv_error(&io::Error::other("boom")));
+    }
+
+    fn enobufs() -> io::Error {
+        io::Error::from_raw_os_error(nix::libc::ENOBUFS)
+    }
+
+    #[test]
+    fn guard_reports_first_error_then_at_most_once_per_second() {
+        let t0 = Instant::now();
+        let mut g = RecvErrorGuard::default();
+        assert_eq!(
+            g.on_error(&enobufs(), t0),
+            RecvErrorAction::Retry { report: Some(1) }
+        );
+        for i in 1..10 {
+            let now = t0 + Duration::from_millis(20 * i);
+            assert_eq!(
+                g.on_error(&enobufs(), now),
+                RecvErrorAction::Retry { report: None }
+            );
+        }
+        g.on_success();
+        // Still within the second: suppressed, but counted.
+        assert_eq!(
+            g.on_error(&enobufs(), t0 + Duration::from_millis(500)),
+            RecvErrorAction::Retry { report: None }
+        );
+        // A second later: one report covering the 10 suppressed errors too.
+        assert_eq!(
+            g.on_error(&enobufs(), t0 + Duration::from_millis(1000)),
+            RecvErrorAction::Retry { report: Some(11) }
+        );
+    }
+
+    #[test]
+    fn guard_gives_up_after_max_consecutive_transient_errors() {
+        let t0 = Instant::now();
+        let mut g = RecvErrorGuard::default();
+        for _ in 1..RecvErrorGuard::MAX_CONSECUTIVE {
+            assert!(matches!(
+                g.on_error(&enobufs(), t0),
+                RecvErrorAction::Retry { .. }
+            ));
+        }
+        assert_eq!(g.on_error(&enobufs(), t0), RecvErrorAction::Fatal);
+    }
+
+    #[test]
+    fn guard_success_resets_the_consecutive_count() {
+        let t0 = Instant::now();
+        let mut g = RecvErrorGuard::default();
+        for _ in 0..3 {
+            for _ in 1..RecvErrorGuard::MAX_CONSECUTIVE {
+                assert_ne!(g.on_error(&enobufs(), t0), RecvErrorAction::Fatal);
+            }
+            g.on_success();
+        }
+    }
+
+    #[test]
+    fn guard_treats_non_transient_errors_as_fatal_immediately() {
+        let mut g = RecvErrorGuard::default();
+        let e = io::Error::from_raw_os_error(nix::libc::EBADF);
+        assert_eq!(g.on_error(&e, Instant::now()), RecvErrorAction::Fatal);
+    }
+
+    #[test]
+    fn backoff_is_short() {
+        assert_eq!(RecvErrorGuard::BACKOFF, Duration::from_millis(20));
     }
 
     #[tokio::test]

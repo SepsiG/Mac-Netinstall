@@ -3,7 +3,7 @@
 use crate::accept::{accept, Accept, FileMap, TransferConfig};
 use crate::packet::{ErrorCode, Packet};
 use crate::transfer::{Status, Transfer, TransferError};
-use ni_net::{bind_udp, is_transient_recv_error, BindOptions};
+use ni_net::{bind_udp, BindOptions, RecvErrorAction, RecvErrorGuard};
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
@@ -64,8 +64,9 @@ pub enum TftpEvent {
         code: ErrorCode,
     },
     /// The listener's `recv_from` failed with a transient error (see
-    /// [`ni_net::is_transient_recv_error`]); the server keeps running.
-    RecvError { error: String },
+    /// [`ni_net::RecvErrorGuard`]); the server keeps running. Coalesced:
+    /// `count` errors since the previous report, `error` the latest.
+    RecvError { error: String, count: u32 },
 }
 
 /// Running transfer tasks, keyed by task id so a peer is forgotten even
@@ -114,10 +115,11 @@ impl Transfers {
 /// repeated RRQ from a peer whose transfer is still running is ignored.
 /// Aborting this task aborts all running transfers.
 ///
-/// Receive errors: transient ones ([`ni_net::is_transient_recv_error`],
-/// e.g. ICMP errors or `ENOBUFS`) are reported as
-/// [`TftpEvent::RecvError`] and serving continues; any other error is
-/// returned.
+/// Receive errors follow [`ni_net::RecvErrorGuard`]: transient ones (e.g.
+/// ICMP errors or `ENOBUFS`) back off 20 ms and are reported as coalesced
+/// [`TftpEvent::RecvError`]s while serving continues; any other error, or
+/// 100 transient errors in a row, is returned. On a transfer socket the
+/// same policy applies, ending that transfer (`TransferError::Io`).
 pub async fn serve(
     listener: UdpSocket,
     files: Arc<FileMap>,
@@ -126,16 +128,28 @@ pub async fn serve(
 ) -> io::Result<()> {
     let mut transfers = Transfers::default();
     let mut buf = vec![0u8; 2048];
+    let mut recv_errors = RecvErrorGuard::default();
     loop {
         tokio::select! {
             received = listener.recv_from(&mut buf) => {
                 let (n, peer) = match received {
-                    Ok(r) => r,
-                    Err(e) if is_transient_recv_error(&e) => {
-                        let _ = events.send(TftpEvent::RecvError { error: e.to_string() });
-                        continue;
+                    Ok(r) => {
+                        recv_errors.on_success();
+                        r
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => match recv_errors.on_error(&e, Instant::now()) {
+                        RecvErrorAction::Fatal => return Err(e),
+                        RecvErrorAction::Retry { report } => {
+                            if let Some(count) = report {
+                                let _ = events.send(TftpEvent::RecvError {
+                                    error: e.to_string(),
+                                    count,
+                                });
+                            }
+                            tokio::time::sleep(RecvErrorGuard::BACKOFF).await;
+                            continue;
+                        }
+                    },
                 };
                 if transfers.contains(&peer) {
                     continue;
@@ -212,6 +226,7 @@ async fn drive(t: &mut Transfer, sock: &UdpSocket, peer: SocketAddr) {
     }
     .encode();
     let mut buf = vec![0u8; 2048];
+    let mut recv_errors = RecvErrorGuard::default();
     loop {
         let now = Instant::now();
         while let Some(pkt) = t.poll_transmit(now) {
@@ -224,16 +239,26 @@ async fn drive(t: &mut Transfer, sock: &UdpSocket, peer: SocketAddr) {
         };
         tokio::select! {
             received = sock.recv_from(&mut buf) => match received {
-                Ok((n, from)) if from == peer => t.handle_packet(&buf[..n], Instant::now()),
+                Ok((n, from)) if from == peer => {
+                    recv_errors.on_success();
+                    t.handle_packet(&buf[..n], Instant::now());
+                }
                 Ok((n, from)) => {
+                    recv_errors.on_success();
                     // RFC 1350: answer a stray packet with error 5, but
                     // never answer an ERROR (that could loop forever).
                     if !matches!(Packet::parse(&buf[..n]), Ok(Packet::Error { .. })) {
                         let _ = sock.send_to(&unknown_tid, from).await;
                     }
                 }
-                Err(e) if is_transient_recv_error(&e) => {}
-                Err(e) => t.abort(TransferError::Io(e.to_string())),
+                // Transient errors are not reported per transfer; the
+                // transfer's own timeouts keep running meanwhile.
+                Err(e) => match recv_errors.on_error(&e, Instant::now()) {
+                    RecvErrorAction::Fatal => t.abort(TransferError::Io(e.to_string())),
+                    RecvErrorAction::Retry { .. } => {
+                        tokio::time::sleep(RecvErrorGuard::BACKOFF).await;
+                    }
+                },
             },
             _ = tokio::time::sleep_until(deadline.into()) => t.handle_timeout(Instant::now()),
         }

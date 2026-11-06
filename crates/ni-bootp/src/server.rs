@@ -3,10 +3,11 @@
 use crate::arch::BootArch;
 use crate::packet::{PacketError, ReplyKind};
 use crate::responder::{BootpResponder, IgnoreReason, Outcome};
-use ni_net::is_transient_recv_error;
+use ni_net::{RecvErrorAction, RecvErrorGuard};
 use ni_proto::Mac;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -38,17 +39,20 @@ pub enum BootpEvent {
         error: String,
     },
     /// `recv_from` failed with a transient error (see
-    /// [`ni_net::is_transient_recv_error`]); the server keeps running.
+    /// [`ni_net::RecvErrorGuard`]); the server keeps running. Coalesced:
+    /// `count` errors since the previous report, `error` the latest.
     RecvError {
         error: String,
+        count: u32,
     },
 }
 
 /// Answer requests arriving on `socket` until receiving fails fatally.
 ///
-/// Transient receive errors ([`ni_net::is_transient_recv_error`], e.g.
-/// an ICMP error for an earlier send or `ENOBUFS`) are reported as
-/// [`BootpEvent::RecvError`] and serving continues; any other error is
+/// Receive errors follow [`ni_net::RecvErrorGuard`]: transient ones (e.g.
+/// an ICMP error for an earlier send or `ENOBUFS`) back off 20 ms and are
+/// reported as coalesced [`BootpEvent::RecvError`]s while serving
+/// continues; any other error, or 100 transient errors in a row, is
 /// returned.
 ///
 /// Replies go to `reply_to`: `255.255.255.255:68` in production (the
@@ -63,16 +67,26 @@ pub async fn serve(
     events: UnboundedSender<BootpEvent>,
 ) -> io::Result<()> {
     let mut buf = vec![0u8; 1500];
+    let mut recv_errors = RecvErrorGuard::default();
     loop {
         let (n, from) = match socket.recv_from(&mut buf).await {
-            Ok(r) => r,
-            Err(e) if is_transient_recv_error(&e) => {
-                let _ = events.send(BootpEvent::RecvError {
-                    error: e.to_string(),
-                });
-                continue;
+            Ok(r) => {
+                recv_errors.on_success();
+                r
             }
-            Err(e) => return Err(e),
+            Err(e) => match recv_errors.on_error(&e, Instant::now()) {
+                RecvErrorAction::Fatal => return Err(e),
+                RecvErrorAction::Retry { report } => {
+                    if let Some(count) = report {
+                        let _ = events.send(BootpEvent::RecvError {
+                            error: e.to_string(),
+                            count,
+                        });
+                    }
+                    tokio::time::sleep(RecvErrorGuard::BACKOFF).await;
+                    continue;
+                }
+            },
         };
         let event = match responder.handle(&buf[..n]) {
             Ok(Outcome::Reply(reply)) => match socket.send_to(&reply.bytes, reply_to).await {
