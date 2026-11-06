@@ -1,0 +1,138 @@
+# Checks every push to main and every pull request against it.
+# Runners: macos-15 (Apple Silicon, arm64). Tests that need the development
+# Mac's own NICs skip themselves where CI is set (see crates/ni-net/src/test_env.rs);
+# tests that need the network stay #[ignore].
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, doc, test)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml pins the channel, components and target; this
+      # installs them before the cache key is computed.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update && rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+
+  msrv:
+    name: MSRV (1.88 workspace, 1.90 app)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Rust 1.88 and 1.90
+        run: |
+          rustup toolchain install --no-self-update 1.88 --profile minimal --target aarch64-apple-darwin
+          rustup toolchain install --no-self-update 1.90 --profile minimal --target aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      # The workspace's rust-version is 1.88; the app crate (Tauri 2.12)
+      # declares 1.90.
+      - name: cargo +1.88 check (workspace without the app)
+        run: cargo +1.88 check --workspace --exclude mac-netinstall --locked
+      - name: cargo +1.90 check (app)
+        run: cargo +1.90 check -p mac-netinstall --locked
+
+  frontend:
+    name: Frontend (svelte-check, Vitest)
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npx vitest run
+
+  build:
+    name: Build (.app + .dmg)
+    needs: [rust, frontend]
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update && rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      # CI=true skips the bundler's Finder AppleScript (it needs Automation
+      # permission): the DMG holds the app and the Applications link in
+      # Finder's default layout. Ad-hoc signed (bundle.macOS.signingIdentity "-").
+      - name: tauri build
+        run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
+        env:
+          CI: "true"
+      - name: Check the bundle
+        working-directory: target/aarch64-apple-darwin/release/bundle
+        run: |
+          app="macos/Mac Netinstall.app"
+          ls -l "$app/Contents/Resources/icon.icns"
+          codesign -dv "$app" 2>&1 | grep -F "Identifier=io.github.sepsig.mac-netinstall"
+          if /usr/libexec/PlistBuddy -c "Print :LSUIElement" "$app/Contents/Info.plist" 2>/dev/null; then
+            echo "LSUIElement must not be set" >&2
+            exit 1
+          fi
+          ls -l dmg/*.dmg
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mac-netinstall-dmg
+          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14

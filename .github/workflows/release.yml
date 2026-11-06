@@ -1,0 +1,118 @@
+# On a version tag (v0.1.0, ...): build the .dmg, publish its SHA-256, and
+# create a *draft* GitHub Release with both, its notes taken from the
+# CHANGELOG.md section of that version. Review and publish the draft by hand.
+#
+# The build is ad-hoc signed (bundle.macOS.signingIdentity "-"); no signing
+# secrets are used. See "Future: Developer ID signing and notarization" below.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and draft the release
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write # create the draft release and upload its assets
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Tag, versions and changelog agree
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          app=$(node -p "require('./app/package.json').version")
+          conf=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          echo "tag $version, package.json $app, tauri.conf.json $conf, Cargo.toml $cargo"
+          if [ "$version" != "$app" ] || [ "$version" != "$conf" ] || [ "$version" != "$cargo" ]; then
+            echo "::error::the tag does not match the versions in the repository" >&2
+            exit 1
+          fi
+          # The notes: the "## [x.y.z]" section, up to the next "## [".
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on && /^\[[^]]*\]: / { exit }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update && rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+
+      # CI=true skips the Finder AppleScript (DMG window layout), which
+      # needs Automation permission: the DMG holds the app and the
+      # Applications link in Finder's default layout.
+      - name: tauri build
+        working-directory: app
+        run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
+        env:
+          CI: "true"
+          # Future: Developer ID signing and notarization. Add these
+          # repository secrets, set bundle.macOS.signingIdentity to the
+          # "Developer ID Application: ..." identity (or pass it here as
+          # APPLE_SIGNING_IDENTITY) and uncomment; Tauri then signs with
+          # the certificate and notarizes with the Apple ID (or use
+          # APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_PATH instead).
+          # Check MAC address masking with the Developer ID build before
+          # switching (see the roadmap, "MAC masking in the bundle").
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}                   # base64 .p12
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}                         # app-specific password
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: DMG and SHA-256
+        id: dmg
+        working-directory: target/aarch64-apple-darwin/release/bundle/dmg
+        run: |
+          dmg="Mac Netinstall_${{ steps.version.outputs.version }}_aarch64.dmg"
+          test -f "$dmg"
+          shasum -a 256 "$dmg" > "$dmg.sha256"
+          cat "$dmg.sha256"
+          echo "dir=$PWD" >> "$GITHUB_OUTPUT"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIR: ${{ steps.dmg.outputs.dir }}
+          DMG: ${{ steps.dmg.outputs.dmg }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "Mac Netinstall $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            "$DIR/$DMG" "$DIR/$DMG.sha256"
