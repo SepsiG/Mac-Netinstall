@@ -4,6 +4,7 @@
 //! [`cli::exit`].
 
 mod cli;
+mod commands;
 mod logging;
 mod output;
 
@@ -36,6 +37,20 @@ fn main() -> ExitCode {
             }
         });
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "ni-cli started");
-    eprintln!("not implemented yet: {:?}", cli.command);
-    ExitCode::from(cli::exit::ERROR)
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: cannot start the async runtime: {e}");
+            return ExitCode::from(cli::exit::ERROR);
+        }
+    };
+    let code = match runtime.block_on(commands::run(cli)) {
+        Ok(code) => code,
+        Err(f) => {
+            tracing::error!("{f}");
+            eprintln!("error: {}", output::failure(&f));
+            cli::exit::ERROR
+        }
+    };
+    ExitCode::from(code)
 }
