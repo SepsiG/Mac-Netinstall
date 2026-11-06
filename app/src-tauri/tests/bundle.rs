@@ -42,6 +42,34 @@ fn info_plist_explains_local_network_use() {
     assert!(description.contains("local network"), "{description}");
 }
 
+/// `"key" = "value";` lines of an `InfoPlist.strings`.
+fn strings_file(path: &str) -> std::collections::BTreeMap<String, String> {
+    read(path)
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let (k, v) = l.strip_suffix(';')?.split_once(" = ")?;
+            Some((k.trim_matches('"').to_string(), v.trim_matches('"').to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn the_local_network_text_is_localized_and_bundled() {
+    let conf = json("tauri.conf.json");
+    let files = &conf["bundle"]["macOS"]["files"];
+    for lang in ["en", "hu"] {
+        let src = files[format!("Resources/{lang}.lproj/InfoPlist.strings")]
+            .as_str()
+            .unwrap_or_else(|| panic!("{lang}.lproj not bundled: {files}"));
+        let strings = strings_file(src.trim_start_matches("./"));
+        let text = &strings["NSLocalNetworkUsageDescription"];
+        assert!(text.contains("MikroTik"), "{lang}: {text}");
+    }
+    let hu = strings_file("locales/hu.lproj/InfoPlist.strings");
+    assert!(hu["NSLocalNetworkUsageDescription"].contains("helyi hálózat"));
+}
+
 #[test]
 fn the_web_view_is_locked_down() {
     let conf = json("tauri.conf.json");

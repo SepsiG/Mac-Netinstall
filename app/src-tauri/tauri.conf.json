@@ -40,6 +40,10 @@
     "license": "GPL-3.0-only",
     "macOS": {
       "minimumSystemVersion": "13.0",
+      "files": {
+        "Resources/en.lproj/InfoPlist.strings": "./locales/en.lproj/InfoPlist.strings",
+        "Resources/hu.lproj/InfoPlist.strings": "./locales/hu.lproj/InfoPlist.strings"
+      },
       "signingIdentity": "-"
     }
   }
