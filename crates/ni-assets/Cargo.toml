@@ -20,6 +20,11 @@ tar.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
 
+[features]
+# Exposes `ni_assets::testutil` (fake mirror, synthetic files) to other
+# crates' tests. Never enable it in a shipping binary.
+testing = ["tokio/macros", "tokio/net", "tokio/time"]
+
 [dev-dependencies]
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "time"] }

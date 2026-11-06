@@ -25,8 +25,13 @@ pub mod npk;
 pub mod urls;
 pub mod version;
 
-#[cfg(test)]
-mod testutil;
+/// Test fixtures (synthetic kernels, NPKs, a fake MikroTik mirror over a
+/// local HTTP server, self-cleaning temp dirs). Not a stable API: enabled
+/// for this crate's tests and, through the `testing` feature, for the
+/// engine's end-to-end tests.
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+pub mod testutil;
 
 pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;

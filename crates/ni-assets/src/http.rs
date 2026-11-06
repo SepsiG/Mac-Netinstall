@@ -242,7 +242,7 @@ impl Http {
         url: &str,
         dest: &Path,
         file: &str,
-        emit: &dyn Fn(AssetEvent),
+        emit: &(dyn Fn(AssetEvent) + Sync),
     ) -> Result<Downloaded, AssetError> {
         let out = tokio::fs::OpenOptions::new()
             .write(true)
@@ -263,7 +263,7 @@ impl Http {
         mut out: tokio::fs::File,
         dest: &Path,
         file: &str,
-        emit: &dyn Fn(AssetEvent),
+        emit: &(dyn Fn(AssetEvent) + Sync),
     ) -> Result<Downloaded, AssetError> {
         let mut resp = self.get(url, None, Some(self.download_timeout)).await?;
         let total = resp.content_length();

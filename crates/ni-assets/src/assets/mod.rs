@@ -398,6 +398,23 @@ mod tests {
         assert!(root.ends_with("Library/Caches/io.github.sepsig.mac-netinstall"));
     }
 
+    /// The engine runs these in spawned tasks, so they must be `Send`.
+    #[test]
+    fn futures_are_send() {
+        fn send<T: Send>(_: T) {}
+        let root = tempdir("send");
+        let a = Assets::new(&*root, HttpConfig::default()).unwrap();
+        let spec = VersionSpec::Channel(Channel::Stable);
+        send(a.resolve(&spec));
+        send(a.ensure_kernels(&v()));
+        send(a.cached_versions());
+        send(a.available_packages(&v(), crate::PkgArch::Arm64));
+        send(a.ensure_packages(&v(), crate::PkgArch::Arm64, &[]));
+        send(a.register_local_file(Path::new("setup.rsc")));
+        send(a.local_file("setup.rsc"));
+        send(a.clear_downloads());
+    }
+
     #[tokio::test]
     async fn resolves_channels_and_exact_versions() {
         let srv = TestServer::start().await;
