@@ -120,6 +120,7 @@ impl Assets {
         .await
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
