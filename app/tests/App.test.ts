@@ -348,4 +348,18 @@ describe("App", () => {
       vi.useRealTimers();
     }
   });
+
+  it("asks before stopping when the engine reports a device the window has not seen yet", async () => {
+    const backend = await running({ devices: [] });
+    // A device started preparing; its event has not arrived yet.
+    vi.mocked(backend.snapshot).mockResolvedValueOnce({
+      ...IDLE,
+      running: true,
+      devices: [view(B, { state: "preparing" })],
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(B);
+    expect(backend.stop).not.toHaveBeenCalled();
+  });
 });

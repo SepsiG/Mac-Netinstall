@@ -216,16 +216,20 @@
   });
 
 
-  /** `MAC · model` of each device being prepared or flashed. */
-  function busyDevices(): string[] {
-    return engine.rows
+  /** `MAC · model` of each device being prepared or flashed, as the engine
+   *  says right now (a device may have started since the last event). */
+  async function busyDevices(): Promise<string[]> {
+    const snap = await attempt(() => backend.snapshot());
+    const rows: { mac: string; info: { model: string } | null; state: { state: string } }[] =
+      snap?.devices ?? engine.rows;
+    return rows
       .filter((d) => d.state.state === "preparing" || d.state.state === "flashing")
       .map((d) => (d.info ? `${d.mac} · ${d.info.model}` : d.mac));
   }
 
   async function startStop() {
     if (engine.running) {
-      const affected = busyDevices();
+      const affected = await busyDevices();
       if (affected.length > 0) {
         stopAsk = affected; // confirmed in the dialog
         return;
