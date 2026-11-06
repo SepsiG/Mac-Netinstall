@@ -2,6 +2,8 @@
 
 pub mod arch;
 pub mod packet;
+pub mod pool;
 
 pub use arch::{BootArch, VendorClass};
 pub use packet::{MessageType, PacketError, ReplyKind, Request, CLIENT_PORT, SERVER_PORT};
+pub use pool::{LeasePool, PoolError};
