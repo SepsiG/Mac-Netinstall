@@ -5,6 +5,7 @@
 
 pub mod arch;
 pub mod archive;
+pub mod cache;
 pub mod error;
 pub mod events;
 pub mod http;
@@ -18,6 +19,7 @@ mod testutil;
 
 pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;
+pub use cache::{Entry, Index};
 pub use error::AssetError;
 pub use events::{AssetEvent, EventSink, PROGRESS_STEP};
 pub use http::{HttpConfig, USER_AGENT};
