@@ -4,16 +4,21 @@
 //! carrying the interface index and MAC address, plus one entry per IPv4/IPv6
 //! address. [`list_interfaces`] folds them into one [`Interface`] per name.
 //!
+//! macOS may mask the `AF_LINK` address as `02:00:00:00:00:00` (see
+//! [`crate::link`]). Placeholders become `None`; for non-Wi-Fi interfaces
+//! the IOKit hardware address fills the gap.
+//!
 //! [`Interface::kind`] combines the link-layer type of the `AF_LINK` entry
 //! (`sdl_type`, an `IFT_*` value), the BSD name prefix and, for Wi-Fi, the
 //! SystemConfiguration interface type (Wi-Fi and Ethernet are both
 //! `IFT_ETHER`). The UI uses it to hide interfaces that cannot boot a router.
 
 use crate::error::NetError;
+use crate::link::{hardware_addresses, known_mac};
 use ni_proto::Mac;
 use nix::ifaddrs::getifaddrs;
 use nix::net::if_::{if_nametoindex, InterfaceFlags};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::Ipv4Addr;
 use std::num::NonZeroU32;
@@ -129,7 +134,9 @@ pub struct Interface {
     pub name: String,
     /// Kernel interface index (what `IP_BOUND_IF` expects).
     pub index: u32,
-    /// Hardware address; `None` for interfaces without one (e.g. `lo0`).
+    /// Hardware address; `None` for interfaces without one (e.g. `lo0`) and
+    /// when macOS masks it and no real one is known (never a placeholder
+    /// such as `02:00:00:00:00:00`).
     pub mac: Option<Mac>,
     /// IPv4 addresses with their netmasks.
     pub ipv4: Vec<(Ipv4Addr, Ipv4Addr)>,
@@ -173,7 +180,7 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
             link_types.insert(entry.name.clone(), link.datalink_type());
             // `LinkAddr::addr` does not check the address length itself.
             if link.alen() == 6 {
-                entry.mac = link.addr().map(Mac);
+                entry.mac = link.addr().map(Mac).and_then(known_mac);
             }
         } else if let Some(sin) = addr.as_sockaddr_in() {
             let mask = ifa
@@ -187,6 +194,7 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
     }
     let mut out: Vec<Interface> = by_name.into_values().collect();
     let sc = system_configuration_info();
+    let mut hardware: Option<HashMap<String, Mac>> = None;
     for iface in &mut out {
         let (wifi, display) = match sc.get(&iface.name) {
             Some((wifi, display)) => (*wifi, Some(display.clone()).filter(|d| !d.is_empty())),
@@ -194,6 +202,12 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
         };
         iface.kind = classify(&iface.name, link_types.get(&iface.name).copied(), wifi);
         iface.display_name = display;
+        if iface.mac.is_none() && iface.kind != InterfaceKind::WiFi {
+            // Masked (or missing): the hardware address is the one in use
+            // except for Wi-Fi with a private address, which stays unknown.
+            let hardware = hardware.get_or_insert_with(hardware_addresses);
+            iface.mac = hardware.get(&iface.name).copied();
+        }
         if iface.index == 0 {
             if let Ok(index) = if_nametoindex(iface.name.as_str()) {
                 iface.index = index;
@@ -273,9 +287,15 @@ mod tests {
             if iface.is_loopback {
                 assert_eq!(iface.kind, InterfaceKind::Loopback, "{}", iface.name);
             }
-            if matches!(iface.kind, InterfaceKind::Ethernet | InterfaceKind::WiFi) {
+            // Wi-Fi may be masked with no usable fallback (private address).
+            if iface.kind == InterfaceKind::Ethernet {
                 assert!(iface.mac.is_some(), "{} has no MAC", iface.name);
             }
+            assert!(
+                iface.mac.and_then(known_mac) == iface.mac,
+                "{}: placeholder MAC",
+                iface.name
+            );
         }
     }
 

@@ -983,8 +983,11 @@ dependencies = [
 name = "ni-net"
 version = "0.1.0"
 dependencies = [
+ "core-foundation",
+ "core-foundation-sys",
  "ni-proto",
  "nix",
+ "proptest",
  "socket2",
  "system-configuration",
  "thiserror",

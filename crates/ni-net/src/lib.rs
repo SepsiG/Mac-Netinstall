@@ -9,8 +9,10 @@
 
 pub mod error;
 pub mod iface;
+pub mod link;
 pub mod udp;
 
 pub use error::NetError;
 pub use iface::{classify, interface_index, list_interfaces, Interface, InterfaceKind};
+pub use link::{hardware_addresses, known_mac, mac_from_bytes, MASKED_MAC};
 pub use udp::{bind_udp, is_transient_recv_error, BindOptions, RecvErrorAction, RecvErrorGuard};

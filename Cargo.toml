@@ -21,6 +21,8 @@ rust-version = "1.88"
 bytes = "1"
 thiserror = "2"
 proptest = "1"
+core-foundation = "0.10.1"
+core-foundation-sys = "0.8.7"
 nix = { version = "0.31.3", default-features = false }
 socket2 = "0.6.5"
 system-configuration = "0.8.0"
