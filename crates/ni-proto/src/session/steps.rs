@@ -54,6 +54,29 @@ impl Step {
     }
 }
 
+/// Number of file chunks `push_file` emits for `len` bytes (at least one).
+fn chunk_count(len: usize) -> usize {
+    len.div_ceil(MAX_CHUNK).max(1)
+}
+
+/// Number of frames [`build_steps`] produces for `plan`, without building it.
+pub(super) fn frame_count(plan: &InstallPlan) -> usize {
+    // OFFR, format, prepare / final empty, FILE\n, TERM
+    let fixed = 6;
+    // header + chunks + spacer
+    let packages: usize = plan
+        .packages
+        .iter()
+        .map(|p| 2 + chunk_count(p.data.len()))
+        .sum();
+    // header + chunks
+    let script = plan
+        .config_script
+        .as_ref()
+        .map_or(0, |s| 1 + chunk_count(s.len()));
+    fixed + packages + script
+}
+
 pub(super) fn build_steps(plan: &InstallPlan) -> Vec<Step> {
     use Expect::Any;
     use TimeoutKind::{Format, Reply};

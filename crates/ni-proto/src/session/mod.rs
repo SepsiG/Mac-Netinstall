@@ -40,6 +40,13 @@ pub struct PlanFile {
 }
 
 /// What to install on one device.
+///
+/// [`ServerSession::new`] validates the plan (see [`PlanError`]). In
+/// particular, the whole session must fit in [`u16::MAX`] frames, so the
+/// 16-bit sequence number never wraps (roughly 64 MiB of total payload).
+/// Wraparound has never been exercised on hardware: pyNetinstall cannot even
+/// produce it (`struct.pack("<H")` raises past 65535), so such plans are
+/// rejected for now.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstallPlan {
     /// RouterOS packages; the main `routeros` package must be first.
@@ -52,6 +59,46 @@ impl InstallPlan {
     pub fn total_bytes(&self) -> u64 {
         let pkgs: u64 = self.packages.iter().map(|p| p.data.len() as u64).sum();
         pkgs + self.config_script.as_ref().map_or(0, |c| c.len() as u64)
+    }
+}
+
+/// Reasons an [`InstallPlan`] is rejected before anything is sent.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PlanError {
+    #[error("the plan contains no packages")]
+    NoPackages,
+    #[error("{name} does not look like a RouterOS package (missing NPK magic)")]
+    NotAnNpk { name: String },
+    #[error("invalid file name {name:?}")]
+    InvalidFileName { name: String },
+    #[error("the plan needs {frames} frames, at most {max} are supported")]
+    TooManyFrames { frames: usize, max: usize },
+}
+
+impl InstallPlan {
+    /// Check the plan can be sent safely; see [`PlanError`].
+    pub fn validate(&self) -> Result<(), PlanError> {
+        let first = self.packages.first().ok_or(PlanError::NoPackages)?;
+        if !first.data.starts_with(&message::NPK_MAGIC) {
+            return Err(PlanError::NotAnNpk {
+                name: first.name.clone(),
+            });
+        }
+        if let Some(bad) = self
+            .packages
+            .iter()
+            .find(|p| p.name.is_empty() || p.name.contains('\n'))
+        {
+            return Err(PlanError::InvalidFileName {
+                name: bad.name.clone(),
+            });
+        }
+        let frames = steps::frame_count(self);
+        let max = usize::from(u16::MAX);
+        if frames > max {
+            return Err(PlanError::TooManyFrames { frames, max });
+        }
+        Ok(())
     }
 }
 
@@ -159,6 +206,10 @@ enum Wait {
 }
 
 /// Install session for one device.
+///
+/// Plans that would need more than [`u16::MAX`] frames are rejected by
+/// [`ServerSession::new`], so sequence numbers never wrap (wraparound is
+/// unverified on hardware; see [`InstallPlan`]).
 pub struct ServerSession {
     server_mac: Mac,
     device: DeviceInfo,
@@ -181,10 +232,11 @@ impl ServerSession {
         plan: &InstallPlan,
         cfg: SessionConfig,
         now: Instant,
-    ) -> Self {
+    ) -> Result<Self, PlanError> {
+        plan.validate()?;
         let mut events = VecDeque::new();
         events.push_back(Event::PhaseChanged(Phase::Offering));
-        Self {
+        Ok(Self {
             server_mac,
             device,
             cfg,
@@ -200,7 +252,7 @@ impl ServerSession {
             bytes_sent: 0,
             bytes_total: plan.total_bytes(),
             events,
-        }
+        })
     }
 
     pub fn device(&self) -> &DeviceInfo {
@@ -234,12 +286,14 @@ impl ServerSession {
         }
         let step = self.steps.get(self.idx)?.clone();
         self.set_phase(step.phase.clone());
-        self.seq = self.seq.wrapping_add(1);
+        // Cannot overflow: plans needing more than u16::MAX frames are rejected.
+        debug_assert!(self.seq < u16::MAX, "sequence number would wrap");
+        self.seq += 1;
         let frame = Frame::new(
             self.server_mac,
             self.device.mac,
             self.seq,
-            self.seq.wrapping_sub(1),
+            self.seq - 1,
             step.payload.clone(),
         );
         self.last_frame = Some(frame.clone());
@@ -389,10 +443,123 @@ mod tests {
         InstallPlan {
             packages: vec![PlanFile {
                 name: "routeros.npk".into(),
-                data: Bytes::from(vec![7u8; 10]),
+                data: npk(10),
             }],
             config_script: None,
         }
+    }
+
+    /// `len` bytes starting with the NPK magic.
+    fn npk(len: usize) -> Bytes {
+        let mut v = message::NPK_MAGIC.to_vec();
+        v.resize(len.max(4), 7);
+        Bytes::from(v)
+    }
+
+    fn session(plan: &InstallPlan, now: Instant) -> ServerSession {
+        ServerSession::new(SERVER, device(), plan, SessionConfig::default(), now).unwrap()
+    }
+
+    fn new_err(plan: &InstallPlan) -> PlanError {
+        match ServerSession::new(
+            SERVER,
+            device(),
+            plan,
+            SessionConfig::default(),
+            Instant::now(),
+        ) {
+            Ok(_) => panic!("plan must be rejected"),
+            Err(e) => e,
+        }
+    }
+
+    fn file(name: &str, data: Bytes) -> PlanFile {
+        PlanFile {
+            name: name.into(),
+            data,
+        }
+    }
+
+    #[test]
+    fn rejects_plan_without_packages() {
+        assert_eq!(new_err(&InstallPlan::default()), PlanError::NoPackages);
+    }
+
+    #[test]
+    fn rejects_first_package_without_npk_magic() {
+        let p = InstallPlan {
+            packages: vec![file("routeros.npk", Bytes::from_static(b"PK\x03\x04rest"))],
+            config_script: None,
+        };
+        assert_eq!(
+            new_err(&p),
+            PlanError::NotAnNpk {
+                name: "routeros.npk".into()
+            }
+        );
+        let short = InstallPlan {
+            packages: vec![file("tiny.npk", Bytes::from_static(&[0x1E, 0xF1]))],
+            config_script: None,
+        };
+        assert_eq!(
+            new_err(&short),
+            PlanError::NotAnNpk {
+                name: "tiny.npk".into()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_file_names() {
+        for bad in ["", "evil\nname.npk"] {
+            let p = InstallPlan {
+                packages: vec![file("routeros.npk", npk(10)), file(bad, npk(10))],
+                config_script: None,
+            };
+            assert_eq!(new_err(&p), PlanError::InvalidFileName { name: bad.into() });
+        }
+    }
+
+    #[test]
+    fn rejects_plans_needing_more_than_u16_max_frames() {
+        // Each package costs 3 frames (header, one chunk, spacer), plus
+        // 6 fixed frames (OFFR, 2 empties, final empty, FILE\n, TERM).
+        let plan_with = |n: usize| InstallPlan {
+            packages: (0..n)
+                .map(|i| {
+                    file(
+                        &format!("p{i}.npk"),
+                        if i == 0 { npk(4) } else { Bytes::new() },
+                    )
+                })
+                .collect(),
+            config_script: None,
+        };
+        let max = (usize::from(u16::MAX) - 6) / 3;
+        assert!(ServerSession::new(
+            SERVER,
+            device(),
+            &plan_with(max),
+            SessionConfig::default(),
+            Instant::now()
+        )
+        .is_ok());
+        assert_eq!(
+            new_err(&plan_with(max + 1)),
+            PlanError::TooManyFrames {
+                frames: 6 + 3 * (max + 1),
+                max: usize::from(u16::MAX),
+            }
+        );
+    }
+
+    #[test]
+    fn frame_count_matches_built_steps() {
+        let p = InstallPlan {
+            packages: vec![file("a.npk", npk(2048)), file("b.npk", npk(1025))],
+            config_script: Some(Bytes::from_static(b"x")),
+        };
+        assert_eq!(steps::frame_count(&p), build_steps(&p).len());
     }
 
     fn reply(seq: u16, payload: &'static [u8]) -> Frame {
@@ -402,7 +569,7 @@ mod tests {
     #[test]
     fn first_frame_is_offer_with_seq_1_ack_0() {
         let now = Instant::now();
-        let mut s = ServerSession::new(SERVER, device(), &plan(), SessionConfig::default(), now);
+        let mut s = session(&plan(), now);
         let f = s.poll_transmit(now).unwrap();
         assert_eq!((f.src, f.dst, f.seq, f.ack), (SERVER, DEVICE, 1, 0));
         assert_eq!(&f.payload[..], message::OFFR);
@@ -412,7 +579,7 @@ mod tests {
     #[test]
     fn ignores_replies_with_wrong_seq_or_source() {
         let now = Instant::now();
-        let mut s = ServerSession::new(SERVER, device(), &plan(), SessionConfig::default(), now);
+        let mut s = session(&plan(), now);
         s.poll_transmit(now).unwrap();
         s.handle_frame(&Frame::new(DEVICE, SERVER, 1, 0, &b"YACK\n"[..]), now);
         s.handle_frame(
@@ -430,7 +597,7 @@ mod tests {
     fn formatting_step_uses_format_timeout() {
         let now = Instant::now();
         let cfg = SessionConfig::default();
-        let mut s = ServerSession::new(SERVER, device(), &plan(), cfg.clone(), now);
+        let mut s = ServerSession::new(SERVER, device(), &plan(), cfg.clone(), now).unwrap();
         s.poll_transmit(now).unwrap();
         s.handle_frame(&reply(1, message::YACK), now);
         s.poll_transmit(now).unwrap();
@@ -445,7 +612,7 @@ mod tests {
             max_retransmits: 2,
             ..SessionConfig::default()
         };
-        let mut s = ServerSession::new(SERVER, device(), &plan(), cfg, now);
+        let mut s = ServerSession::new(SERVER, device(), &plan(), cfg, now).unwrap();
         let first = s.poll_transmit(now).unwrap();
         for _ in 0..2 {
             let t = s.poll_timeout().unwrap();
@@ -469,7 +636,7 @@ mod tests {
     #[test]
     fn nack_fails_with_rejected() {
         let now = Instant::now();
-        let mut s = ServerSession::new(SERVER, device(), &plan(), SessionConfig::default(), now);
+        let mut s = session(&plan(), now);
         s.poll_transmit(now).unwrap();
         s.handle_frame(&reply(1, b"NACK\nno space\n"), now);
         assert!(s.is_finished());

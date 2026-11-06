@@ -17,6 +17,8 @@ pub const WTRM: &[u8] = b"WTRM";
 pub const FILE_END: &[u8] = b"FILE\n";
 /// Reboot command (server → device). No reply.
 pub const TERM: &[u8] = b"TERM\n";
+/// Magic bytes every RouterOS `.npk` package starts with (pyNetinstall `verify_npk`).
+pub const NPK_MAGIC: [u8; 4] = [0x1E, 0xF1, 0xD0, 0xBA];
 /// File name RouterOS expects for the configuration script.
 pub const CONFIG_SCRIPT_NAME: &str = "autorun.scr";
 

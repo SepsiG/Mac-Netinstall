@@ -10,4 +10,6 @@ pub mod session;
 
 pub use device_info::DeviceInfo;
 pub use frame::{DecodeError, Frame, Mac, ParseMacError, HEADER_LEN, MAX_CHUNK, PORT};
-pub use session::{Event, FailReason, InstallPlan, Phase, PlanFile, ServerSession, SessionConfig};
+pub use session::{
+    Event, FailReason, InstallPlan, Phase, PlanError, PlanFile, ServerSession, SessionConfig,
+};

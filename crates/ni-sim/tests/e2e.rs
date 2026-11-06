@@ -17,12 +17,20 @@ fn pattern(len: usize, seed: u8) -> Bytes {
     )
 }
 
+/// NPK-looking test data: the NPK magic followed by [`pattern`] bytes.
+fn npk(len: usize, seed: u8) -> Bytes {
+    assert!(len >= message::NPK_MAGIC.len());
+    let mut v = message::NPK_MAGIC.to_vec();
+    v.extend_from_slice(&pattern(len - message::NPK_MAGIC.len(), seed));
+    Bytes::from(v)
+}
+
 fn setup(sim_cfg: SimConfig, plan: &InstallPlan) -> (ServerSession, DeviceSim, Instant) {
     let now = Instant::now();
     let mut sim = DeviceSim::new(sim_cfg, now);
     let info = discover(&mut sim, now);
     assert_eq!(info.mac, DEVICE);
-    let server = ServerSession::new(SERVER, info, plan, SessionConfig::default(), now);
+    let server = ServerSession::new(SERVER, info, plan, SessionConfig::default(), now).unwrap();
     (server, sim, now)
 }
 
@@ -35,7 +43,7 @@ fn installs_package_and_config_script() {
     let plan = InstallPlan {
         packages: vec![PlanFile {
             name: "routeros-7.16-mmips.npk".into(),
-            data: pattern(3000, 1),
+            data: npk(3000, 1),
         }],
         config_script: Some(Bytes::from_static(b"/system identity set name=lab\n")),
     };
@@ -55,7 +63,7 @@ fn installs_package_and_config_script() {
         &[
             ReceivedFile {
                 name: "routeros-7.16-mmips.npk".into(),
-                data: pattern(3000, 1).to_vec()
+                data: npk(3000, 1).to_vec()
             },
             ReceivedFile {
                 name: message::CONFIG_SCRIPT_NAME.into(),
@@ -105,7 +113,7 @@ fn installs_multiple_packages_including_empty_and_exact_chunk_sizes() {
         packages: vec![
             PlanFile {
                 name: "routeros.npk".into(),
-                data: pattern(2048, 2),
+                data: npk(2048, 2),
             },
             PlanFile {
                 name: "wifi-qcom.npk".into(),
@@ -134,7 +142,7 @@ fn installs_multiple_packages_including_empty_and_exact_chunk_sizes() {
         .map(|f| f.name.as_str())
         .collect();
     assert_eq!(names, ["routeros.npk", "wifi-qcom.npk", "empty.npk"]);
-    assert_eq!(sim.received_files()[0].data, pattern(2048, 2).to_vec());
+    assert_eq!(sim.received_files()[0].data, npk(2048, 2).to_vec());
     assert!(sim.received_files()[2].data.is_empty());
     assert!(sim.is_terminated());
     assert_eq!(events(&mut server).last(), Some(&Event::Done));
@@ -145,7 +153,7 @@ fn recovers_from_lost_device_replies() {
     let plan = InstallPlan {
         packages: vec![PlanFile {
             name: "routeros.npk".into(),
-            data: pattern(5000, 4),
+            data: npk(5000, 4),
         }],
         config_script: None,
     };
@@ -169,7 +177,7 @@ fn recovers_from_lost_device_replies() {
     );
 
     assert_eq!(events(&mut server).last(), Some(&Event::Done));
-    assert_eq!(sim.received_files()[0].data, pattern(5000, 4).to_vec());
+    assert_eq!(sim.received_files()[0].data, npk(5000, 4).to_vec());
 }
 
 #[test]
@@ -177,7 +185,7 @@ fn recovers_from_lost_server_frames() {
     let plan = InstallPlan {
         packages: vec![PlanFile {
             name: "routeros.npk".into(),
-            data: pattern(5000, 5),
+            data: npk(5000, 5),
         }],
         config_script: None,
     };
@@ -201,7 +209,7 @@ fn recovers_from_lost_server_frames() {
     );
 
     assert_eq!(events(&mut server).last(), Some(&Event::Done));
-    assert_eq!(sim.received_files()[0].data, pattern(5000, 5).to_vec());
+    assert_eq!(sim.received_files()[0].data, npk(5000, 5).to_vec());
     assert!(sim.is_terminated());
 }
 
@@ -210,7 +218,7 @@ fn file_header_without_reply_is_tolerated() {
     let plan = InstallPlan {
         packages: vec![PlanFile {
             name: "routeros.npk".into(),
-            data: pattern(100, 6),
+            data: npk(100, 6),
         }],
         config_script: None,
     };
@@ -235,7 +243,7 @@ fn file_header_without_reply_is_tolerated() {
     );
 
     assert_eq!(events(&mut server).last(), Some(&Event::Done));
-    assert_eq!(sim.received_files()[0].data, pattern(100, 6).to_vec());
+    assert_eq!(sim.received_files()[0].data, npk(100, 6).to_vec());
 }
 
 #[test]
@@ -243,7 +251,7 @@ fn silent_device_fails_with_timeout_in_offering() {
     let plan = InstallPlan {
         packages: vec![PlanFile {
             name: "routeros.npk".into(),
-            data: pattern(10, 7),
+            data: npk(10, 7),
         }],
         config_script: None,
     };
