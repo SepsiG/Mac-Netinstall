@@ -10,7 +10,7 @@
 use ni_assets::npk::sha256_hex;
 use ni_assets::{extract_kernels, Assets, Channel, HttpConfig, KernelSet, PkgArch, Version};
 use ni_bootp::BootArch;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Kernels carved from `netinstall-cli` 7.25.1: (arch, size, SHA-256),
 /// computed independently with a Python ELF-header script.
@@ -69,10 +69,31 @@ fn check_kernels(set: &KernelSet) {
     }
 }
 
-fn temp_root(tag: &str) -> PathBuf {
+/// A cache root under the system temp dir, removed on drop (kept only if
+/// the test panics and `NI_ASSETS_KEEP_TEST_DIRS=1`).
+struct TempRoot(PathBuf);
+
+impl std::ops::Deref for TempRoot {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        let keep = std::thread::panicking()
+            && std::env::var("NI_ASSETS_KEEP_TEST_DIRS").is_ok_and(|v| v == "1");
+        if !keep {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+fn temp_root(tag: &str) -> TempRoot {
     let dir = std::env::temp_dir().join(format!("ni-assets-net-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    dir
+    TempRoot(dir)
 }
 
 fn v7251() -> Version {
@@ -82,7 +103,8 @@ fn v7251() -> Version {
 #[tokio::test]
 #[ignore = "network"]
 async fn real_channels_resolve() {
-    let assets = Assets::new(temp_root("channels"), HttpConfig::default()).unwrap();
+    let root = temp_root("channels");
+    let assets = Assets::new(&*root, HttpConfig::default()).unwrap();
     for channel in Channel::ALL {
         let release = assets.latest(channel).await.unwrap();
         assert!(
@@ -97,7 +119,7 @@ async fn real_channels_resolve() {
 #[ignore = "network"]
 async fn real_7_25_1_kernels_match_the_reference() {
     let root = temp_root("kernels");
-    let assets = Assets::new(&root, HttpConfig::default()).unwrap();
+    let assets = Assets::new(&*root, HttpConfig::default()).unwrap();
     let set = assets.ensure_kernels(&v7251()).await.unwrap();
     check_kernels(&set);
     let index = ni_assets::cache::CacheDir::new(root.join("7.25.1")).load();
@@ -109,7 +131,8 @@ async fn real_7_25_1_kernels_match_the_reference() {
 #[tokio::test]
 #[ignore = "network"]
 async fn real_7_25_1_smips_packages() {
-    let assets = Assets::new(temp_root("smips"), HttpConfig::default()).unwrap();
+    let root = temp_root("smips");
+    let assets = Assets::new(&*root, HttpConfig::default()).unwrap();
     let names = assets
         .available_packages(&v7251(), PkgArch::Smips)
         .await

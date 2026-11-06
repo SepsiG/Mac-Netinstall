@@ -165,7 +165,8 @@ mod tests {
     async fn lists_extra_packages_from_the_zip_directory() {
         let srv = TestServer::start().await;
         mirror(&srv);
-        let a = assets(&srv, &tempdir("list"));
+        let root = tempdir("list");
+        let a = assets(&srv, &root);
         let names = a.available_packages(&v(), PkgArch::Arm64).await.unwrap();
         assert_eq!(names, ["container", "wireless"]);
         assert_eq!(
@@ -225,7 +226,8 @@ mod tests {
     async fn main_package_alone_needs_no_package_list() {
         let srv = TestServer::start().await;
         mirror(&srv);
-        let a = assets(&srv, &tempdir("main-only"));
+        let root = tempdir("main-only");
+        let a = assets(&srv, &root);
         let files = a.ensure_packages(&v(), PkgArch::Arm64, &[]).await.unwrap();
         assert_eq!(files.len(), 1);
         assert!(!srv.paths().iter().any(|p| p.contains("all_packages")));
@@ -235,7 +237,8 @@ mod tests {
     async fn bad_package_requests_are_rejected() {
         let srv = TestServer::start().await;
         mirror(&srv);
-        let a = assets(&srv, &tempdir("bad-packages"));
+        let root = tempdir("bad-packages");
+        let a = assets(&srv, &root);
         let err = a
             .ensure_packages(&v(), PkgArch::Arm64, &["../etc".into()])
             .await

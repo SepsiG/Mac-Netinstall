@@ -172,7 +172,8 @@ mod tests {
     async fn bad_local_files_are_rejected() {
         let srv = TestServer::start().await;
         let src = tempdir("local-bad-src");
-        let a = assets(&srv, &tempdir("local-bad"));
+        let root = tempdir("local-bad");
+        let a = assets(&srv, &root);
         let cases: [(&str, Vec<u8>, &str); 5] = [
             ("notes.txt", b"x".to_vec(), "unsupported_local_file"),
             (".npk", npk(8, 0), "unsupported_local_file"),

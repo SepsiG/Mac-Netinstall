@@ -1,8 +1,6 @@
 //! A tiny HTTP/1.1 server for download tests, and temp directories.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -130,13 +128,3 @@ async fn handle(mut stream: TcpStream, routes: Routes, log: Arc<Mutex<Vec<String
     let _ = stream.shutdown().await;
 }
 
-/// A fresh, empty directory under the system temp dir (removed first if it
-/// exists). Left behind after the test for inspection.
-pub fn tempdir(tag: &str) -> PathBuf {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("ni-assets-test-{}-{tag}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}

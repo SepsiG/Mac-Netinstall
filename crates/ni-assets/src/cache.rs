@@ -158,7 +158,8 @@ mod tests {
 
     #[test]
     fn stores_and_verifies_files() {
-        let cache = CacheDir::new(tempdir("cache").join("7.25.1"));
+        let tmp = tempdir("cache");
+        let cache = CacheDir::new(tmp.join("7.25.1"));
         let mut index = cache.load();
         assert_eq!(index, Index::default());
         cache.write_atomic("a.bin", b"hello").unwrap();
@@ -180,7 +181,8 @@ mod tests {
 
     #[test]
     fn detects_changed_and_deleted_files() {
-        let cache = CacheDir::new(tempdir("cache"));
+        let tmp = tempdir("cache");
+        let cache = CacheDir::new(tmp.to_path_buf());
         let mut index = Index::default();
         cache.write_atomic("a.bin", b"hello").unwrap();
         index
@@ -196,7 +198,8 @@ mod tests {
 
     #[test]
     fn unreadable_index_counts_as_empty() {
-        let cache = CacheDir::new(tempdir("cache"));
+        let tmp = tempdir("cache");
+        let cache = CacheDir::new(tmp.to_path_buf());
         cache.write_atomic(INDEX_FILE, b"{not json").unwrap();
         assert_eq!(cache.load(), Index::default());
     }

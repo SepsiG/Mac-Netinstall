@@ -221,7 +221,8 @@ mod tests {
         let srv = TestServer::start().await;
         mirror(&srv);
         srv.route("/up/NEWESTa7.testing", Reply::Body(b"<html>".to_vec()));
-        let a = assets(&srv, &tempdir("resolve"));
+        let root = tempdir("resolve");
+        let a = assets(&srv, &root);
         let release = a.latest(Channel::Stable).await.unwrap();
         assert_eq!(
             (release.version.as_str(), release.released_unix),
@@ -315,7 +316,8 @@ mod tests {
             &format!("/dl/{V}/netinstall-{V}.tar.gz.sha256"),
             Reply::Body(b"<Error>NoSuchKey</Error>".to_vec()),
         );
-        let err = assets(&srv, &tempdir("kernels-badsum"))
+        let root = tempdir("kernels-badsum");
+        let err = assets(&srv, &root)
             .ensure_kernels(&v())
             .await
             .unwrap_err();
@@ -348,7 +350,8 @@ mod tests {
             &format!("{d}/netinstall-{V}.tar.gz.sha256"),
             Reply::Status(404),
         );
-        let a = assets(&srv, &tempdir("kernels-partial"));
+        let root = tempdir("kernels-partial");
+        let a = assets(&srv, &root);
         assert_eq!(
             a.ensure_kernels(&v()).await.unwrap_err().code(),
             "kernel_missing"
