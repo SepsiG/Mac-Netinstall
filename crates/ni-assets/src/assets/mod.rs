@@ -331,6 +331,26 @@ impl Assets {
     }
 }
 
+impl Assets {
+    /// Versions whose complete, undamaged kernel set is in the cache,
+    /// oldest first: what can still be booted without the network.
+    pub async fn cached_versions(&self) -> Result<Vec<Version>, AssetError> {
+        let root = self.root.clone();
+        blocking(move || {
+            let mut versions: Vec<Version> = std::fs::read_dir(&root)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| Version::parse(e.file_name().to_str()?).ok())
+                .filter(|v| load_kernels(&CacheDir::new(root.join(v.as_str()))).is_some())
+                .collect();
+            versions.sort();
+            versions
+        })
+        .await
+    }
+}
+
 /// All kernels of a version from the cache, or `None` if any is missing or
 /// damaged.
 fn load_kernels(dir: &CacheDir) -> Option<KernelSet> {
@@ -597,5 +617,27 @@ mod tests {
         assert!(fresh.exists(), "may still be written");
         assert!(busy.exists(), "its target is locked");
         assert!(other.exists(), "not a part file");
+    }
+
+    #[tokio::test]
+    async fn cached_versions_lists_complete_kernel_sets_oldest_first() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        mirror_version(&srv, "7.9");
+        mirror_version(&srv, "7.24.6");
+        let root = tempdir("cached-versions");
+        let a = assets(&srv, &root);
+        assert_eq!(a.cached_versions().await.unwrap(), Vec::<Version>::new());
+        for ver in [V, "7.9", "7.24.6"] {
+            a.ensure_kernels(&Version::parse(ver).unwrap())
+                .await
+                .unwrap();
+        }
+        std::fs::write(root.join("7.24.6/kernel-tile.elf"), b"bad").unwrap();
+        std::fs::create_dir_all(root.join("7.20")).unwrap();
+        std::fs::create_dir_all(root.join("not-a-version")).unwrap();
+        let got = a.cached_versions().await.unwrap();
+        let got: Vec<&str> = got.iter().map(Version::as_str).collect();
+        assert_eq!(got, ["7.9", V]);
     }
 }

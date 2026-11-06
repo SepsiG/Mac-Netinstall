@@ -489,4 +489,76 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn invalid_names_in_a_cached_package_list_are_not_trusted() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let root = tempdir("list-tampered");
+        let dir = CacheDir::new(root.join(V));
+        dir.update(|index| {
+            index
+                .package_lists
+                .insert("arm64".into(), vec!["../../evil".into(), "wireless".into()]);
+        })
+        .unwrap();
+        let a = assets(&srv, &root);
+        let names = a.available_packages(&v(), PkgArch::Arm64).await.unwrap();
+        assert_eq!(names, ["container", "wireless"]);
+        assert_eq!(dir.load().package_lists["arm64"], names);
+    }
+
+    #[tokio::test]
+    async fn a_large_zip_directory_is_fetched_with_a_second_range_request() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let long = "x".repeat(55);
+        let names: Vec<String> = (0..600)
+            .map(|i| format!("p{i:03}{long}-{V}-arm64.npk"))
+            .collect();
+        let entries: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b""[..])).collect();
+        srv.route(
+            &format!("/dl/{V}/all_packages-arm64-{V}.zip"),
+            Reply::Body(zip(&entries)),
+        );
+        let root = tempdir("list-needmore");
+        let a = assets(&srv, &root);
+        let got = a.available_packages(&v(), PkgArch::Arm64).await.unwrap();
+        assert_eq!(got.len(), 600);
+        assert_eq!(got[0], format!("p000{long}"));
+        let ranges: Vec<u64> = srv
+            .requests()
+            .iter()
+            .filter_map(|r| {
+                let r = r.to_ascii_lowercase();
+                let at = r.find("range: bytes=-")? + "range: bytes=-".len();
+                r[at..].lines().next()?.trim().parse().ok()
+            })
+            .collect();
+        assert_eq!(ranges.len(), 2, "{ranges:?}");
+        assert_eq!(ranges[0], ZIP_TAIL);
+        assert!(ranges[1] > ZIP_TAIL);
+    }
+
+    #[tokio::test]
+    async fn a_zip64_package_archive_is_rejected() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let mut z = zip(&[("wireless-7.25.1-arm64.npk", b"x")]);
+        let eocd = z.len() - 22;
+        z[eocd + 8..eocd + 12].copy_from_slice(&[0xff; 4]);
+        srv.route(
+            &format!("/dl/{V}/all_packages-arm64-{V}.zip"),
+            Reply::Body(z),
+        );
+        let root = tempdir("list-zip64");
+        let err = assets(&srv, &root)
+            .available_packages(&v(), PkgArch::Arm64)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AssetError::Archive(ArchiveError::BadZip(r)) if r.contains("zip64")),
+            "{err:?}"
+        );
+    }
 }
