@@ -332,7 +332,10 @@ mod tests {
             DeviceState::Waiting {
                 reason: WaitReason::NoProfile,
             },
-            DeviceState::Preparing { version: None },
+            DeviceState::Preparing {
+                version: None,
+                config: None,
+            },
             DeviceState::Flashing {
                 version: String::new(),
                 phase: String::new(),

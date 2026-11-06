@@ -76,12 +76,13 @@ describe("EngineState", () => {
     s.apply({ event: "started", interface: "en7", server_ip: "192.168.88.1", bootp: "", tftp: "", netinstall: "" });
     s.apply({ event: "device", mac: A, state: "bootp_seen", boot_arch: "arm64", ip: "192.168.88.2" }, 10);
     s.apply({ event: "discovered", mac: A, model: "RB5009", arch: "arm64", license_id: "X", min_os: "7" });
-    s.apply({ event: "device", mac: A, state: "preparing", version: "7.25.1" });
+    s.apply({ event: "device", mac: A, state: "preparing", version: "7.25.1", config: "script" });
     s.apply({ event: "device", mac: A, state: "flashing", version: "7.25.1", phase: "uploading", sent: 50, total: 100 }, 20);
     const d = s.devices[A]!;
     expect(d.ip).toBe("192.168.88.2");
     expect(d.info?.model).toBe("RB5009");
     expect(d.version).toBe("7.25.1");
+    expect(d.config).toBe("script");
     expect(d.attempt).toBe(1);
     expect(d.updated_ms).toBe(20);
     expect(s.busy).toBe(1);

@@ -84,8 +84,10 @@ impl Printer {
             DeviceState::Waiting {
                 reason: WaitReason::Concurrency,
             } => "waiting for a free slot".into(),
-            DeviceState::Preparing { version: None } => "preparing packages".into(),
-            DeviceState::Preparing { version: Some(v) } => format!("preparing RouterOS {v}"),
+            DeviceState::Preparing { version: None, .. } => "preparing packages".into(),
+            DeviceState::Preparing {
+                version: Some(v), ..
+            } => format!("preparing RouterOS {v}"),
             DeviceState::Flashing {
                 phase, sent, total, ..
             } => {

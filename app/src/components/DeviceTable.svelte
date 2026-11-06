@@ -113,7 +113,10 @@
               <progress aria-label={$t("devices.progress")}></progress>
             {/if}
           </td>
-          <td>{d.version ?? ""}</td>
+          <td>
+            {d.version ?? ""}
+            {#if d.config}<div class="config secondary">{$t(`devices.config_${d.config}`)}</div>{/if}
+          </td>
           <td class="actions-col">
             {#if d.state.state === "waiting" && d.state.reason === "no_profile"}
               <button class="small" disabled={!running || !profile} onclick={() => run(() => backend.flash(d.mac, profile ?? ""))}>
@@ -231,6 +234,9 @@
   .stale-note {
     padding: 4px 12px;
     font-size: 12px;
+  }
+  .config {
+    font-size: 11px;
   }
   .state-failed {
     color: var(--danger);

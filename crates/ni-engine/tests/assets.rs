@@ -106,7 +106,7 @@ async fn offline_the_engine_stays_on_the_remembered_version() {
             } if *mac == B => Some(Some(version.clone())),
             EngineEvent::Device {
                 mac,
-                state: DeviceState::Preparing { version },
+                state: DeviceState::Preparing { version, .. },
             } if *mac == B => Some(version.clone()),
             _ => None,
         })

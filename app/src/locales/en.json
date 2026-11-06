@@ -52,6 +52,10 @@
   "devices.attempt": "attempt {attempt}",
   "devices.stale": "Last known state; the server is stopped.",
   "devices.forget_cooldown": "Just flashed and restarting: it can be forgotten once its cooldown is over.",
+  "devices.config_keep": "existing configuration kept",
+  "devices.config_default": "default configuration",
+  "devices.config_empty": "empty configuration",
+  "devices.config_script": "own script",
 
   "action.flash": "Flash",
   "action.retry": "Retry",

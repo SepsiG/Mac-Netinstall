@@ -16,7 +16,7 @@ export type DeviceState =
   | { state: "kernel_serving"; sent: number; total: number }
   | { state: "discovered" }
   | { state: "waiting"; reason: WaitReason }
-  | { state: "preparing"; version?: string }
+  | { state: "preparing"; version?: string; config?: string }
   | { state: "flashing"; version: string; phase: string; sent: number; total: number }
   | { state: "done" }
   | { state: "failed"; code: string; params?: Params };

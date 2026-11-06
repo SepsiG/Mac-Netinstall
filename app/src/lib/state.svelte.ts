@@ -20,6 +20,8 @@ export interface DeviceRow {
   boot_arch: string | null;
   info: DeviceInfoView | null;
   version: string | null;
+  /** The configuration mode of its profile (keep, default, empty, script). */
+  config: string | null;
   attempt: number;
   updated_ms: number;
   state: DeviceState;
@@ -32,6 +34,7 @@ function row(d: DeviceView): DeviceRow {
     boot_arch: d.boot_arch,
     info: d.info,
     version: d.version,
+    config: d.config,
     attempt: d.attempt,
     updated_ms: d.updated_ms,
     state: d.state,
@@ -96,6 +99,7 @@ export class EngineState {
         boot_arch: null,
         info: null,
         version: null,
+        config: null,
         attempt: 0,
         updated_ms: Date.now(),
         state: { state: "discovered" },
@@ -146,6 +150,7 @@ export class EngineState {
         if ((s.state === "preparing" && s.version) || s.state === "flashing") {
           d.version = s.version ?? d.version;
         }
+        if (s.state === "preparing" && s.config) d.config = s.config;
         d.state = s;
         d.updated_ms = now;
         break;

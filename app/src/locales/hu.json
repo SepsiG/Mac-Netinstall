@@ -52,6 +52,10 @@
   "devices.attempt": "{attempt}. próbálkozás",
   "devices.stale": "Utolsó ismert állapot; a kiszolgálás leállt.",
   "devices.forget_cooldown": "Épp most települt és újraindul: a várakozási idő letelte után lehet elfelejteni.",
+  "devices.config_keep": "meglévő konfiguráció megtartva",
+  "devices.config_default": "gyári alapkonfiguráció",
+  "devices.config_empty": "üres konfiguráció",
+  "devices.config_script": "saját szkript",
 
   "action.flash": "Telepítés indítása",
   "action.retry": "Újra",

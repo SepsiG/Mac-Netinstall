@@ -88,6 +88,15 @@ async fn the_profile_options_reach_the_device() {
     let mut rig = rig(|cfg| cfg.profile = Some(p)).await;
     let sim = boot(&rig, A, sim_config(A)).await;
     rig.lan.add(sim).await;
+    let e = state(&mut rig.events, A, "preparing").await;
+    let EngineEvent::Device {
+        state: DeviceState::Preparing { config, .. },
+        ..
+    } = e
+    else {
+        unreachable!()
+    };
+    assert_eq!(config.as_deref(), Some("keep"));
     state(&mut rig.events, A, "done").await;
     let report = rig.lan.wait_terminated(A, WAIT).await.unwrap();
     assert_eq!(

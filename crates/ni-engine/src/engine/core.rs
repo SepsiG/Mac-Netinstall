@@ -850,6 +850,7 @@ impl Core {
             .filter(|v| kernel_spec.as_ref() == Some(&profile.version) && kernel_version == *v);
         dev.version = version.clone();
         let shown = version.as_ref().map(|v| v.to_string());
+        let config = Some(profile.config.name().to_string());
         run.tasks.retain(|t| !t.is_finished());
         run.tasks.push(tokio::spawn(async move {
             let result = prepare(
@@ -869,7 +870,13 @@ impl Core {
                 })
                 .await;
         }));
-        self.set_state(mac, DeviceState::Preparing { version: shown });
+        self.set_state(
+            mac,
+            DeviceState::Preparing {
+                version: shown,
+                config,
+            },
+        );
     }
 
     fn prepared(
