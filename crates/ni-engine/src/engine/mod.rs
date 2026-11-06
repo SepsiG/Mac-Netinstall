@@ -93,6 +93,8 @@ pub(crate) enum Command {
     Stop(Reply<()>),
     Flash(Mac, Box<Profile>, Reply<()>),
     Retry(Mac, Reply<()>),
+    Cancel(Mac, Reply<()>),
+    Forget(Mac, Reply<()>),
     AutoRepeat(bool, Reply<()>),
     ActiveProfile(Option<Box<Profile>>, Reply<()>),
     OnlyMac(Option<Mac>, Reply<()>),
@@ -246,6 +248,24 @@ impl EngineHandle {
     /// again without `retry`.)
     pub async fn retry(&self, mac: Mac) -> Result<(), Failure> {
         self.call(|tx| Command::Retry(mac, tx)).await?
+    }
+
+    /// Stop one device. A device being prepared or flashed fails with
+    /// `cancelled`; **a device cancelled while flashing may be left
+    /// without a bootable system** (it was formatted) and must be
+    /// netbooted again, so a UI should ask first. A device waiting for a
+    /// slot leaves the queue (`waiting` / `no_profile`, its profile
+    /// cleared). Errors: `not_running`, `unknown_device`,
+    /// `not_cancellable` (`mac`, `state`).
+    pub async fn cancel(&self, mac: Mac) -> Result<(), Failure> {
+        self.call(|tx| Command::Cancel(mac, tx)).await?
+    }
+
+    /// Drop a device that is not being prepared or flashed from the
+    /// device list, with its cooldown: if it netboots again it is treated
+    /// as new. Errors: `not_running`, `unknown_device`, `device_busy`.
+    pub async fn forget(&self, mac: Mac) -> Result<(), Failure> {
+        self.call(|tx| Command::Forget(mac, tx)).await?
     }
 
     /// With auto-repeat on, waiting devices get the active profile. Turning

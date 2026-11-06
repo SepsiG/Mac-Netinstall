@@ -264,6 +264,12 @@ impl Core {
             Command::Retry(mac, reply) => {
                 let _ = reply.send(self.retry(mac));
             }
+            Command::Cancel(mac, reply) => {
+                let _ = reply.send(self.cancel(mac));
+            }
+            Command::Forget(mac, reply) => {
+                let _ = reply.send(self.forget(mac));
+            }
             Command::AutoRepeat(on, reply) => {
                 let _ = reply.send(self.set_auto_repeat(on));
             }
@@ -448,6 +454,56 @@ impl Core {
             // next BOOTP request starts over.
             run.devices.remove(&mac);
         }
+        Ok(())
+    }
+
+    fn cancel(&mut self, mac: Mac) -> Result<(), Failure> {
+        let run = self.running()?;
+        let dev = run
+            .devices
+            .get_mut(&mac)
+            .ok_or_else(|| Failure::new("unknown_device").with("mac", mac))?;
+        if dev.is_active() {
+            // A preparation still running is dropped when it reports back
+            // (the device is no longer `preparing`).
+            if let Some(mut session) = dev.session.take() {
+                session.cancel();
+            }
+            warn!(%mac, "install cancelled");
+            self.set_state(mac, DeviceState::failed(Failure::new("cancelled")));
+            return Ok(());
+        }
+        if dev.queued.is_some() {
+            dev.queued = None;
+            dev.using = None;
+            dev.assigned = None;
+            self.set_state(
+                mac,
+                DeviceState::Waiting {
+                    reason: WaitReason::NoProfile,
+                },
+            );
+            return Ok(());
+        }
+        let state = dev.state.as_ref().map_or("unknown", DeviceState::name);
+        Err(Failure::new("not_cancellable")
+            .with("mac", mac)
+            .with("state", state))
+    }
+
+    fn forget(&mut self, mac: Mac) -> Result<(), Failure> {
+        let run = self.running()?;
+        let dev = run
+            .devices
+            .get(&mac)
+            .ok_or_else(|| Failure::new("unknown_device").with("mac", mac))?;
+        if dev.is_active() {
+            return Err(Failure::new("device_busy").with("mac", mac));
+        }
+        run.devices.remove(&mac);
+        run.gate.clear_cooldown(mac);
+        run.ignored.retain(|(m, _), _| *m != mac);
+        info!(%mac, "device forgotten");
         Ok(())
     }
 

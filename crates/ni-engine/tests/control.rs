@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use ni_assets::testutil::{mirror_version, netinstall_tarball, Reply};
 use ni_assets::{Version, VersionSpec};
-use ni_engine::{DeviceState, EngineEvent, EngineHandle, KernelState, Profile};
+use ni_engine::{DeviceState, EngineEvent, EngineHandle, KernelState, Profile, WaitReason};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> u64 {
@@ -340,4 +340,103 @@ async fn the_same_version_spec_keeps_the_kernels_and_none_stops_auto_repeat() {
     while let Ok(e) = rig.events.try_recv() {
         assert!(!matches!(e, EngineEvent::Kernels { .. }), "{e:?}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_flashing_device_frees_its_slot() {
+    let mut rig = rig(|cfg| cfg.max_parallel = 1).await;
+    let mut slow = sim_config(A);
+    slow.format_delay = Duration::from_secs(3);
+    let a = boot(&rig, A, slow).await;
+    let b = boot(&rig, B, sim_config(B)).await;
+    rig.lan.add(a).await;
+    state(&mut rig.events, A, "flashing").await;
+    rig.lan.add(b).await;
+    state(&mut rig.events, B, "waiting").await;
+    assert_eq!(rig.engine.forget(A).await.unwrap_err().code, "device_busy");
+    rig.engine.cancel(A).await.unwrap();
+    let e = state(&mut rig.events, A, "failed").await;
+    assert_eq!(
+        e,
+        EngineEvent::Device {
+            mac: A,
+            state: DeviceState::failed(ni_engine::Failure::new("cancelled"))
+        }
+    );
+    state(&mut rig.events, B, "preparing").await;
+    state(&mut rig.events, B, "done").await;
+    let err = rig.engine.cancel(B).await.unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("state")),
+        ("not_cancellable", Some("done"))
+    );
+    let err = rig.engine.cancel(C).await.unwrap_err();
+    assert_eq!(err.code, "unknown_device");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_queued_device_takes_it_out_of_the_queue() {
+    let mut rig = rig(|cfg| cfg.max_parallel = 1).await;
+    let mut slow = sim_config(A);
+    slow.format_delay = Duration::from_millis(800);
+    let a = boot(&rig, A, slow).await;
+    let b = boot(&rig, B, sim_config(B)).await;
+    rig.lan.add(a).await;
+    state(&mut rig.events, A, "flashing").await;
+    rig.lan.add(b).await;
+    state(&mut rig.events, B, "waiting").await;
+    rig.engine.cancel(B).await.unwrap();
+    let e = next(
+        &mut rig.events,
+        |e| matches!(e, EngineEvent::Device { mac, .. } if *mac == B),
+    )
+    .await;
+    assert_eq!(
+        e,
+        EngineEvent::Device {
+            mac: B,
+            state: DeviceState::Waiting {
+                reason: WaitReason::NoProfile
+            }
+        }
+    );
+    state(&mut rig.events, A, "done").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let snap = rig.engine.snapshot().await.unwrap();
+    let b = snap.devices.iter().find(|d| d.mac == B).unwrap();
+    assert_eq!(b.state.name(), "waiting", "not started when the slot freed");
+    assert_eq!((b.attempt, b.profile.as_deref()), (0, None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forgotten_device_is_new_again_without_cooldown() {
+    let mut rig = rig(|_| {}).await;
+    let sim = boot(&rig, A, sim_config(A)).await;
+    rig.lan.add(sim).await;
+    state(&mut rig.events, A, "done").await;
+    rig.lan.wait_terminated(A, WAIT).await.unwrap();
+    rig.engine.forget(A).await.unwrap();
+    assert!(rig.engine.snapshot().await.unwrap().devices.is_empty());
+    assert_eq!(
+        rig.engine.forget(A).await.unwrap_err().code,
+        "unknown_device"
+    );
+    // No cooldown any more: it gets a boot file at once.
+    let reply = rig
+        .lan
+        .boot(A, "ARM64__boot", rig.started.bootp, WAIT)
+        .await;
+    assert!(reply.is_some());
+    let e = state(&mut rig.events, A, "bootp_seen").await;
+    assert!(matches!(e, EngineEvent::Device { .. }));
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert_eq!(snap.devices[0].attempt, 0, "a new device");
+}
+
+#[tokio::test]
+async fn cancel_and_forget_need_a_running_engine() {
+    let cache = ni_assets::testutil::tempdir("control-idle2");
+    let engine = EngineHandle::spawn(cache.join("cache"), offline_http()).unwrap();
+    assert_eq!(engine.cancel(A).await.unwrap_err().code, "not_running");
+    assert_eq!(engine.forget(A).await.unwrap_err().code, "not_running");
 }
