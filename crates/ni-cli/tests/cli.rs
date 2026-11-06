@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
-use tokio::process::{ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
 const WAIT: Duration = Duration::from_secs(20);
 const DEVICE: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0c]);
@@ -32,6 +32,7 @@ impl Env {
             .args(["--profiles-dir", &d("profiles")])
             .args(args)
             .env_remove("NI_LOG")
+            .env("NI_CLI_TESTING", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -330,4 +331,151 @@ async fn ctrl_c_stops_auto_repeat_cleanly() {
         Some(0),
         "auto-repeat ends normally on Ctrl-C"
     );
+}
+
+#[tokio::test]
+async fn testing_flags_need_the_environment_variable() {
+    let env = Env::new("cli-testing-flags");
+    let mut cmd = env.cmd(&[
+        "--json",
+        "--download-base",
+        "http://127.0.0.1:1/dl/",
+        "interfaces",
+    ]);
+    cmd.env_remove("NI_CLI_TESTING");
+    let out = tokio::time::timeout(WAIT, cmd.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("testing_flag_not_allowed"), "{stderr}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["type"], "error");
+    assert_eq!(v["code"], "testing_flag_not_allowed");
+    assert_eq!(v["params"]["flag"], "--download-base");
+}
+
+#[tokio::test]
+async fn json_errors_are_printed_on_stdout() {
+    let env = Env::new("cli-json-errors");
+    let (code, out, err) = env.run(&["--json", "profiles", "show", "nosuch"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("profile_not_found"), "{err}");
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["type"], "error");
+    assert_eq!(v["code"], "profile_not_found");
+    assert!(v["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("profile_not_found"));
+    // Usage errors too.
+    let (code, out, _) = env.run(&["--json", "flash", "--iface", "lo0"]).await;
+    assert_eq!(code, 2);
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(
+        (v["type"].as_str(), v["code"].as_str()),
+        (Some("error"), Some("usage"))
+    );
+}
+
+fn sigint(child: &Child) {
+    let pid = child.id().unwrap().to_string();
+    let kill = std::process::Command::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .unwrap();
+    assert!(kill.success());
+}
+
+/// The next stderr line containing `needle`.
+async fn stderr_line(lines: &mut Lines<BufReader<ChildStderr>>, needle: &str) -> String {
+    let end = tokio::time::Instant::now() + WAIT;
+    loop {
+        let line = tokio::time::timeout_at(end, lines.next_line())
+            .await
+            .expect("expected stderr line in time")
+            .unwrap()
+            .expect("stderr still open");
+        if line.contains(needle) {
+            return line;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctrl_c_during_a_flash_needs_confirmation_and_exits_130() {
+    let env = Env::new("cli-sigint-flash");
+    let srv = TestServer::start().await;
+    mirror(&srv);
+    let lan = SimLan::bind().await.unwrap();
+    let mut args = flash_args(&srv, &lan);
+    args.push("--auto-repeat".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = env.cmd(&args).spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut errs = BufReader::new(child.stderr.take().unwrap()).lines();
+    let started = json_line(&mut lines, |v| v["event"] == "started").await;
+    lan.connect(addr(&started, "netinstall")).await;
+    json_line(&mut lines, |v| v["event"] == "kernels_ready").await;
+    let reply = lan
+        .boot(DEVICE, "ARM64__boot", addr(&started, "bootp"), WAIT)
+        .await
+        .expect("BOOTP reply");
+    let tftp = SocketAddr::from((reply.server, addr(&started, "tftp").port()));
+    tftp_get(tftp, &reply.file).await.unwrap();
+    // Formatting takes a long time: the device stays `flashing`.
+    let mut sim = SimConfig::new(DEVICE, "hAP ax2", "arm64");
+    sim.hello_interval = Duration::from_millis(100);
+    sim.format_delay = Duration::from_secs(60);
+    lan.add(DeviceSim::new(sim, Instant::now())).await;
+    json_line(&mut lines, |v| {
+        v["event"] == "device" && v["state"] == "flashing"
+    })
+    .await;
+
+    sigint(&child);
+    let warning = stderr_line(&mut errs, "press Ctrl-C again").await;
+    assert!(warning.contains("48:A9:8A:00:00:0C"), "{warning}");
+    let pending = json_line(&mut lines, |v| v["type"] == "warning").await;
+    assert_eq!(pending["code"], "interrupt_pending");
+    // Still running: nothing was cancelled.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "first Ctrl-C only warns"
+    );
+
+    sigint(&child);
+    let cancelled = json_line(&mut lines, |v| v["event"] == "device").await;
+    assert_eq!(
+        (cancelled["state"].as_str(), cancelled["code"].as_str()),
+        (Some("failed"), Some("cancelled"))
+    );
+    json_line(&mut lines, |v| v["event"] == "stopped").await;
+    let status = tokio::time::timeout(WAIT, child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.code(), Some(130), "a flash was interrupted");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctrl_c_before_the_single_device_appears_exits_130_at_once() {
+    let env = Env::new("cli-sigint-single");
+    let srv = TestServer::start().await;
+    mirror(&srv);
+    let lan = SimLan::bind().await.unwrap();
+    let args = flash_args(&srv, &lan);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = env.cmd(&args).spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    json_line(&mut lines, |v| v["event"] == "kernels_ready").await;
+    sigint(&child);
+    json_line(&mut lines, |v| v["event"] == "stopped").await;
+    let status = tokio::time::timeout(WAIT, child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.code(), Some(130));
 }

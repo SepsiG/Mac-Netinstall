@@ -14,16 +14,56 @@ pub mod exit {
     pub const ERROR: u8 = 1;
     /// Invalid arguments.
     pub const USAGE: u8 = 2;
-    /// At least one device failed to flash.
+    /// A device failed to flash: the single device, or with
+    /// `--auto-repeat` any device (also one cancelled half-way because
+    /// `--count` was reached).
     pub const DEVICE_FAILED: u8 = 3;
     /// Preflight found an error (interface, addresses, ports, assets).
     pub const PREFLIGHT: u8 = 4;
-    /// Interrupted (Ctrl-C) before the device was flashed.
+    /// Interrupted (Ctrl-C / SIGTERM) before the single device finished,
+    /// or while any device was being prepared or flashed.
     pub const INTERRUPTED: u8 = 130;
 }
 
 const EXIT_CODES: &str = "Exit codes: 0 success, 1 error, 2 invalid arguments, \
-3 a device failed, 4 preflight failed, 130 interrupted.";
+3 a device failed, 4 preflight failed, 130 interrupted (also: stopped while a device \
+was being flashed). While a device is being flashed, the first Ctrl-C only warns; \
+press it again within 5 s to abort. With --json, errors are also printed to stdout \
+as {\"type\":\"error\",\"code\":...,\"message\":...}.";
+
+/// Environment variable that unlocks the hidden testing flags.
+pub const TESTING_ENV: &str = "NI_CLI_TESTING";
+
+/// Hidden testing flags that redirect downloads or frames
+/// (`--download-base`, `--upgrade-base`, `--netinstall-dest`,
+/// `--server-mac`) are refused unless [`TESTING_ENV`] is `1`: pointed at
+/// the wrong place they would install foreign files or impersonate
+/// another machine. Error: `testing_flag_not_allowed` (`flag`, `env`).
+pub fn check_testing_flags(cli: &Cli, allowed: bool) -> Result<(), ni_engine::Failure> {
+    if allowed {
+        return Ok(());
+    }
+    let net = match &cli.command {
+        Command::Preflight { net, .. } => Some(net),
+        Command::Flash(f) => Some(&f.net),
+        _ => None,
+    };
+    let used = [
+        ("--download-base", cli.download_base.is_some()),
+        ("--upgrade-base", cli.upgrade_base.is_some()),
+        (
+            "--netinstall-dest",
+            net.is_some_and(|n| n.netinstall_dest.is_some()),
+        ),
+        ("--server-mac", net.is_some_and(|n| n.server_mac.is_some())),
+    ];
+    match used.iter().find(|(_, on)| *on) {
+        Some((flag, _)) => Err(ni_engine::Failure::new("testing_flag_not_allowed")
+            .with("flag", flag)
+            .with("env", format!("{TESTING_ENV}=1"))),
+        None => Ok(()),
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -144,9 +184,14 @@ pub struct NetArgs {
     /// Interface the routers are connected to, e.g. en7.
     #[arg(long)]
     pub iface: String,
-    /// Our IPv4 address on it [default: its first one].
+    /// Our IPv4 address on it [default: its first one]. Give it to start
+    /// before the cable is plugged in (macOS removes a manual address while
+    /// there is no link).
     #[arg(long)]
     pub server_ip: Option<Ipv4Addr>,
+    /// Netmask for --server-ip while it is not on the interface [default: 255.255.255.0].
+    #[arg(long, requires = "server_ip")]
+    pub netmask: Option<Ipv4Addr>,
     /// Address range handed out, as FIRST-LAST [default: the subnet's hosts].
     #[arg(long, value_parser = parse_pool)]
     pub pool: Option<(Ipv4Addr, Ipv4Addr)>,
@@ -201,8 +246,8 @@ pub struct FlashArgs {
     /// Devices flashed at the same time.
     #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
     pub max_parallel: u16,
-    /// Seconds a finished device is ignored (it reboots).
-    #[arg(long, default_value_t = 300)]
+    /// Seconds a finished device is ignored (it reboots); at least 30.
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(30..))]
     pub cooldown: u64,
     /// Re-sends of an unanswered Netinstall frame (0 disables them; whether
     /// devices de-duplicate re-sent chunks is unverified on hardware).
@@ -390,6 +435,81 @@ mod tests {
         let help = Cli::command().render_long_help().to_string();
         assert!(!help.contains("download-base"), "testing flags are hidden");
         assert!(help.contains("130 interrupted"));
+    }
+
+    #[test]
+    fn cooldown_has_a_lower_bound() {
+        let args = |c: &'static str| {
+            parse(&[
+                "flash",
+                "--iface",
+                "en7",
+                "--version",
+                "stable",
+                "--cooldown",
+                c,
+            ])
+        };
+        assert_eq!(args("29").unwrap_err().kind(), ErrorKind::ValueValidation);
+        let Command::Flash(f) = args("30").unwrap().command else {
+            panic!()
+        };
+        assert_eq!(f.cooldown, 30);
+    }
+
+    #[test]
+    fn testing_flags_need_the_environment_variable() {
+        let ok = parse(&["flash", "--iface", "en7", "--version", "stable"]).unwrap();
+        assert!(check_testing_flags(&ok, false).is_ok());
+        for args in [
+            &["--download-base", "http://x/", "interfaces"][..],
+            &["--upgrade-base", "http://x/", "interfaces"],
+            &[
+                "flash",
+                "--iface",
+                "en7",
+                "--version",
+                "stable",
+                "--server-mac",
+                "02:00:00:00:00:01",
+            ],
+            &[
+                "preflight",
+                "--iface",
+                "en7",
+                "--netinstall-dest",
+                "127.0.0.1:1",
+            ],
+        ] {
+            let cli = parse(args).unwrap();
+            let err = check_testing_flags(&cli, false).unwrap_err();
+            assert_eq!(err.code, "testing_flag_not_allowed", "{args:?}");
+            assert_eq!(err.param("env"), Some("NI_CLI_TESTING=1"));
+            assert!(check_testing_flags(&cli, true).is_ok());
+        }
+        // Ports and the bind address stay available (they cannot redirect
+        // anything off the machine).
+        let cli = parse(&["preflight", "--iface", "lo0", "--bootp-port", "0"]).unwrap();
+        assert!(check_testing_flags(&cli, false).is_ok());
+    }
+
+    #[test]
+    fn netmask_needs_a_server_ip() {
+        let base = ["flash", "--iface", "en7", "--version", "stable"];
+        let with = |extra: &[&'static str]| {
+            let mut v = base.to_vec();
+            v.extend_from_slice(extra);
+            parse(&v)
+        };
+        assert_eq!(
+            with(&["--netmask", "255.255.255.0"]).unwrap_err().kind(),
+            ErrorKind::MissingRequiredArgument
+        );
+        let cli = with(&["--server-ip", "192.168.88.1", "--netmask", "255.255.0.0"]).unwrap();
+        let Command::Flash(f) = cli.command else {
+            panic!()
+        };
+        assert_eq!(f.net.netmask, Some(Ipv4Addr::new(255, 255, 0, 0)));
     }
 
     #[test]

@@ -89,6 +89,7 @@ pub async fn run(cli: Cli) -> Outcome {
 pub fn engine_config(net: &NetArgs) -> EngineConfig {
     let mut cfg = EngineConfig::new(&net.iface);
     cfg.server_ip = net.server_ip;
+    cfg.netmask = net.netmask;
     cfg.pool = net.pool;
     cfg.server_mac = net.server_mac;
     let p = &mut cfg.ports;
@@ -403,6 +404,7 @@ mod tests {
         let defaults = engine_config(&NetArgs {
             iface: "en7".into(),
             server_ip: None,
+            netmask: None,
             pool: None,
             server_mac: None,
             bind_ip: None,
