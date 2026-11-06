@@ -19,8 +19,11 @@
   let working = $state(false);
 
   const inv = $derived(view?.inventory ?? null);
-  const empty = $derived(!inv || (inv.versions.length === 0 && inv.partial.length === 0 && inv.local.length === 0));
-  const allItems = $derived(inv ? [...inv.versions.flatMap((v) => v.items), ...inv.partial, ...inv.local] : []);
+  // A version without files is never shown (the backend no longer lists
+  // or keeps one; this guards against an older backend).
+  const versions = $derived(inv ? inv.versions.filter((v) => v.items.length > 0) : []);
+  const empty = $derived(!inv || (versions.length === 0 && inv.partial.length === 0 && inv.local.length === 0));
+  const allItems = $derived(inv ? [...versions.flatMap((v) => v.items), ...inv.partial, ...inv.local] : []);
   const damagedItems = $derived(allItems.filter(damaged));
 
   onMount(() => void load());
@@ -92,7 +95,7 @@
   {#if inv && !empty}
     <table>
       <tbody>
-        {#each inv.versions as v (v.version)}
+        {#each versions as v (v.version)}
           <tr class="group">
             <th colspan="2">{$t("settings.cache_version", { version: v.version })}</th>
             <td class="num">{bytes(v.size, $locale)}</td>
@@ -137,7 +140,7 @@
     <button
       type="button"
       class="small"
-      disabled={working || empty || (inv?.versions.length === 0 && inv?.partial.length === 0)}
+      disabled={working || empty || (versions.length === 0 && inv?.partial.length === 0)}
       onclick={() => ask({ scope: "all" }, $t("confirm.delete_cached_all"), inv?.total ?? 0)}
       >{$t("settings.delete_all")}</button
     >
