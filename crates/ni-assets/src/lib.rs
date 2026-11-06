@@ -4,12 +4,16 @@
 //! from `download.mikrotik.com`, verified and cached.
 
 pub mod arch;
+pub mod archive;
 pub mod kernel;
+pub mod npk;
 pub mod version;
 
 #[cfg(test)]
 mod testutil;
 
 pub use arch::{ArchError, PkgArch};
+pub use archive::ArchiveError;
 pub use kernel::{extract_kernels, KernelError, KernelSet};
+pub use npk::NpkError;
 pub use version::{Channel, Release, Version, VersionError, VersionSpec};

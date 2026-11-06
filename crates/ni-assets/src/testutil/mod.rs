@@ -3,5 +3,7 @@
 //! in the tests.
 
 mod elf;
+mod files;
 
 pub use elf::*;
+pub use files::*;
