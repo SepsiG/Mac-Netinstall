@@ -14,7 +14,7 @@
 //! `IFT_ETHER`). The UI uses it to hide interfaces that cannot boot a router.
 
 use crate::error::NetError;
-use crate::link::{hardware_addresses, known_mac};
+use crate::link::{hardware_addresses, known_mac, thunderbolt_ports};
 use ni_proto::Mac;
 use nix::ifaddrs::getifaddrs;
 use nix::net::if_::{if_nametoindex, InterfaceFlags};
@@ -106,6 +106,19 @@ pub fn classify(name: &str, link_type: Option<u8>, is_wifi: bool) -> InterfaceKi
     }
 }
 
+/// A Thunderbolt networking port (IP over Thunderbolt; System Settings
+/// calls it `Thunderbolt 1`, `Thunderbolt 2`, ... and puts it in the
+/// Thunderbolt Bridge): IOKit says so (`iokit_port`, see
+/// [`crate::link::thunderbolt_ports`]), or the display name is exactly
+/// `Thunderbolt <number>`. Ethernet adapters attached over Thunderbolt
+/// (`Thunderbolt Ethernet ...`) are not ports.
+pub fn is_thunderbolt_port(display_name: Option<&str>, iokit_port: bool) -> bool {
+    iokit_port
+        || display_name
+            .and_then(|d| d.strip_prefix("Thunderbolt "))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// SystemConfiguration's view: BSD name -> (is Wi-Fi, localized display
 /// name such as `USB 10/100/1000 LAN`).
 fn system_configuration_info() -> BTreeMap<String, (bool, String)> {
@@ -155,6 +168,9 @@ pub struct Interface {
     /// Localized name from System Settings (e.g. `USB 10/100/1000 LAN`),
     /// if SystemConfiguration knows the interface.
     pub display_name: Option<String>,
+    /// A Thunderbolt networking port, not an Ethernet adapter (see
+    /// [`is_thunderbolt_port`]); its `kind` is still `Ethernet`.
+    pub thunderbolt_port: bool,
 }
 
 /// List all interfaces, sorted by name.
@@ -174,6 +190,7 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
                 is_loopback: false,
                 kind: InterfaceKind::Other,
                 display_name: None,
+                thunderbolt_port: false,
             });
         entry.is_up |= ifa.flags.contains(InterfaceFlags::IFF_UP);
         entry.is_running |= ifa.flags.contains(InterfaceFlags::IFF_RUNNING);
@@ -199,12 +216,15 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
     let mut out: Vec<Interface> = by_name.into_values().collect();
     let sc = system_configuration_info();
     let mut hardware: Option<HashMap<String, Mac>> = None;
+    let tb_ports = thunderbolt_ports();
     for iface in &mut out {
         let (wifi, display) = match sc.get(&iface.name) {
             Some((wifi, display)) => (*wifi, Some(display.clone()).filter(|d| !d.is_empty())),
             None => (false, None),
         };
         iface.kind = classify(&iface.name, link_types.get(&iface.name).copied(), wifi);
+        iface.thunderbolt_port = iface.kind == InterfaceKind::Ethernet
+            && is_thunderbolt_port(display.as_deref(), tb_ports.contains(&iface.name));
         iface.display_name = display;
         if iface.mac.is_none() && iface.kind != InterfaceKind::WiFi {
             // Masked (or missing): the hardware address is the one in use
@@ -283,6 +303,35 @@ mod tests {
             assert_eq!(classify(name, link, wifi), kind, "{name}");
         }
         assert_eq!(InterfaceKind::AppleWireless.as_str(), "apple_wireless");
+    }
+
+    #[test]
+    fn thunderbolt_ports_by_iokit_or_display_name() {
+        let cases = [
+            (Some("Thunderbolt 1"), false, true),
+            (Some("Thunderbolt 12"), false, true),
+            (None, true, true),
+            (Some("USB 10/100/1000 LAN"), true, true),
+            // Thunderbolt-attached Ethernet adapters are real Ethernet.
+            (Some("Thunderbolt Ethernet"), false, false),
+            (Some("Thunderbolt Ethernet Slot 1"), false, false),
+            (Some("Thunderbolt Bridge"), false, false),
+            (Some("Thunderbolt "), false, false),
+            (Some("USB 10/100/1000 LAN"), false, false),
+            (None, false, false),
+        ];
+        for (display, iokit, want) in cases {
+            assert_eq!(is_thunderbolt_port(display, iokit), want, "{display:?}");
+        }
+    }
+
+    #[test]
+    fn listed_thunderbolt_ports_are_ethernet_kind() {
+        for iface in list_interfaces().unwrap() {
+            if iface.thunderbolt_port {
+                assert_eq!(iface.kind, InterfaceKind::Ethernet, "{}", iface.name);
+            }
+        }
     }
 
     #[test]
