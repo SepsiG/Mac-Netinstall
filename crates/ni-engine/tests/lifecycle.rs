@@ -6,6 +6,7 @@ mod common;
 use common::*;
 use ni_engine::{DeviceState, EngineEvent, EngineHandle, WaitReason};
 use ni_net::{bind_udp, BindOptions};
+use ni_sim::AfterFiles;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -275,6 +276,25 @@ async fn a_refused_install_is_flash_rejected() {
     };
     assert_eq!(code, "flash_rejected");
     assert_eq!(params["phase"], "offering");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_that_stops_before_the_last_file_is_flash_ended_early() {
+    let mut rig = rig(|_| {}).await;
+    let mut early = sim_config(A);
+    early.after_files = AfterFiles::EarlyWtrm;
+    let sim = boot(&rig, A, early).await;
+    rig.lan.add(sim).await;
+    let e = state(&mut rig.events, A, "failed").await;
+    let EngineEvent::Device {
+        state: DeviceState::Failed { code, params },
+        ..
+    } = e
+    else {
+        unreachable!()
+    };
+    assert_eq!(code, "flash_ended_early");
+    assert_eq!(params["remaining"], "1", "wireless was not sent");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

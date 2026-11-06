@@ -159,7 +159,7 @@ async fn real_7_25_1_smips_packages() {
     );
     let plan = ni_proto::InstallPlan {
         packages: files,
-        config_script: None,
+        ..Default::default()
     };
     assert_eq!(plan.validate(), Ok(()));
 }

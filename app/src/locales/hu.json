@@ -274,6 +274,7 @@
   "code.device_in_cooldown": "{mac}: épp most lett telepítve és újraindul; a várakozási idő letelte után lehet elfelejteni.",
   "code.duplicate_package": "Ez a csomag kétszer szerepel: {package}.",
   "code.engine_gone": "A motor váratlanul leállt. Indítsd újra a Mac Netinstallt.",
+  "code.flash_ended_early": "Az eszköz leállt, mielőtt minden fájlt megkapott volna ({remaining} fájl kimaradt): a telepítés nem teljes.",
   "code.flash_rejected": "Az eszköz elutasította a telepítést (lépés: {phase}).",
   "code.flash_timeout": "Az eszköz nem válaszol (lépés: {phase}).",
   "code.interface_down": "{interface}: a csatoló ki van kapcsolva.",

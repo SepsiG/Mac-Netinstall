@@ -274,6 +274,7 @@
   "code.device_in_cooldown": "{mac} has just been flashed and is restarting; it can be forgotten once its cooldown is over.",
   "code.duplicate_package": "The package {package} is listed twice.",
   "code.engine_gone": "The engine stopped unexpectedly. Restart Mac Netinstall.",
+  "code.flash_ended_early": "The device stopped receiving with {remaining, plural, one {# file} other {# files}} still to send: the install is incomplete.",
   "code.flash_rejected": "The device refused the install (step: {phase}).",
   "code.flash_timeout": "The device stopped answering (step: {phase}).",
   "code.interface_down": "{interface} is turned off.",

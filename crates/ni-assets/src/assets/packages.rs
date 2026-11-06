@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(files[1].data.as_ref(), wireless.as_slice());
         let plan = InstallPlan {
             packages: files.clone(),
-            config_script: None,
+            ..Default::default()
         };
         assert_eq!(plan.validate(), Ok(()));
 

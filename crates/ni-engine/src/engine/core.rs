@@ -880,7 +880,6 @@ impl Core {
     ) {
         let Some(run) = self.run.as_mut() else { return };
         let session_cfg = run.cfg.session.clone();
-        let server_mac = run.net.server_mac;
         let Some(dev) = run.devices.get_mut(&mac) else {
             return;
         };
@@ -892,7 +891,7 @@ impl Core {
             Ok((version, plan)) => {
                 let info = dev.info.clone().expect("prepared devices have said hello");
                 dev.version = Some(version.clone());
-                match ServerSession::new(server_mac, info, &plan, session_cfg, Instant::now()) {
+                match ServerSession::new(info, &plan, session_cfg, Instant::now()) {
                     Ok(session) => {
                         dev.session = Some(session);
                         dev.last_progress = None;
@@ -1367,6 +1366,9 @@ impl Core {
                     }
                     FailReason::Rejected { phase } => {
                         Failure::new("flash_rejected").with("phase", phase)
+                    }
+                    FailReason::EndedEarly { remaining } => {
+                        Failure::new("flash_ended_early").with("remaining", remaining)
                     }
                     FailReason::Cancelled => Failure::new("cancelled"),
                 };

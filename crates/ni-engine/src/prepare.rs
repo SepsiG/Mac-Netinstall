@@ -5,7 +5,7 @@ use crate::event::Failure;
 use crate::profile::{ConfigMode, Profile};
 use ni_assets::{AssetError, Assets, KernelSet, PkgArch, Version, VersionSpec};
 use ni_bootp::BootArch;
-use ni_proto::InstallPlan;
+use ni_proto::{DeviceConfig, InstallPlan};
 use ni_tftp::FileMap;
 use std::collections::HashMap;
 
@@ -70,15 +70,16 @@ pub async fn prepare(
         .ensure_packages(&version, arch, &profile.extra_packages)
         .await
         .map_err(fail)?;
-    let config_script = match &profile.config {
-        ConfigMode::Default => None,
+    let config = match &profile.config {
+        ConfigMode::Default => DeviceConfig::Default,
         ConfigMode::CustomScript { local_name } => {
-            Some(assets.local_file(local_name).await.map_err(fail)?)
+            DeviceConfig::Script(assets.local_file(local_name).await.map_err(fail)?)
         }
     };
     let plan = InstallPlan {
         packages,
-        config_script,
+        config,
+        ..InstallPlan::default()
     };
     plan.validate()
         .map_err(|e| Failure::new("invalid_plan").with("detail", e))?;
@@ -172,6 +173,7 @@ pub fn boot_maps(version: &Version, set: &KernelSet) -> (HashMap<BootArch, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     use ni_assets::testutil::{assets, mirror, tempdir, v, TestServer};
     use ni_assets::Channel;
 
@@ -218,8 +220,8 @@ mod tests {
         assert_eq!(plan.packages[0].data.as_ref(), main.as_slice());
         assert_eq!(plan.packages[1].data.as_ref(), wireless.as_slice());
         assert_eq!(
-            plan.config_script.as_deref(),
-            Some(&b"/system identity set name=x\n"[..])
+            plan.config,
+            DeviceConfig::Script(Bytes::from_static(b"/system identity set name=x\n"))
         );
     }
 

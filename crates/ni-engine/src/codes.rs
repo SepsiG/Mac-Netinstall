@@ -20,6 +20,7 @@ pub const FAILURES: &[&str] = &[
     "device_in_cooldown",
     "duplicate_package",
     "engine_gone",
+    "flash_ended_early",
     "flash_rejected",
     "flash_timeout",
     "interface_down",

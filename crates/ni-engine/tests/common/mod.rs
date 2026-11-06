@@ -44,6 +44,9 @@ pub fn fast_session() -> SessionConfig {
         optional_timeout: Duration::from_millis(150),
         max_retransmits: 2,
         chunk_delay: Duration::from_millis(1),
+        offer_retry: Duration::from_millis(50),
+        finish_polls: 5,
+        poll_interval: Duration::from_millis(10),
     }
 }
 

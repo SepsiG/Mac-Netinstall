@@ -1,13 +1,12 @@
 use bytes::Bytes;
 use ni_proto::{
-    message, Event, FailReason, Frame, InstallPlan, Mac, Phase, PlanError, PlanFile, ServerSession,
-    SessionConfig, MAX_CHUNK,
+    message, AfterInstall, DeviceConfig, Event, FailReason, Frame, InstallPlan, Mac, Offer, Phase,
+    PlanError, PlanFile, ServerSession, SessionConfig, MAX_CHUNK,
 };
 use ni_sim::harness::{discover, pump, pump_with, Direction};
-use ni_sim::{DeviceSim, ReceivedFile, SimConfig};
+use ni_sim::{AfterFiles, DeviceSim, ReceivedFile, SimConfig};
 use std::time::{Duration, Instant};
 
-const SERVER: Mac = Mac([0x02, 0, 0, 0, 0, 0x01]);
 const DEVICE: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x01]);
 
 /// Deterministic test data without short periods (so duplicated or swapped
@@ -33,7 +32,7 @@ fn setup(sim_cfg: SimConfig, plan: &InstallPlan) -> (ServerSession, DeviceSim, I
     let mut sim = DeviceSim::new(sim_cfg, now);
     let info = discover(&mut sim, now);
     assert_eq!(info.mac, DEVICE);
-    let server = ServerSession::new(SERVER, info, plan, SessionConfig::default(), now).unwrap();
+    let server = ServerSession::new(info, plan, SessionConfig::default(), now).unwrap();
     (server, sim, now)
 }
 
@@ -51,7 +50,7 @@ fn one_package(data: Bytes) -> InstallPlan {
             name: "routeros.npk".into(),
             data,
         }],
-        config_script: None,
+        ..InstallPlan::default()
     }
 }
 
@@ -66,7 +65,8 @@ fn installs_package_and_config_script() {
             name: "routeros-7.16-mmips.npk".into(),
             data: npk(3000, 1),
         }],
-        config_script: Some(Bytes::from_static(b"/system identity set name=lab\n")),
+        config: DeviceConfig::Script(Bytes::from_static(b"/system identity set name=lab\n")),
+        ..InstallPlan::default()
     };
     let (mut server, mut sim, now) = setup(SimConfig::new(DEVICE, "hEX", "mmips"), &plan);
 
@@ -146,7 +146,7 @@ fn installs_multiple_packages_including_empty_and_exact_chunk_sizes() {
                 data: Bytes::new(),
             },
         ],
-        config_script: None,
+        ..InstallPlan::default()
     };
     let (mut server, mut sim, now) = setup(SimConfig::new(DEVICE, "hAP ax2", "arm64"), &plan);
 
@@ -178,7 +178,7 @@ fn recovers_from_lost_device_replies() {
             name: "routeros.npk".into(),
             data: npk(5000, 4),
         }],
-        config_script: None,
+        ..InstallPlan::default()
     };
     let (mut server, mut sim, now) = setup(SimConfig::new(DEVICE, "RB951", "mipsbe"), &plan);
     let mut to_server = 0;
@@ -212,7 +212,7 @@ fn recovers_from_lost_server_frames() {
             name: "routeros.npk".into(),
             data: npk(5000, 5),
         }],
-        config_script: None,
+        ..InstallPlan::default()
     };
     let (mut server, mut sim, now) = setup(SimConfig::new(DEVICE, "RB951", "mipsbe"), &plan);
     let mut to_device = 0;
@@ -224,7 +224,7 @@ fn recovers_from_lost_server_frames() {
         now,
         Duration::from_secs(300),
         |dir, f| {
-            if dir == Direction::ToDevice && &f.payload[..] != message::TERM {
+            if dir == Direction::ToDevice && message::parse_term(&f.payload).is_none() {
                 to_device += 1;
                 to_device % 4 != 0
             } else {
@@ -246,7 +246,7 @@ fn file_header_without_reply_is_tolerated() {
             name: "routeros.npk".into(),
             data: npk(100, 6),
         }],
-        config_script: None,
+        ..InstallPlan::default()
     };
     let mut cfg = SimConfig::new(DEVICE, "RB951", "mipsbe");
     cfg.resend_interval = Duration::from_secs(3600); // no device-side resends
@@ -281,7 +281,7 @@ fn silent_device_fails_with_timeout_in_offering() {
             name: "routeros.npk".into(),
             data: npk(10, 7),
         }],
-        config_script: None,
+        ..InstallPlan::default()
     };
     let (mut server, mut sim, now) = setup(SimConfig::new(DEVICE, "RB951", "mipsbe"), &plan);
 
@@ -302,16 +302,16 @@ fn silent_device_fails_with_timeout_in_offering() {
     assert!(!ev.contains(&Event::PhaseChanged(Phase::Failed)));
 }
 
-/// Classify a server → device frame for the golden transcript.
+/// Classify a server → device frame for the transcript.
 fn kind(payload: &[u8]) -> String {
-    if payload == message::OFFR {
-        "OFFR".into()
+    if let Some(o) = message::parse_offer(payload) {
+        format!("OFFR keep={}", o.keep_config)
     } else if payload.is_empty() {
         "EMPTY".into()
     } else if payload == message::FILE_END {
         "FILE_END".into()
-    } else if payload == message::TERM {
-        "TERM".into()
+    } else if let Some(after) = message::parse_term(payload) {
+        format!("TERM {after:?}")
     } else if let Some((name, size)) = message::parse_file_header(payload) {
         format!("FILE {name} {size}")
     } else {
@@ -320,7 +320,7 @@ fn kind(payload: &[u8]) -> String {
 }
 
 #[test]
-fn golden_transcript_matches_pynetinstall() {
+fn transcript_follows_the_official_flow() {
     let script = Bytes::from_static(b"/system identity set name=gold\n");
     let plan = InstallPlan {
         packages: vec![
@@ -333,7 +333,8 @@ fn golden_transcript_matches_pynetinstall() {
                 data: pattern(10, 11),
             },
         ],
-        config_script: Some(script.clone()),
+        config: DeviceConfig::Script(script.clone()),
+        ..InstallPlan::default()
     };
     let (mut server, mut sim, now) = setup(SimConfig::new(DEVICE, "hEX", "mmips"), &plan);
     let mut sent: Vec<(String, u16, u16)> = Vec::new();
@@ -351,12 +352,11 @@ fn golden_transcript_matches_pynetinstall() {
         },
     );
 
-    // Derived from pyNetinstall Flasher.run / do_files / do_file:
-    // OFFR, format, spacer; per npk: header, chunks, spacer; script: header,
-    // chunks; final empty; FILE\n; TERM. The k-th frame has seq k, ack k-1.
+    // OFFR, format, prepare; per file: header, chunks, poll; one more poll
+    // (answered WTRM); TERM. The k-th frame has seq k, ack k - 2.
     let script_len = script.len();
     let expected: Vec<(String, u16, u16)> = [
-        "OFFR".to_string(),
+        "OFFR keep=false".to_string(),
         "EMPTY".into(),
         "EMPTY".into(),
         "FILE routeros.npk 1500".into(),
@@ -369,16 +369,168 @@ fn golden_transcript_matches_pynetinstall() {
         format!("FILE autorun.scr {script_len}"),
         format!("CHUNK {script_len}"),
         "EMPTY".into(),
-        "FILE_END".into(),
-        "TERM".into(),
+        "EMPTY".into(),
+        "TERM Reboot".into(),
     ]
     .into_iter()
     .zip(1u16..)
-    .map(|(k, seq)| (k, seq, seq - 1))
+    .map(|(k, seq)| (k, seq, seq.saturating_sub(2)))
     .collect();
     assert_eq!(sent, expected);
     assert_eq!(events(&mut server).last(), Some(&Event::Done));
     assert!(sim.is_terminated());
+    assert_no_violations(&sim);
+}
+
+#[test]
+fn every_configuration_reaches_the_device() {
+    let script = Bytes::from_static(b"/system identity set name=s\n");
+    let mode = Bytes::from_static(b":log info mode\n");
+    /// Configuration, mode script, files after the package.
+    type Case = (DeviceConfig, Option<Bytes>, Vec<(&'static str, usize)>);
+    let cases: Vec<Case> = vec![
+        (DeviceConfig::Keep, None, vec![]),
+        (DeviceConfig::Default, None, vec![]),
+        (
+            DeviceConfig::Default,
+            Some(mode.clone()),
+            vec![("mode.scr", 15)],
+        ),
+        (DeviceConfig::Empty, None, vec![("autorun.scr", 0)]),
+        (
+            DeviceConfig::Empty,
+            Some(mode.clone()),
+            vec![("mode.scr", 15), ("autorun.scr", 0)],
+        ),
+        (
+            DeviceConfig::Script(script.clone()),
+            Some(mode.clone()),
+            vec![("autorun.scr", 28), ("mode.scr", 15)],
+        ),
+    ];
+    for (config, mode_script, extra) in cases {
+        let keep = config == DeviceConfig::Keep;
+        let plan = InstallPlan {
+            packages: vec![PlanFile {
+                name: "routeros.npk".into(),
+                data: npk(1100, 20),
+            }],
+            config: config.clone(),
+            mode_script,
+            remove_branding: true,
+            license_key: "KEY-1".into(),
+            after_install: AfterInstall::Shutdown,
+        };
+        let (mut server, mut sim, now) = setup(SimConfig::new(DEVICE, "hEX", "mmips"), &plan);
+        pump(
+            &mut server,
+            &mut sim,
+            now,
+            Duration::from_secs(60),
+            |_, _| true,
+        );
+        assert_eq!(events(&mut server).last(), Some(&Event::Done), "{config:?}");
+        assert_no_violations(&sim);
+        let mut want = vec![("routeros.npk", 1100)];
+        want.extend(extra);
+        let got: Vec<(&str, usize)> = sim
+            .received_files()
+            .iter()
+            .map(|f| (f.name.as_str(), f.data.len()))
+            .collect();
+        assert_eq!(got, want, "{config:?}");
+        assert_eq!(
+            sim.offer(),
+            Some(&Offer {
+                license_key: "KEY-1".into(),
+                keep_config: keep,
+                remove_branding: true
+            })
+        );
+        assert_eq!(sim.after_install(), Some(AfterInstall::Shutdown));
+    }
+}
+
+#[test]
+fn a_pynetinstall_era_device_finishes_through_the_file_end_fallback() {
+    for after in [AfterFiles::PyNetinstall, AfterFiles::NeverWtrm] {
+        let mut sim_cfg = SimConfig::new(DEVICE, "hEX", "mmips");
+        sim_cfg.after_files = after;
+        let plan = one_package(npk(2000, 21));
+        let (mut server, mut sim, now) = setup(sim_cfg, &plan);
+        let mut sent = Vec::new();
+        let end = pump(
+            &mut server,
+            &mut sim,
+            now,
+            Duration::from_secs(60),
+            |dir, f| {
+                if dir == Direction::ToDevice {
+                    sent.push(kind(&f.payload));
+                }
+                true
+            },
+        );
+        assert_eq!(events(&mut server).last(), Some(&Event::Done), "{after:?}");
+        assert!(sim.is_terminated());
+        assert_no_violations(&sim);
+        let cfg = SessionConfig::default();
+        let polls = sent.iter().skip(5).filter(|k| *k == "EMPTY").count();
+        assert_eq!(polls, cfg.finish_polls as usize, "{after:?}");
+        assert_eq!(sent[sent.len() - 2..], ["FILE_END", "TERM Reboot"]);
+        // The polls were paced: the fallback costs finish_polls - 1 intervals.
+        assert!(end.now >= now + cfg.poll_interval * (cfg.finish_polls - 1));
+    }
+}
+
+#[test]
+fn a_device_that_stops_early_fails_loudly() {
+    let mut sim_cfg = SimConfig::new(DEVICE, "hEX", "mmips");
+    sim_cfg.after_files = AfterFiles::EarlyWtrm;
+    let mut plan = one_package(npk(2000, 22));
+    plan.config = DeviceConfig::Script(Bytes::from_static(b"/x\n"));
+    let (mut server, mut sim, now) = setup(sim_cfg, &plan);
+    pump(
+        &mut server,
+        &mut sim,
+        now,
+        Duration::from_secs(60),
+        |_, _| true,
+    );
+    assert_eq!(
+        events(&mut server).last(),
+        Some(&Event::Failed(FailReason::EndedEarly { remaining: 1 }))
+    );
+    assert!(!sim.is_terminated(), "no TERM after a failure");
+}
+
+#[test]
+fn a_refused_offer_is_repeated_then_rejected() {
+    let mut sim_cfg = SimConfig::new(DEVICE, "hEX", "mmips");
+    sim_cfg.reject_offer = true;
+    let plan = one_package(npk(100, 23));
+    let (mut server, mut sim, now) = setup(sim_cfg, &plan);
+    let mut offers = 0;
+    let end = pump(
+        &mut server,
+        &mut sim,
+        now,
+        Duration::from_secs(60),
+        |dir, f| {
+            if dir == Direction::ToDevice {
+                assert_eq!((f.seq, f.ack), (1, 0));
+                offers += 1;
+            }
+            true
+        },
+    );
+    let cfg = SessionConfig::default();
+    assert_eq!(offers, 1 + cfg.max_retransmits);
+    assert!(end.now >= now + cfg.offer_retry * cfg.max_retransmits);
+    assert_eq!(
+        events(&mut server).last(),
+        Some(&Event::Failed(FailReason::Rejected { phase: "offering" }))
+    );
     assert_no_violations(&sim);
 }
 
@@ -403,66 +555,6 @@ fn slow_format_within_format_timeout_succeeds() {
     assert_eq!(events(&mut server).last(), Some(&Event::Done));
     assert!(end.now >= now + delay, "the format delay really elapsed");
     assert_eq!(sim.received_files()[0].data, npk(2000, 12).to_vec());
-    assert!(sim.is_terminated());
-    assert_no_violations(&sim);
-}
-
-#[test]
-fn single_final_retr_completes_via_device_resend() {
-    let mut sim_cfg = SimConfig::new(DEVICE, "hAP", "mipsbe");
-    sim_cfg.double_final_retr = false;
-    let resend = sim_cfg.resend_interval;
-    let plan = InstallPlan {
-        packages: vec![PlanFile {
-            name: "routeros.npk".into(),
-            data: npk(1500, 13),
-        }],
-        config_script: Some(Bytes::from_static(b":log info hi\n")),
-    };
-    let (mut server, mut sim, now) = setup(sim_cfg, &plan);
-
-    let end = pump(
-        &mut server,
-        &mut sim,
-        now,
-        Duration::from_secs(60),
-        |_, _| true,
-    );
-
-    assert_eq!(events(&mut server).last(), Some(&Event::Done));
-    // One device re-send interval per file was needed for the second reply.
-    assert!(end.now >= now + resend * 2);
-    assert_eq!(sim.received_files().len(), 2);
-    assert!(sim.is_terminated());
-    assert_no_violations(&sim);
-}
-
-#[test]
-fn single_final_retr_without_device_resends_completes_via_retransmit() {
-    let mut sim_cfg = SimConfig::new(DEVICE, "hAP", "mipsbe");
-    sim_cfg.double_final_retr = false;
-    // The device never re-sends on its own; our retransmit of the last chunk
-    // draws its (de-duplicated) second reply.
-    sim_cfg.resend_interval = Duration::from_secs(3600);
-    let plan = InstallPlan {
-        packages: vec![PlanFile {
-            name: "routeros.npk".into(),
-            data: npk(1500, 18),
-        }],
-        config_script: Some(Bytes::from_static(b":log info hi\n")),
-    };
-    let (mut server, mut sim, now) = setup(sim_cfg, &plan);
-
-    pump(
-        &mut server,
-        &mut sim,
-        now,
-        Duration::from_secs(300),
-        |_, _| true,
-    );
-
-    assert_eq!(events(&mut server).last(), Some(&Event::Done));
-    assert_eq!(sim.received_files()[0].data, npk(1500, 18).to_vec());
     assert!(sim.is_terminated());
     assert_no_violations(&sim);
 }
@@ -516,7 +608,8 @@ fn frames_from_other_macs_are_ignored() {
             name: "routeros.npk".into(),
             data: npk(2500, 15),
         }],
-        config_script: Some(Bytes::from_static(b"/x\n")),
+        config: DeviceConfig::Script(Bytes::from_static(b"/x\n")),
+        ..InstallPlan::default()
     };
     let (mut server, mut sim, now) = setup(SimConfig::new(DEVICE, "hEX", "mmips"), &plan);
     let mut other = DeviceSim::new(SimConfig::new(OTHER, "hEX", "mmips"), now);
@@ -535,7 +628,7 @@ fn frames_from_other_macs_are_ignored() {
                 injected += 1;
                 // A second device's hello, and a reply from it with matching
                 // seq/ack that would abort the session if it were accepted.
-                let spoof = Frame::new(OTHER, SERVER, f.seq, f.ack, message::NACK);
+                let spoof = Frame::new(OTHER, Mac::ZERO, f.seq, f.ack, message::NACK);
                 vec![other_hello.clone(), spoof, f]
             }
         },
@@ -579,7 +672,7 @@ fn invalid_plans_are_rejected_before_anything_is_sent() {
     let mut sim = DeviceSim::new(SimConfig::new(DEVICE, "hEX", "mmips"), now);
     let info = discover(&mut sim, now);
     let new = |plan: &InstallPlan| {
-        ServerSession::new(SERVER, info.clone(), plan, SessionConfig::default(), now).err()
+        ServerSession::new(info.clone(), plan, SessionConfig::default(), now).err()
     };
     assert_eq!(new(&InstallPlan::default()), Some(PlanError::NoPackages));
     assert_eq!(

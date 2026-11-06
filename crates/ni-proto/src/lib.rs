@@ -15,5 +15,6 @@ pub use device_info::{DeviceInfo, HELLO_TAG};
 pub use frame::{DecodeError, Frame, Mac, ParseMacError, HEADER_LEN, MAX_CHUNK, PORT};
 pub use message::{AfterInstall, Offer};
 pub use session::{
-    Event, FailReason, InstallPlan, Phase, PlanError, PlanFile, ServerSession, SessionConfig,
+    DeviceConfig, Event, FailReason, InstallPlan, Phase, PlanError, PlanFile, ServerSession,
+    SessionConfig, MAX_FINISH_POLLS,
 };

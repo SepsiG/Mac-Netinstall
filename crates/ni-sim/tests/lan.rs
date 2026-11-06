@@ -2,7 +2,7 @@
 //! Run with `cargo test -p ni-sim --features lan`.
 #![cfg(feature = "lan")]
 
-use ni_proto::{message, DeviceInfo, Frame, Mac};
+use ni_proto::{message, DeviceInfo, Frame, Mac, Offer};
 use ni_sim::lan::{bootp_request, parse_boot_reply, BootReply, SimLan};
 use ni_sim::{DeviceSim, SimConfig};
 use std::net::Ipv4Addr;
@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
 const MAC: Mac = Mac([0x48, 0xa9, 0x8a, 1, 2, 3]);
-const SERVER: Mac = Mac([2, 0, 0, 0, 0, 1]);
 
 #[test]
 fn bootp_request_and_reply_layout() {
@@ -61,7 +60,7 @@ async fn devices_say_hello_and_mute_drops_replies() {
     assert_eq!(DeviceInfo::parse(&hello).unwrap().model, "hEX");
 
     // An offer is answered with YACK...
-    let offer = Frame::new(SERVER, MAC, 1, 0, message::OFFR.to_vec());
+    let offer = Frame::new(Mac::BROADCAST, MAC, 1, 0, message::offer(&Offer::default()));
     server
         .send_to(&offer.encode(), lan.netinstall_addr())
         .await
