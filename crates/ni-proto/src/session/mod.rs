@@ -11,8 +11,8 @@
 //! 1. `OFFR` → any reply (normally `YACK`)
 //! 2. empty → any reply (`STRT`, device formatted; long timeout)
 //! 3. empty → any reply (`RETR`)
-//! 4. per package: `FILE` header (reply optional) → chunks (last chunk
-//!    must be answered with `RETR`) → empty spacer
+//! 4. per package: `FILE` header (reply optional) → chunks (one reply each;
+//!    the last chunk needs a second reply, which must be `RETR`) → empty spacer
 //! 5. optional config script as `autorun.scr` (same as a package, no spacer)
 //! 6. empty → any reply
 //! 7. `FILE\n` → any reply (`WTRM`)
@@ -201,6 +201,9 @@ enum Wait {
     Reply {
         deadline: Instant,
         retries_left: u32,
+        /// State-matched replies received for the current transmission
+        /// (only counted for [`Expect::SecondIs`]; reset on retransmit).
+        replies: u8,
     },
     Finished,
 }
@@ -281,6 +284,7 @@ impl ServerSession {
             self.wait = Wait::Reply {
                 deadline: now + timeout,
                 retries_left,
+                replies: 0,
             };
             return Some(frame);
         }
@@ -303,6 +307,7 @@ impl ServerSession {
             self.wait = Wait::Reply {
                 deadline: now + self.timeout(step.timeout),
                 retries_left: self.cfg.max_retransmits,
+                replies: 0,
             };
         }
         Some(frame)
@@ -310,9 +315,9 @@ impl ServerSession {
 
     /// Feed a frame received on the wire. Unrelated frames are ignored.
     pub fn handle_frame(&mut self, frame: &Frame, now: Instant) {
-        if !matches!(self.wait, Wait::Reply { .. }) {
+        let Wait::Reply { replies, .. } = &mut self.wait else {
             return;
-        }
+        };
         if frame.src != self.device.mac || frame.seq != self.seq || frame.ack != self.seq {
             return;
         }
@@ -323,7 +328,11 @@ impl ServerSession {
             return;
         }
         let step = &self.steps[self.idx];
-        if let Expect::Payload(expected) = step.expect {
+        if let Expect::SecondIs(expected) = step.expect {
+            if *replies == 0 {
+                *replies = 1;
+                return;
+            }
             if frame.payload.as_ref() != expected {
                 return;
             }
@@ -347,6 +356,7 @@ impl ServerSession {
         let Wait::Reply {
             deadline,
             retries_left,
+            ..
         } = self.wait
         else {
             return;
@@ -646,6 +656,52 @@ mod tests {
             events.last(),
             Some(&Event::Failed(FailReason::Rejected { phase: "offering" }))
         );
+    }
+
+    /// Drive `s` (built from [`plan`]) until the single chunk has been sent.
+    fn send_until_last_chunk(s: &mut ServerSession, now: Instant) {
+        for (seq, answer) in [
+            (1, message::YACK),
+            (2, message::STRT),
+            (3, message::RETR),
+            (4, message::RETR),
+        ] {
+            let f = s.poll_transmit(now).unwrap();
+            assert_eq!(f.seq, seq);
+            s.handle_frame(&reply(seq, answer), now);
+        }
+        let chunk = s.poll_transmit(now).unwrap();
+        assert_eq!((chunk.seq, chunk.payload.len()), (5, 10));
+    }
+
+    #[test]
+    fn last_chunk_needs_a_second_reply_that_is_retr() {
+        let now = Instant::now();
+        let mut s = session(&plan(), now);
+        send_until_last_chunk(&mut s, now);
+
+        // First state-matched reply: any payload.
+        s.handle_frame(&reply(5, b"WHAT"), now);
+        assert_eq!(s.poll_transmit(now), None, "one reply is not enough");
+        // Later non-RETR replies are ignored.
+        s.handle_frame(&reply(5, b"STRT"), now);
+        assert_eq!(s.poll_transmit(now), None);
+        // The second reply must be exactly RETR.
+        s.handle_frame(&reply(5, message::RETR), now);
+        let spacer = s.poll_transmit(now).expect("spacer after the file");
+        assert_eq!(spacer.seq, 6);
+        assert!(spacer.payload.is_empty());
+    }
+
+    #[test]
+    fn last_chunk_completes_with_two_retr() {
+        let now = Instant::now();
+        let mut s = session(&plan(), now);
+        send_until_last_chunk(&mut s, now);
+        s.handle_frame(&reply(5, message::RETR), now);
+        assert_eq!(s.poll_transmit(now), None);
+        s.handle_frame(&reply(5, message::RETR), now);
+        assert_eq!(s.poll_transmit(now).map(|f| f.seq), Some(6));
     }
 
     #[test]

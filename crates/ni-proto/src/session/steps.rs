@@ -13,8 +13,12 @@ pub(super) enum Expect {
     Any,
     /// Like `Any`, but once retransmits are exhausted the session moves on.
     Optional,
-    /// Only a reply with exactly this payload.
-    Payload(&'static [u8]),
+    /// Two state-matched replies: the first with any payload, the second
+    /// exactly this one (later mismatching replies are ignored). Mirrors
+    /// pyNetinstall `do_file`, which reads twice after the last chunk and
+    /// requires the second read to be `RETR`. Real devices periodically
+    /// re-send their last reply, so waiting for a second one cannot deadlock.
+    SecondIs(&'static [u8]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +146,7 @@ fn push_file(steps: &mut Vec<Step>, name: &str, data: &Bytes) {
             phase: phase.clone(),
             payload: chunk,
             expect: if is_last {
-                Expect::Payload(message::RETR)
+                Expect::SecondIs(message::RETR)
             } else {
                 Expect::Any
             },
