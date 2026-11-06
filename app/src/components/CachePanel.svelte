@@ -25,9 +25,9 @@
 
   onMount(() => void load());
 
-  async function load() {
+  async function load(verify = false) {
     try {
-      view = await backend.cacheInventory();
+      view = await backend.cacheInventory(verify);
     } catch (e) {
       error = toFailure(e);
     }
@@ -140,6 +140,16 @@
       disabled={working || empty || (inv?.versions.length === 0 && inv?.partial.length === 0)}
       onclick={() => ask({ scope: "all" }, $t("confirm.delete_cached_all"), inv?.total ?? 0)}
       >{$t("settings.delete_all")}</button
+    >
+    <button
+      type="button"
+      class="small"
+      disabled={working || empty}
+      onclick={async () => {
+        working = true;
+        await load(true);
+        working = false;
+      }}>{$t("settings.verify_cache")}</button
     >
     {#if freed !== null}<span class="ok-text">{$t("settings.cache_freed", { size: bytes(freed, $locale) })}</span>{/if}
   </div>

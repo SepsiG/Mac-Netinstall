@@ -141,8 +141,8 @@ pub async fn set_settings(core: State<'_, AppCore>, settings: Settings) -> R<Set
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn cache_inventory(core: State<'_, AppCore>) -> R<CacheView> {
-    core.cache_inventory().await
+pub async fn cache_inventory(core: State<'_, AppCore>, verify: bool) -> R<CacheView> {
+    core.cache_inventory(verify).await
 }
 
 /// `scope`: `{"scope": "item", "id": ...}`, `{"scope": "version",

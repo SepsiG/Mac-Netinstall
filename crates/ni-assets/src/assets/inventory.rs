@@ -2,8 +2,10 @@
 //!
 //! [`Assets::cached_inventory`] lists every version directory (its boot
 //! kernels as one item, each package, anything else in its index), part
-//! files left by interrupted downloads, and registered local files, each
-//! re-checked against its index entry. Items are named by path-free ids
+//! files left by interrupted downloads, and registered local files. It is
+//! quick: sizes are compared with the index, and SHA-256 results of files
+//! verified before (same size and modification time) are reused; other
+//! files are `unchecked`. [`Assets::verify_cache`] hashes every file. Items are named by path-free ids
 //! (`<version>/kernels`, `<version>/<file>`, `local/<file>`,
 //! `partial/<dir>/<file>`), so no file system path reaches a UI.
 //!
@@ -14,13 +16,36 @@
 //! of the cache root (a symlink is only unlinked).
 
 use super::{blocking, part_target, Assets, LOCAL_DIR};
-use crate::cache::{CacheDir, Index, Lookup, INDEX_FILE, LOCK_DIR, PART_SUFFIX};
+use crate::cache::{CacheDir, Index, Lookup, DIR_LOCK, INDEX_FILE, LOCK_DIR, PART_SUFFIX};
 use crate::error::AssetError;
 use crate::lock::{self, FileLock};
 use crate::urls;
 use crate::version::Version;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+
+/// A remembered SHA-256 check of one file.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Check {
+    size: u64,
+    modified: SystemTime,
+    valid: bool,
+}
+
+/// Checks by file path, shared by one [`Assets`].
+pub(crate) type Checks = Arc<Mutex<HashMap<PathBuf, Check>>>;
+
+/// Files hashed by inventories (tests count them).
+static HASHES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+fn hashes() -> u64 {
+    HASHES.load(Ordering::Relaxed)
+}
 
 /// How a cached file checks out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +56,9 @@ pub enum Integrity {
     /// Matches its index entry; nothing was published to compare with
     /// (size and package header were checked when it was stored).
     Unpublished,
+    /// The size matches; the SHA-256 was not checked yet (see
+    /// [`Assets::verify_cache`]).
+    Unchecked,
     /// Size or SHA-256 differs from the index entry: damaged or truncated.
     Corrupt,
     /// In the index, but the file is gone (or a kernel set is incomplete).
@@ -53,9 +81,10 @@ impl Integrity {
         let rank = |i: Integrity| match i {
             Integrity::Verified => 0,
             Integrity::Unpublished => 1,
-            Integrity::Partial => 2,
-            Integrity::Missing => 3,
-            Integrity::Corrupt => 4,
+            Integrity::Unchecked => 2,
+            Integrity::Partial => 3,
+            Integrity::Missing => 4,
+            Integrity::Corrupt => 5,
         };
         if rank(other) > rank(self) {
             other
@@ -157,16 +186,71 @@ fn file_size(path: &Path) -> u64 {
     std::fs::symlink_metadata(path).map_or(0, |m| if m.is_file() { m.len() } else { 0 })
 }
 
-fn integrity(dir: &CacheDir, index: &Index, name: &str) -> Integrity {
-    match dir.lookup(index, name) {
-        Lookup::Valid(_) if index.files[name].published_checksum => Integrity::Verified,
-        Lookup::Valid(_) => Integrity::Unpublished,
-        Lookup::Missing => Integrity::Missing,
-        Lookup::Corrupt => Integrity::Corrupt,
+/// How `name` of `dir` checks out against its index entry: sizes always;
+/// SHA-256 when `verify` (remembered in `checks`), else a remembered
+/// result for an unchanged file, else `Unchecked`.
+fn integrity(
+    checks: &Checks,
+    verify: bool,
+    dir: &CacheDir,
+    index: &Index,
+    name: &str,
+) -> Integrity {
+    let Some(entry) = index.files.get(name) else {
+        return Integrity::Missing;
+    };
+    let path = dir.path(name);
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        return Integrity::Missing;
+    };
+    if !meta.is_file() {
+        return Integrity::Missing;
+    }
+    if meta.len() != entry.size {
+        return Integrity::Corrupt;
+    }
+    let good = if entry.published_checksum {
+        Integrity::Verified
+    } else {
+        Integrity::Unpublished
+    };
+    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut memo = checks.lock().unwrap_or_else(|e| e.into_inner());
+    if !verify {
+        return match memo.get(&path) {
+            Some(c) if c.size == entry.size && c.modified == modified => {
+                if c.valid {
+                    good
+                } else {
+                    Integrity::Corrupt
+                }
+            }
+            _ => Integrity::Unchecked,
+        };
+    }
+    HASHES.fetch_add(1, Ordering::Relaxed);
+    let valid = matches!(dir.lookup(index, name), Lookup::Valid(_));
+    memo.insert(
+        path,
+        Check {
+            size: entry.size,
+            modified,
+            valid,
+        },
+    );
+    if valid {
+        good
+    } else {
+        Integrity::Corrupt
     }
 }
 
-fn version_inventory(root: &Path, version: &Version) -> CachedVersion {
+fn version_inventory(
+    root: &Path,
+    version: &Version,
+    checks: &Checks,
+    verify: bool,
+) -> CachedVersion {
     let v = version.as_str();
     let dir = CacheDir::new(root.join(v));
     let index = dir.load();
@@ -176,7 +260,7 @@ fn version_inventory(root: &Path, version: &Version) -> CachedVersion {
         let mut status = Integrity::Verified;
         let mut size = 0;
         for name in &kernels {
-            status = status.worst(integrity(&dir, &index, name));
+            status = status.worst(integrity(checks, verify, &dir, &index, name));
             size += file_size(&dir.path(name));
         }
         items.push(CachedItem {
@@ -200,7 +284,7 @@ fn version_inventory(root: &Path, version: &Version) -> CachedVersion {
             name: name.clone(),
             arch,
             size: file_size(&dir.path(name)),
-            integrity: integrity(&dir, &index, name),
+            integrity: integrity(checks, verify, &dir, &index, name),
             files: 1,
         });
     }
@@ -225,7 +309,7 @@ fn subdirs(root: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-fn inventory(root: &Path) -> Inventory {
+fn inventory(root: &Path, checks: &Checks, verify: bool) -> Inventory {
     let mut inv = Inventory::default();
     let mut versions: Vec<Version> = subdirs(root)
         .iter()
@@ -233,7 +317,8 @@ fn inventory(root: &Path) -> Inventory {
         .collect();
     versions.sort();
     for v in &versions {
-        inv.versions.push(version_inventory(root, v));
+        inv.versions
+            .push(version_inventory(root, v, checks, verify));
     }
     for (dir_name, path) in subdirs(root) {
         for entry in std::fs::read_dir(&path).into_iter().flatten().flatten() {
@@ -263,7 +348,7 @@ fn inventory(root: &Path) -> Inventory {
             name: name.clone(),
             arch: None,
             size: file_size(&local.path(name)),
-            integrity: integrity(&local, &index, name),
+            integrity: integrity(checks, verify, &local, &index, name),
             files: 1,
         });
     }
@@ -376,12 +461,15 @@ fn delete_version(root: &Path, version: &Version) -> Result<u64, AssetError> {
     }
     let dir = CacheDir::new(path.clone());
     let index = dir.load();
-    let mut held = vec![try_hold(&dir, &urls::tarball_name(version), id)?];
+    // Every download into the directory holds this shared: a download
+    // running (or starting) now makes this `busy`, never half-deleted.
+    let mut held = vec![try_hold(&dir, DIR_LOCK, id)?];
+    held.push(try_hold(&dir, &urls::tarball_name(version), id)?);
     for name in index.files.keys().filter(|n| !is_kernel(n)) {
         held.push(try_hold(&dir, name, id)?);
     }
     let _index_lock = try_hold(&dir, INDEX_FILE, id)?;
-    let size = version_inventory(root, version).size;
+    let size = version_inventory(root, version, &Checks::default(), false).size;
     std::fs::remove_dir_all(&path).map_err(AssetError::io("remove", &path))?;
     drop(held);
     Ok(size)
@@ -439,10 +527,17 @@ pub fn item_version(id: &str) -> Option<Version> {
 }
 
 impl Assets {
-    /// Everything in the cache, re-checked (reads every file once).
+    /// Everything in the cache, quickly (see the module docs).
     pub async fn cached_inventory(&self) -> Result<Inventory, AssetError> {
-        let root = self.root.clone();
-        blocking(move || inventory(&root)).await
+        let (root, checks) = (self.root.clone(), self.checks.clone());
+        blocking(move || inventory(&root, &checks, false)).await
+    }
+
+    /// Everything in the cache, every file's SHA-256 checked against its
+    /// index entry (and remembered for later listings).
+    pub async fn verify_cache(&self) -> Result<Inventory, AssetError> {
+        let (root, checks) = (self.root.clone(), self.checks.clone());
+        blocking(move || inventory(&root, &checks, true)).await
     }
 
     /// Delete `scope`; returns the bytes freed. Errors: `invalid_item`
@@ -450,7 +545,7 @@ impl Assets {
     /// right now), `io`. With several targets, the ones before an error
     /// are deleted.
     pub async fn delete_cached(&self, scope: DeleteScope) -> Result<u64, AssetError> {
-        let root = self.root.clone();
+        let (root, checks) = (self.root.clone(), self.checks.clone());
         blocking(move || -> Result<u64, AssetError> {
             match scope {
                 DeleteScope::Item { id } => delete_item(&root, &id),
@@ -459,7 +554,7 @@ impl Assets {
                     delete_version(&root, &v)
                 }
                 DeleteScope::All => {
-                    let inv = inventory(&root);
+                    let inv = inventory(&root, &checks, false);
                     let mut freed = 0;
                     for v in &inv.versions {
                         let version =
@@ -472,7 +567,7 @@ impl Assets {
                     Ok(freed)
                 }
                 DeleteScope::Damaged => {
-                    let inv = inventory(&root);
+                    let inv = inventory(&root, &checks, false);
                     let mut freed = 0;
                     for item in inv.items().filter(|i| i.integrity.damaged()) {
                         freed += delete_item(&root, &item.id)?;
@@ -512,7 +607,7 @@ mod tests {
     #[tokio::test]
     async fn the_inventory_lists_kernels_packages_and_their_state() {
         let (_srv, root, a) = filled("inv-list").await;
-        let inv = a.cached_inventory().await.unwrap();
+        let inv = a.verify_cache().await.unwrap();
         assert_eq!(inv.versions.len(), 1);
         let ver = &inv.versions[0];
         assert_eq!(ver.version, "7.25.1");
@@ -548,7 +643,15 @@ mod tests {
         std::fs::remove_file(dir.join("kernel-arm64.elf")).unwrap();
         // A leftover part file.
         std::fs::write(dir.join("container-7.25.1-arm64.npk.999.0.part"), b"xx").unwrap();
-        let inv = a.cached_inventory().await.unwrap();
+        // A quick listing sees the size change and the missing file...
+        let quick = a.cached_inventory().await.unwrap();
+        assert_eq!(
+            item(&quick, "7.25.1/routeros-7.25.1-arm64.npk").integrity,
+            Integrity::Corrupt
+        );
+        assert_eq!(item(&quick, "7.25.1/kernels").integrity, Integrity::Missing);
+        // ... verifying reads every file (the same-size change too).
+        let inv = a.verify_cache().await.unwrap();
         assert_eq!(
             item(&inv, "7.25.1/routeros-7.25.1-arm64.npk").integrity,
             Integrity::Corrupt
@@ -568,6 +671,94 @@ mod tests {
         assert!(!dir.join("routeros-7.25.1-arm64.npk").exists());
         assert!(!dir.join("kernel-arm64.elf").exists());
         assert!(!dir.join("kernel-mmips.elf").exists(), "the whole set");
+    }
+
+    #[tokio::test]
+    async fn listings_reuse_verification_results_of_unchanged_files() {
+        let (_srv, root, a) = filled("inv-memo").await;
+        let before = hashes();
+        let verified = a.verify_cache().await.unwrap();
+        assert!(hashes() > before, "verify reads the files");
+        assert!(verified
+            .items()
+            .all(|i| i.integrity != Integrity::Unchecked));
+        let after_verify = hashes();
+        let quick = a.cached_inventory().await.unwrap();
+        assert_eq!(
+            hashes(),
+            after_verify,
+            "unchanged files are not hashed again"
+        );
+        assert_eq!(quick, verified);
+        // Deleting the damaged ones does not hash everything again either.
+        a.delete_cached(DeleteScope::Damaged).await.unwrap();
+        assert_eq!(hashes(), after_verify);
+        // A fresh manager has nothing remembered: unchecked, not hashed.
+        let fresh = assets(&_srv, &root);
+        let listed = fresh.cached_inventory().await.unwrap();
+        assert_eq!(hashes(), after_verify);
+        assert_eq!(
+            item(&listed, "7.25.1/wireless-7.25.1-arm64.npk").integrity,
+            Integrity::Unchecked
+        );
+        assert!(!Integrity::Unchecked.damaged());
+    }
+
+    #[tokio::test]
+    async fn a_version_being_downloaded_into_cannot_be_deleted() {
+        let srv = TestServer::start().await;
+        let (_, _, wireless) = mirror(&srv);
+        let root = tempdir("inv-race");
+        let a = std::sync::Arc::new(assets(&srv, &root));
+        a.ensure_kernels(&v()).await.unwrap();
+        srv.route(
+            "/dl/7.25.1/wireless-7.25.1-arm64.npk",
+            crate::testutil::Reply::Slow {
+                body: wireless,
+                chunk: 256,
+                delay: std::time::Duration::from_millis(40),
+            },
+        );
+        let downloading = {
+            let a = a.clone();
+            tokio::spawn(async move {
+                a.ensure_packages(&v(), PkgArch::Arm64, &["wireless".to_string()])
+                    .await
+            })
+        };
+        // Wait for its part file: the download writes into the version.
+        let dir = root.join("7.25.1");
+        let started = async {
+            loop {
+                let part = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .any(|e| e.file_name().to_string_lossy().starts_with("wireless-"));
+                if part {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), started)
+            .await
+            .expect("download started");
+        let err = a
+            .delete_cached(DeleteScope::Version {
+                version: "7.25.1".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "busy");
+        downloading.await.unwrap().unwrap();
+        a.delete_cached(DeleteScope::Version {
+            version: "7.25.1".into(),
+        })
+        .await
+        .unwrap();
+        assert!(!dir.exists());
+        assert!(root.join(".locks").is_dir(), "the lock directory is kept");
     }
 
     #[tokio::test]

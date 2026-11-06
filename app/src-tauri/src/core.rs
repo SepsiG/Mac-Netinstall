@@ -448,14 +448,18 @@ impl AppCore {
 
     // ------------------------------------------------------------ cache, log
 
-    /// What is in the download cache. Error: `cache_failed` (`cause`).
-    pub async fn cache_inventory(&self) -> Result<CacheView, Failure> {
-        let inventory = self
-            .engine()
-            .assets()
-            .cached_inventory()
-            .await
-            .map_err(|e| asset_cause("cache_failed", &e))?;
+    /// What is in the download cache: quick (sizes, remembered checks), or
+    /// with every file's SHA-256 checked (`verify`). Error: `cache_failed`
+    /// (`cause`).
+    pub async fn cache_inventory(&self, verify: bool) -> Result<CacheView, Failure> {
+        let engine = self.engine();
+        let assets = engine.assets();
+        let inventory = if verify {
+            assets.verify_cache().await
+        } else {
+            assets.cached_inventory().await
+        }
+        .map_err(|e| asset_cause("cache_failed", &e))?;
         Ok(CacheView {
             location: display_path(&self.paths.cache),
             inventory,

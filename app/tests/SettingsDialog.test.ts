@@ -5,7 +5,7 @@ import SettingsDialog from "../src/components/SettingsDialog.svelte";
 import { backendContext } from "../src/lib/context";
 import { locale } from "../src/lib/i18n";
 import { fromSettingsForm, settingsErrors, toSettingsForm } from "../src/lib/settingsForm";
-import { mockBackend, SETTINGS } from "./mock";
+import { CACHE, mockBackend, SETTINGS } from "./mock";
 
 beforeEach(() => locale.set("en"));
 
@@ -154,5 +154,23 @@ describe("SettingsDialog", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText(/written by a newer version of Mac Netinstall/)).toBeInTheDocument();
     expect(onclose).not.toHaveBeenCalled();
+  });
+
+  it("lists quickly and verifies every file on request", async () => {
+    const { backend } = open();
+    await screen.findByText("RouterOS 7.25.1");
+    expect(backend.cacheInventory).toHaveBeenCalledWith(false);
+    await userEvent.click(screen.getByRole("button", { name: "Verify files" }));
+    expect(backend.cacheInventory).toHaveBeenLastCalledWith(true);
+  });
+
+  it("marks files not checked yet", async () => {
+    const backend = mockBackend();
+    const view = structuredClone(CACHE);
+    view.inventory.versions[0]!.items[1]!.integrity = "unchecked";
+    vi.mocked(backend.cacheInventory).mockResolvedValue(view);
+    open(backend);
+    const row = (await screen.findByText("routeros-7.25.1-arm64.npk")).closest("tr")!;
+    expect(within(row).getByText("not checked yet")).not.toHaveClass("badge-warning");
   });
 });

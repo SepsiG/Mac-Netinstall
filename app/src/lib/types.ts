@@ -145,7 +145,7 @@ export interface ScriptView {
   size: number;
 }
 
-export type Integrity = "verified" | "unpublished" | "corrupt" | "missing" | "partial";
+export type Integrity = "verified" | "unpublished" | "unchecked" | "corrupt" | "missing" | "partial";
 
 /** One cached item (`ni_assets::CachedItem`); `id` is path-free. */
 export interface CachedItem {

@@ -44,7 +44,8 @@ export interface Backend {
   pickScript(): Promise<ScriptView | null>;
   getSettings(): Promise<Settings>;
   setSettings(settings: Settings): Promise<Settings>;
-  cacheInventory(): Promise<CacheView>;
+  /** `verify`: check every file's SHA-256 (slow); else a quick listing. */
+  cacheInventory(verify: boolean): Promise<CacheView>;
   /** Bytes freed. */
   deleteCached(scope: DeleteScope): Promise<number>;
   /** Opens a save dialog (in Rust); `false` if cancelled. */
@@ -95,7 +96,7 @@ export function tauriBackend(): Backend {
     pickScript: () => invoke("pick_script"),
     getSettings: () => invoke("get_settings"),
     setSettings: (settings) => invoke("set_settings", { settings }),
-    cacheInventory: () => invoke("cache_inventory"),
+    cacheInventory: (verify) => invoke("cache_inventory", { verify }),
     deleteCached: (scope) => invoke("delete_cached", { scope }),
     exportLog: (text) => invoke("export_log", { text }),
     preferredLanguages: () => invoke("preferred_languages"),

@@ -80,6 +80,8 @@ pub struct Assets {
     upgrade_base: String,
     max_download: u64,
     events: Option<EventSink>,
+    /// Verification results of cached files (see `inventory`).
+    checks: inventory::Checks,
 }
 
 /// Run blocking file work off the async threads; panics propagate, a
@@ -124,6 +126,8 @@ struct Fetched {
     published: Option<String>,
     url: String,
     _lock: Arc<TargetLock>,
+    /// Shared lock on the version directory while writing into it.
+    _dir: crate::lock::FileLock,
 }
 
 impl Fetched {
@@ -229,6 +233,7 @@ impl Assets {
             upgrade_base: cfg.upgrade_base.trim_end_matches('/').to_string(),
             max_download: cfg.max_download_bytes,
             events: None,
+            checks: Default::default(),
         })
     }
 
@@ -322,6 +327,7 @@ impl Assets {
         file: &str,
         lock: Arc<TargetLock>,
     ) -> Result<Fetched, AssetError> {
+        let dir_lock = lock::lock_shared(dir.lock_path(crate::cache::DIR_LOCK)).await?;
         {
             let dir = dir.clone();
             blocking(move || dir.create()).await??;
@@ -339,6 +345,7 @@ impl Assets {
             published,
             url,
             _lock: lock,
+            _dir: dir_lock,
         })
     }
 

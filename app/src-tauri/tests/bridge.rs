@@ -425,12 +425,18 @@ async fn packages_scripts_cache_and_log() {
         "not_a_script"
     );
 
-    let view = rig.core.cache_inventory().await.unwrap();
+    let view = rig.core.cache_inventory(true).await.unwrap();
     assert!(view.inventory.total > 0, "packages were cached");
+    assert!(view
+        .inventory
+        .versions
+        .iter()
+        .flat_map(|v| &v.items)
+        .all(|i| i.integrity != ni_assets::Integrity::Unchecked));
     assert!(view.location.starts_with('/') || view.location.starts_with('~'));
     assert_eq!(view.inventory.local.len(), 1, "the script");
     rig.core.delete_cached(DeleteScope::All).await.unwrap();
-    let after = rig.core.cache_inventory().await.unwrap();
+    let after = rig.core.cache_inventory(false).await.unwrap();
     assert!(after.inventory.versions.is_empty());
     assert_eq!(after.inventory.local.len(), 1, "local files are kept");
     let err = rig
