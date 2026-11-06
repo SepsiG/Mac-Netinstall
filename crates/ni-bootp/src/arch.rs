@@ -8,7 +8,9 @@ use std::fmt;
 /// Architectures whose RouterBOOT can network-boot a Netinstall kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BootArch {
-    /// `Mips_boot`: MIPS big-endian (mipsbe).
+    /// `Mips_boot`: MIPS big-endian (mipsbe). smips boards are expected
+    /// to send `Mips_boot` too (unverified; see the roadmap's hardware
+    /// checks).
     Mips,
     /// `MMipsBoot`: MIPS little-endian, MT7621 (mmips).
     MMips,
@@ -52,8 +54,15 @@ impl BootArch {
         }
     }
 
-    /// Classify a DHCP vendor class string (exact, case-sensitive match).
+    /// Classify a DHCP vendor class string.
+    ///
+    /// Trailing NULs and whitespace are stripped (some boot loaders count a
+    /// C string terminator in the option length); the rest must match
+    /// exactly and case-sensitively. No prefix or substring matching beyond
+    /// the `PXEClient` family, so unknown classes stay unknown. The returned
+    /// `Unsupported`/`Unknown` strings are the stripped form.
     pub fn from_vendor_class(class: &str) -> VendorClass {
+        let class = class.trim_end_matches(|c: char| c == '\0' || c.is_whitespace());
         let arch = match class {
             "Mips_boot" => BootArch::Mips,
             "MMipsBoot" => BootArch::MMips,
@@ -136,6 +145,47 @@ mod tests {
             assert_eq!(
                 BootArch::from_vendor_class(class),
                 VendorClass::Unknown(class.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_nuls_and_whitespace_are_ignored() {
+        for class in [
+            "Mips_boot\0",
+            "Mips_boot\0\0",
+            "Mips_boot ",
+            "Mips_boot\r\n\0 ",
+        ] {
+            assert_eq!(
+                BootArch::from_vendor_class(class),
+                VendorClass::Supported(BootArch::Mips),
+                "{class:?}"
+            );
+        }
+        assert_eq!(
+            BootArch::from_vendor_class("X86_64__boot\0"),
+            VendorClass::Unsupported("X86_64__boot".into())
+        );
+        assert_eq!(
+            BootArch::from_vendor_class("MSFT 5.0\0"),
+            VendorClass::Unknown("MSFT 5.0".into())
+        );
+    }
+
+    #[test]
+    fn no_prefix_or_substring_matching() {
+        for class in [
+            "Mips_bootX",
+            " Mips_boot",
+            "\0Mips_boot",
+            "Mips_boo",
+            "xARM__boot",
+        ] {
+            assert_eq!(
+                BootArch::from_vendor_class(class),
+                VendorClass::Unknown(class.to_string()),
+                "{class:?}"
             );
         }
     }

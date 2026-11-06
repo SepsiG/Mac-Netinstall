@@ -116,6 +116,8 @@ pub enum PacketError {
 /// A parsed BOOTP/DHCP client request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
+    /// Relay hop count; non-zero means the request was relayed.
+    pub hops: u8,
     pub xid: u32,
     pub secs: u16,
     pub flags: u16,
@@ -163,6 +165,7 @@ impl Request {
         let mut chaddr = [0u8; 6];
         chaddr.copy_from_slice(&buf[28..34]);
         let mut req = Request {
+            hops: buf[3],
             xid: u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]),
             secs: u16::from_be_bytes([buf[8], buf[9]]),
             flags: u16::from_be_bytes([buf[10], buf[11]]),
@@ -234,6 +237,10 @@ pub enum ReplyKind {
     Offer,
     /// DHCPACK, answering DHCPREQUEST.
     Ack,
+    /// DHCPNAK, refusing a DHCPREQUEST for an address we did not lease
+    /// to that client. Carries only options 53 and 54: no `yiaddr`,
+    /// `siaddr`, `ciaddr`, boot file, lease time or netmask.
+    Nak,
 }
 
 /// Values for [`build_reply`].
@@ -251,36 +258,52 @@ pub struct ReplyParams<'a> {
 }
 
 /// Build a reply to `req`. The result is at least [`MIN_LEN`] bytes.
+///
+/// `ciaddr` is copied from the request only for ACK and plain BOOTP
+/// replies (RFC 2131 table 3: OFFER and NAK carry 0). A NAK ignores
+/// `your_ip`, `netmask`, `lease_secs` and `file`.
 pub fn build_reply(req: &Request, p: &ReplyParams<'_>) -> Vec<u8> {
+    let nak = p.kind == ReplyKind::Nak;
     let mut out = vec![0u8; HEADER_LEN];
     out[0] = OP_REPLY;
     out[1] = 1;
     out[2] = 6;
     out[4..8].copy_from_slice(&req.xid.to_be_bytes());
     out[10..12].copy_from_slice(&req.flags.to_be_bytes());
-    out[12..16].copy_from_slice(&req.ciaddr.octets());
-    out[16..20].copy_from_slice(&p.your_ip.octets());
-    out[20..24].copy_from_slice(&p.server_ip.octets());
+    if matches!(p.kind, ReplyKind::Ack | ReplyKind::Bootp) {
+        out[12..16].copy_from_slice(&req.ciaddr.octets());
+    }
+    if !nak {
+        out[16..20].copy_from_slice(&p.your_ip.octets());
+        out[20..24].copy_from_slice(&p.server_ip.octets());
+    }
     out[24..28].copy_from_slice(&req.giaddr.octets());
     out[28..34].copy_from_slice(&req.chaddr.0);
-    let file = p.file.as_bytes();
-    let n = file.len().min(MAX_FILE_LEN);
-    out[108..108 + n].copy_from_slice(&file[..n]);
+    if !nak {
+        let file = p.file.as_bytes();
+        let n = file.len().min(MAX_FILE_LEN);
+        out[108..108 + n].copy_from_slice(&file[..n]);
+    }
     out.extend_from_slice(&MAGIC_COOKIE);
     let msg_type = match p.kind {
         ReplyKind::Bootp => None,
         ReplyKind::Offer => Some(MessageType::Offer),
         ReplyKind::Ack => Some(MessageType::Ack),
+        ReplyKind::Nak => Some(MessageType::Nak),
     };
     if let Some(t) = msg_type {
         out.extend_from_slice(&[opt::MESSAGE_TYPE, 1, t.to_u8()]);
         out.extend_from_slice(&[opt::SERVER_ID, 4]);
         out.extend_from_slice(&p.server_ip.octets());
-        out.extend_from_slice(&[opt::LEASE_TIME, 4]);
-        out.extend_from_slice(&p.lease_secs.to_be_bytes());
     }
-    out.extend_from_slice(&[opt::SUBNET_MASK, 4]);
-    out.extend_from_slice(&p.netmask.octets());
+    if !nak {
+        if msg_type.is_some() {
+            out.extend_from_slice(&[opt::LEASE_TIME, 4]);
+            out.extend_from_slice(&p.lease_secs.to_be_bytes());
+        }
+        out.extend_from_slice(&[opt::SUBNET_MASK, 4]);
+        out.extend_from_slice(&p.netmask.octets());
+    }
     out.push(opt::END);
     if out.len() < MIN_LEN {
         out.resize(MIN_LEN, 0);
@@ -304,6 +327,17 @@ pub(crate) fn sample_request(
     msg_type: Option<u8>,
     vendor_class: Option<&str>,
 ) -> Vec<u8> {
+    sample_request_with(mac, msg_type, vendor_class, &[])
+}
+
+/// Test helper: [`sample_request`] with raw option bytes `extra` before END.
+#[cfg(test)]
+pub(crate) fn sample_request_with(
+    mac: Mac,
+    msg_type: Option<u8>,
+    vendor_class: Option<&str>,
+    extra: &[u8],
+) -> Vec<u8> {
     let mut b = vec![0u8; HEADER_LEN];
     b[0] = OP_REQUEST;
     b[1] = 1;
@@ -321,6 +355,7 @@ pub(crate) fn sample_request(
         b.push(vc.len() as u8);
         b.extend_from_slice(vc.as_bytes());
     }
+    b.extend_from_slice(extra);
     b.push(opt::END);
     b.resize(MIN_LEN, 0);
     b
@@ -483,6 +518,53 @@ mod tests {
             ]
         );
         assert!(out[262..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn parses_hops() {
+        let mut buf = sample_request(MAC, Some(1), None);
+        buf[3] = 2;
+        assert_eq!(Request::parse(&buf).unwrap().hops, 2);
+    }
+
+    #[test]
+    fn ciaddr_is_zero_in_offer_and_copied_in_ack() {
+        let mut buf = sample_request(MAC, Some(1), Some("MMipsBoot"));
+        buf[12..16].copy_from_slice(&[10, 0, 0, 9]);
+        let req = Request::parse(&buf).unwrap();
+        let offer = build_reply(&req, &params(ReplyKind::Offer));
+        assert_eq!(&offer[12..16], &[0, 0, 0, 0], "OFFER ciaddr");
+        let ack = build_reply(&req, &params(ReplyKind::Ack));
+        assert_eq!(&ack[12..16], &[10, 0, 0, 9], "ACK ciaddr");
+        let bootp = build_reply(&req, &params(ReplyKind::Bootp));
+        assert_eq!(&bootp[12..16], &[10, 0, 0, 9], "BOOTP ciaddr");
+        let nak = build_reply(&req, &params(ReplyKind::Nak));
+        assert_eq!(&nak[12..16], &[0, 0, 0, 0], "NAK ciaddr");
+    }
+
+    #[test]
+    fn dhcp_nak_layout() {
+        let mut buf = sample_request(MAC, Some(3), Some("MMipsBoot"));
+        buf[12..16].copy_from_slice(&[10, 0, 0, 9]);
+        let req = Request::parse(&buf).unwrap();
+        let out = build_reply(&req, &params(ReplyKind::Nak));
+        assert_eq!(out.len(), MIN_LEN);
+        assert_eq!(&out[0..4], &[2, 1, 6, 0]);
+        assert_eq!(&out[4..8], &0xdead_beef_u32.to_be_bytes());
+        assert_eq!(&out[10..12], &[0x80, 0x00], "flags copied");
+        assert_eq!(&out[12..28], &[0u8; 16], "ciaddr, yiaddr, siaddr, giaddr");
+        assert_eq!(&out[28..34], &MAC.0);
+        assert!(out[44..236].iter().all(|&b| b == 0), "no sname, no file");
+        assert_eq!(&out[236..240], &MAGIC_COOKIE);
+        assert_eq!(
+            &out[240..250],
+            &[
+                53, 1, 6, // NAK
+                54, 4, 192, 168, 88, 1,   // server id
+                255, // end: no lease time, no netmask
+            ]
+        );
+        assert!(out[250..].iter().all(|&b| b == 0));
     }
 
     #[test]

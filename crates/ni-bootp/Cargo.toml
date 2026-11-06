@@ -7,10 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ni-net.workspace = true
 ni-proto.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "sync"] }
 
 [dev-dependencies]
-ni-net.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

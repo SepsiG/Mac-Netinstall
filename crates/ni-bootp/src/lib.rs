@@ -4,6 +4,10 @@
 //! vendor class (option 60). The reply assigns an address from a MAC-keyed
 //! pool and names the boot kernel to fetch over TFTP from `siaddr`.
 //!
+//! Only directly attached clients are served: relayed requests (`giaddr`
+//! or `hops` set) are ignored. A DHCPREQUEST for an address we did not
+//! lease to that MAC gets a DHCPNAK; a DHCPDECLINE quarantines the address.
+//!
 //! [`BootpResponder`] is sans-IO; [`serve`] runs it on a tokio socket.
 
 pub mod arch;

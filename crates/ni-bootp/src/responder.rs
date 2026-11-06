@@ -34,6 +34,15 @@ pub enum ConfigError {
     FileNameTooLong { arch: BootArch, len: usize },
     #[error("boot file name for {arch} is empty")]
     EmptyFileName { arch: BootArch },
+    #[error("netmask {0} is not a contiguous prefix")]
+    InvalidNetmask(Ipv4Addr),
+    #[error("pool {start}..={end} is not inside the server subnet {network}/{netmask}")]
+    PoolOutsideSubnet {
+        start: Ipv4Addr,
+        end: Ipv4Addr,
+        network: Ipv4Addr,
+        netmask: Ipv4Addr,
+    },
 }
 
 /// A reply to send to the client.
@@ -43,13 +52,15 @@ pub struct Reply {
     pub kind: ReplyKind,
     pub client_mac: Mac,
     pub arch: BootArch,
+    /// Address leased to the client. For [`ReplyKind::Nak`] this is the
+    /// address we hold for it, which the NAK itself does not carry.
     pub assigned_ip: Ipv4Addr,
 }
 
 /// Why a well-formed request got no reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IgnoreReason {
-    /// DHCP message we do not answer (RELEASE, INFORM, DECLINE, ...).
+    /// DHCP message we do not answer (RELEASE, INFORM, ...).
     MessageType(MessageType),
     /// DHCPREQUEST addressed to another server (option 54).
     OtherServer(Ipv4Addr),
@@ -63,13 +74,27 @@ pub enum IgnoreReason {
     NoBootFile(BootArch),
     /// All pool addresses are leased.
     PoolExhausted(BootArch),
+    /// Relayed request (`giaddr` or `hops` non-zero). Only directly
+    /// attached clients are served: replies go out as link broadcasts on
+    /// the boot interface, never back through a relay agent.
+    Relayed,
 }
 
 /// Result of [`BootpResponder::handle`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Reply(Reply),
-    Ignored { mac: Mac, reason: IgnoreReason },
+    Ignored {
+        mac: Mac,
+        reason: IgnoreReason,
+    },
+    /// DHCPDECLINE: the client found its address in use. Its lease was
+    /// dropped and `ip` (the declined address) is quarantined for the
+    /// responder's lifetime. No reply is sent.
+    Declined {
+        mac: Mac,
+        ip: Option<Ipv4Addr>,
+    },
 }
 
 /// Answers RouterBOOT BOOTP/DHCP requests.
@@ -92,7 +117,27 @@ impl BootpResponder {
                 });
             }
         }
-        let pool = LeasePool::new(cfg.pool_start, cfg.pool_end, cfg.server_ip)?;
+        let mask = u32::from(cfg.netmask);
+        if mask.leading_ones() + mask.trailing_zeros() != 32 {
+            return Err(ConfigError::InvalidNetmask(cfg.netmask));
+        }
+        let network = u32::from(cfg.server_ip) & mask;
+        let in_subnet = |ip: Ipv4Addr| u32::from(ip) & mask == network;
+        if !in_subnet(cfg.pool_start) || !in_subnet(cfg.pool_end) {
+            return Err(ConfigError::PoolOutsideSubnet {
+                start: cfg.pool_start,
+                end: cfg.pool_end,
+                network: network.into(),
+                netmask: cfg.netmask,
+            });
+        }
+        let mut exclude = vec![cfg.server_ip];
+        // /31 (RFC 3021) and /32 have no network or broadcast address.
+        if mask.leading_ones() <= 30 {
+            exclude.push(network.into());
+            exclude.push((network | !mask).into());
+        }
+        let pool = LeasePool::new(cfg.pool_start, cfg.pool_end, &exclude)?;
         Ok(BootpResponder { cfg, pool })
     }
 
@@ -105,22 +150,43 @@ impl BootpResponder {
         self.pool.get(mac)
     }
 
+    /// DHCPDECLINE: drop `req.chaddr`'s lease and quarantine both it and
+    /// the declined address (option 50). Quarantining the old lease even
+    /// if it differs from option 50 is conservative: the pool never hands
+    /// addresses back.
+    fn decline(&mut self, req: &Request) -> Outcome {
+        let leased = self.pool.decline(&req.chaddr);
+        if let Some(ip) = req.requested_ip {
+            self.pool.quarantine(ip);
+        }
+        Outcome::Declined {
+            mac: req.chaddr,
+            ip: req.requested_ip.or(leased),
+        }
+    }
+
     /// Process one datagram received on port 67.
     pub fn handle(&mut self, datagram: &[u8]) -> Result<Outcome, PacketError> {
         let req = Request::parse(datagram)?;
         let mac = req.chaddr;
         let ignore = |reason| Ok(Outcome::Ignored { mac, reason });
+        if req.giaddr != Ipv4Addr::UNSPECIFIED || req.hops != 0 {
+            return ignore(IgnoreReason::Relayed);
+        }
         let kind = match req.message_type {
-            Some(t) if req.is_dhcp() => match t {
-                MessageType::Discover => ReplyKind::Offer,
-                MessageType::Request => match req.server_id {
-                    Some(id) if id != self.cfg.server_ip => {
-                        return ignore(IgnoreReason::OtherServer(id))
+            Some(t) if req.is_dhcp() => {
+                if matches!(t, MessageType::Request | MessageType::Decline) {
+                    if let Some(id) = req.server_id.filter(|id| *id != self.cfg.server_ip) {
+                        return ignore(IgnoreReason::OtherServer(id));
                     }
-                    _ => ReplyKind::Ack,
-                },
-                other => return ignore(IgnoreReason::MessageType(other)),
-            },
+                }
+                match t {
+                    MessageType::Discover => ReplyKind::Offer,
+                    MessageType::Request => ReplyKind::Ack,
+                    MessageType::Decline => return Ok(self.decline(&req)),
+                    other => return ignore(IgnoreReason::MessageType(other)),
+                }
+            }
             _ => ReplyKind::Bootp,
         };
         let arch = match req.vendor_class.as_deref().map(BootArch::from_vendor_class) {
@@ -138,6 +204,13 @@ impl BootpResponder {
         };
         let Some(ip) = self.pool.lease(mac) else {
             return ignore(IgnoreReason::PoolExhausted(arch));
+        };
+        // A DHCPREQUEST for an address other than the one we hold for this
+        // MAC (e.g. remembered from another network) is refused, so the
+        // client restarts with DISCOVER. No option 50 (RENEWING) is ACKed.
+        let kind = match (kind, req.requested_ip) {
+            (ReplyKind::Ack, Some(requested)) if requested != ip => ReplyKind::Nak,
+            (kind, _) => kind,
         };
         let bytes = build_reply(
             &req,
@@ -163,7 +236,7 @@ impl BootpResponder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::packet::{opt, sample_request, HEADER_LEN, MAGIC_COOKIE};
+    use crate::packet::{opt, sample_request, sample_request_with, HEADER_LEN, MAGIC_COOKIE};
 
     const MAC: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 1]);
     const SERVER: Ipv4Addr = Ipv4Addr::new(192, 168, 88, 1);
@@ -351,6 +424,202 @@ mod tests {
         assert_eq!(
             r.handle(&buf),
             Err(PacketError::TruncatedOption { code: 60 })
+        );
+    }
+
+    fn ip(last: u8) -> Ipv4Addr {
+        Ipv4Addr::new(192, 168, 88, last)
+    }
+
+    fn requesting(msg_type: u8, requested: Option<Ipv4Addr>) -> Vec<u8> {
+        let extra = requested
+            .map(|r| {
+                let mut o = vec![opt::REQUESTED_IP, 4];
+                o.extend_from_slice(&r.octets());
+                o
+            })
+            .unwrap_or_default();
+        sample_request_with(MAC, Some(msg_type), Some("MMipsBoot"), &extra)
+    }
+
+    #[test]
+    fn request_for_our_lease_is_acked() {
+        let mut r = responder();
+        let offer = reply(r.handle(&requesting(1, None)).unwrap());
+        let ack = reply(r.handle(&requesting(3, Some(offer.assigned_ip))).unwrap());
+        assert_eq!(ack.kind, ReplyKind::Ack);
+        assert_eq!(&ack.bytes[16..20], &offer.assigned_ip.octets());
+    }
+
+    #[test]
+    fn request_for_another_address_is_naked() {
+        let mut r = responder();
+        let offer = reply(r.handle(&requesting(1, None)).unwrap());
+        let nak = reply(r.handle(&requesting(3, Some(ip(77)))).unwrap());
+        assert_eq!(nak.kind, ReplyKind::Nak);
+        assert_eq!(nak.assigned_ip, offer.assigned_ip, "the lease we hold");
+        assert_eq!(&nak.bytes[16..20], &[0, 0, 0, 0], "no yiaddr");
+        assert!(nak.bytes[108..236].iter().all(|&b| b == 0), "no file");
+        assert_eq!(&nak.bytes[240..249], &[53, 1, 6, 54, 4, 192, 168, 88, 1]);
+        assert_eq!(r.lease_of(&MAC), Some(offer.assigned_ip), "lease kept");
+    }
+
+    #[test]
+    fn init_reboot_request_without_prior_discover() {
+        // No lease yet: the request is compared with what we would offer.
+        let mut r = responder();
+        assert_eq!(
+            reply(r.handle(&requesting(3, Some(ip(50)))).unwrap()).kind,
+            ReplyKind::Nak
+        );
+        let mut r = responder();
+        assert_eq!(
+            reply(r.handle(&requesting(3, Some(ip(10)))).unwrap()).kind,
+            ReplyKind::Ack
+        );
+    }
+
+    #[test]
+    fn decline_releases_and_quarantines_the_address() {
+        let mut r = responder();
+        let offer = reply(r.handle(&requesting(1, None)).unwrap());
+        assert_eq!(offer.assigned_ip, ip(10));
+        let mut decline = vec![opt::SERVER_ID, 4];
+        decline.extend_from_slice(&SERVER.octets());
+        decline.extend_from_slice(&[opt::REQUESTED_IP, 4, 192, 168, 88, 10]);
+        let buf = sample_request_with(MAC, Some(4), Some("MMipsBoot"), &decline);
+        assert_eq!(
+            r.handle(&buf).unwrap(),
+            Outcome::Declined {
+                mac: MAC,
+                ip: Some(ip(10))
+            }
+        );
+        assert_eq!(r.lease_of(&MAC), None);
+        // Same MAC asks again: a fresh address, never .10.
+        let again = reply(r.handle(&requesting(1, None)).unwrap());
+        assert_eq!(again.assigned_ip, ip(11));
+        let other = Mac([0x48, 0xa9, 0x8a, 0, 0, 9]);
+        assert_eq!(
+            r.handle(&sample_request(other, Some(1), Some("MMipsBoot")))
+                .unwrap(),
+            Outcome::Ignored {
+                mac: other,
+                reason: IgnoreReason::PoolExhausted(BootArch::MMips)
+            },
+            ".10 stays quarantined"
+        );
+    }
+
+    #[test]
+    fn decline_without_lease_quarantines_requested_address() {
+        let mut r = responder();
+        let buf = sample_request_with(
+            MAC,
+            Some(4),
+            Some("MMipsBoot"),
+            &[opt::REQUESTED_IP, 4, 192, 168, 88, 10],
+        );
+        assert_eq!(
+            r.handle(&buf).unwrap(),
+            Outcome::Declined {
+                mac: MAC,
+                ip: Some(ip(10))
+            }
+        );
+        assert_eq!(
+            reply(r.handle(&requesting(1, None)).unwrap()).assigned_ip,
+            ip(11)
+        );
+    }
+
+    #[test]
+    fn decline_for_another_server_is_ignored() {
+        let mut r = responder();
+        reply(r.handle(&requesting(1, None)).unwrap());
+        let buf = sample_request_with(
+            MAC,
+            Some(4),
+            Some("MMipsBoot"),
+            &[opt::SERVER_ID, 4, 10, 0, 0, 1],
+        );
+        assert_eq!(
+            ignored(r.handle(&buf).unwrap()),
+            IgnoreReason::OtherServer(Ipv4Addr::new(10, 0, 0, 1))
+        );
+        assert_eq!(r.lease_of(&MAC), Some(ip(10)));
+    }
+
+    #[test]
+    fn relayed_requests_are_ignored() {
+        let mut r = responder();
+        let mut buf = sample_request(MAC, Some(1), Some("MMipsBoot"));
+        buf[24..28].copy_from_slice(&[10, 1, 1, 1]);
+        assert_eq!(ignored(r.handle(&buf).unwrap()), IgnoreReason::Relayed);
+        let mut buf = sample_request(MAC, None, Some("MMipsBoot"));
+        buf[3] = 1;
+        assert_eq!(ignored(r.handle(&buf).unwrap()), IgnoreReason::Relayed);
+        assert_eq!(r.lease_of(&MAC), None);
+    }
+
+    #[test]
+    fn whole_subnet_pool_skips_network_broadcast_and_server() {
+        let mut cfg = config();
+        cfg.pool_start = ip(0);
+        cfg.pool_end = ip(255);
+        let mut r = BootpResponder::new(cfg).unwrap();
+        let mut handed = Vec::new();
+        for n in 0..=255u8 {
+            let mac = Mac([2, 0, 0, 0, 1, n]);
+            match r
+                .handle(&sample_request(mac, Some(1), Some("MMipsBoot")))
+                .unwrap()
+            {
+                Outcome::Reply(rep) => handed.push(rep.assigned_ip),
+                Outcome::Ignored {
+                    reason: IgnoreReason::PoolExhausted(_),
+                    ..
+                } => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(handed.first(), Some(&ip(2)));
+        assert_eq!(handed.last(), Some(&ip(254)));
+        assert_eq!(handed.len(), 253);
+        for bad in [ip(0), ip(1), ip(255)] {
+            assert!(!handed.contains(&bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn pool_outside_server_subnet_is_rejected() {
+        for (start, end) in [
+            (Ipv4Addr::new(10, 0, 0, 10), Ipv4Addr::new(10, 0, 0, 20)),
+            (ip(10), Ipv4Addr::new(192, 168, 89, 5)),
+            (Ipv4Addr::new(192, 168, 87, 250), ip(5)),
+        ] {
+            let mut cfg = config();
+            cfg.pool_start = start;
+            cfg.pool_end = end;
+            assert_eq!(
+                BootpResponder::new(cfg).unwrap_err(),
+                ConfigError::PoolOutsideSubnet {
+                    start,
+                    end,
+                    network: ip(0),
+                    netmask: Ipv4Addr::new(255, 255, 255, 0),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn non_contiguous_netmask_is_rejected() {
+        let mut cfg = config();
+        cfg.netmask = Ipv4Addr::new(255, 0, 255, 0);
+        assert_eq!(
+            BootpResponder::new(cfg).unwrap_err(),
+            ConfigError::InvalidNetmask(Ipv4Addr::new(255, 0, 255, 0))
         );
     }
 
