@@ -123,7 +123,7 @@ jobs:
         working-directory: target/aarch64-apple-darwin/release/bundle
         run: |
           app="macos/Mac Netinstall.app"
-          ls -l "$app/Contents/Resources/icon.icns"
+          ls -l "$app/Contents/Resources/Mac Netinstall.icns"
           codesign -dv "$app" 2>&1 | grep -F "Identifier=io.github.sepsig.mac-netinstall"
           if /usr/libexec/PlistBuddy -c "Print :LSUIElement" "$app/Contents/Info.plist" 2>/dev/null; then
             echo "LSUIElement must not be set" >&2
