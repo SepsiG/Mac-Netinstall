@@ -117,6 +117,10 @@ pub struct AppCore {
     profiles: ProfileStore,
     store: SettingsStore,
     settings: Mutex<Settings>,
+    /// Held while the engine task may be replaced and until a start on it
+    /// is done, so a concurrent preflight cannot replace (orphan) the
+    /// engine a start is starting.
+    engine_swap: tokio::sync::Mutex<()>,
     hook: Option<ConfigHook>,
 }
 
@@ -147,6 +151,7 @@ impl AppCore {
             engine_timeout: Mutex::new(timeout),
             store,
             settings: Mutex::new(settings),
+            engine_swap: tokio::sync::Mutex::new(()),
             hook: None,
         })
     }
@@ -178,12 +183,22 @@ impl AppCore {
         lock(&self.settings).clone()
     }
 
-    /// Validate, store and apply settings. While running, the concurrency
-    /// limit and the cooldown take effect at once; a new download timeout
-    /// applies from the next start.
-    pub async fn set_settings(&self, s: Settings) -> Result<Settings, Failure> {
-        self.store.save(&s)?;
-        *lock(&self.settings) = s.clone();
+    /// Validate, store and apply the settings dialog's values. What the app
+    /// remembers by itself (last interface, profile, auto-repeat) is kept
+    /// from the current state ([`Settings::merged_edit`]), so a dialog
+    /// opened earlier cannot undo it. Returns the stored settings. While
+    /// running, the concurrency limit and the cooldown take effect at once;
+    /// a new download timeout applies from the next start.
+    pub async fn set_settings(&self, edit: Settings) -> Result<Settings, Failure> {
+        let s = {
+            // Held across the save, so the file and the state cannot
+            // disagree with a concurrent `remember`.
+            let mut current = lock(&self.settings);
+            let s = current.merged_edit(edit);
+            self.store.save(&s)?;
+            *current = s.clone();
+            s
+        };
         let engine = self.engine();
         if engine.snapshot().await?.running {
             engine.set_max_parallel(s.max_parallel).await?;
@@ -205,8 +220,11 @@ impl AppCore {
     }
 
     /// Replace the engine task if the download timeout changed and it is
-    /// not running.
-    async fn ensure_engine(&self) -> Result<EngineHandle, Failure> {
+    /// not running. The caller holds `engine_swap`.
+    async fn ensure_engine(
+        &self,
+        _swap: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<EngineHandle, Failure> {
         let wanted = self.settings().download_timeout();
         let engine = self.engine();
         if *lock(&self.engine_timeout) == wanted || engine.snapshot().await?.running {
@@ -258,15 +276,20 @@ impl AppCore {
     /// Run the preflight checks for `req`.
     pub async fn preflight(&self, req: &StartRequest) -> Result<PreflightReport, Failure> {
         let cfg = self.engine_config(req)?;
-        let engine = self.ensure_engine().await?;
+        let engine = {
+            let swap = self.engine_swap.lock().await;
+            self.ensure_engine(&swap).await?
+        };
         Ok(preflight::run(&cfg, Some(engine.assets()), cfg.profile.as_ref()).await)
     }
 
     /// Start serving; remembers the interface, profile and auto-repeat.
     pub async fn start(&self, req: &StartRequest) -> Result<StartInfo, Failure> {
         let cfg = self.engine_config(req)?;
-        let engine = self.ensure_engine().await?;
+        let swap = self.engine_swap.lock().await;
+        let engine = self.ensure_engine(&swap).await?;
         let info = engine.start(cfg).await?;
+        drop(swap);
         self.remember(|s| {
             s.last_interface = Some(req.interface.clone());
             s.last_profile = req.profile.clone();

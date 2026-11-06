@@ -231,6 +231,61 @@ async fn runtime_controls_reach_the_engine_and_are_remembered() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_settings_do_not_overwrite_remembered_choices() {
+    let mut rig = rig("bridge-stale").await;
+    // The settings dialog was opened before the start ...
+    let stale = rig.core.settings();
+    rig.core.start(&request()).await.unwrap();
+    kernels_ready(&mut rig).await;
+    // ... and saved after it: the remembered choices stay.
+    let mut edit = stale.clone();
+    edit.language = Some("hu".into());
+    edit.max_parallel = 2;
+    let saved = rig.core.set_settings(edit).await.unwrap();
+    assert_eq!(saved.language.as_deref(), Some("hu"));
+    assert_eq!(saved.max_parallel, 2);
+    assert_eq!(
+        (
+            saved.last_interface.as_deref(),
+            saved.last_profile.as_deref(),
+            saved.auto_repeat
+        ),
+        (Some("lo0"), Some("test"), true)
+    );
+    assert_eq!(rig.core.settings(), saved);
+    let stored: Settings =
+        serde_json::from_slice(&std::fs::read(rig.dir.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(stored, saved);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_preflight_and_start_do_not_orphan_the_engine() {
+    let rig = rig("bridge-race").await;
+    for (i, start_first) in [true, false, true, false].into_iter().enumerate() {
+        // A new download timeout: the idle engine gets replaced.
+        let mut s = rig.core.settings();
+        s.download_timeout_secs = 600 + i as u64;
+        rig.core.set_settings(s).await.unwrap();
+        let req = request();
+        if start_first {
+            let (st, pf) = tokio::join!(rig.core.start(&req), rig.core.preflight(&req));
+            st.unwrap();
+            pf.unwrap();
+        } else {
+            let (pf, st) = tokio::join!(rig.core.preflight(&req), rig.core.start(&req));
+            st.unwrap();
+            pf.unwrap();
+        }
+        let snap = rig.core.snapshot().await.unwrap();
+        assert!(
+            snap.running,
+            "round {i}: the started engine is the current one"
+        );
+        rig.core.stop().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_download_timeout_replaces_the_idle_engine() {
     let mut rig = rig("bridge-timeout").await;
     let before = rig.core.engine().assets().clone();
@@ -265,9 +320,12 @@ async fn profiles_are_created_renamed_and_deleted() {
     let err = rig.core.save_profile(&test, Some("test")).unwrap_err();
     assert_eq!(err.code, "profile_exists", "case-insensitive clash");
     // Rename Lab -> Lab 2, while it is the last used profile.
-    let mut s = rig.core.settings();
-    s.last_profile = Some("Lab".into());
-    rig.core.set_settings(s).await.unwrap();
+    let mut req = request();
+    req.profile = Some("Lab".into());
+    req.auto_repeat = false;
+    rig.core.start(&req).await.unwrap();
+    rig.core.stop().await.unwrap();
+    assert_eq!(rig.core.settings().last_profile.as_deref(), Some("Lab"));
     p.name = "Lab 2".into();
     rig.core.save_profile(&p, Some("Lab")).unwrap();
     let names: Vec<_> = rig

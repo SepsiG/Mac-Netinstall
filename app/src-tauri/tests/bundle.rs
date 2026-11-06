@@ -3,6 +3,7 @@
 //! capabilities, a CSP): pin them.
 
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 fn read(name: &str) -> String {
@@ -65,11 +66,55 @@ fn the_web_view_is_locked_down() {
         let ok = p.starts_with("allow-") || p.starts_with("core:event:allow-");
         assert!(ok, "unexpected permission {p}");
     }
-    // Every app command is allowed; nothing else from the core or plugins.
+    // Every app command is allowed (and nothing else from the core or
+    // plugins): the capability, build.rs's command list, the
+    // `#[tauri::command]`s and the invoke handler all agree.
+    let allowed: BTreeSet<String> = perms
+        .iter()
+        .filter_map(|p| p.strip_prefix("allow-"))
+        .map(|p| p.replace('-', "_"))
+        .collect();
+    let listed = build_commands();
+    assert_eq!(allowed, listed, "capabilities vs build.rs");
+    assert_eq!(command_fns(), listed, "commands.rs vs build.rs");
+    assert_eq!(handled_commands(), listed, "invoke handler vs build.rs");
+}
+
+/// The `COMMANDS` array of build.rs.
+fn build_commands() -> BTreeSet<String> {
     let build = read("build.rs");
-    let listed = build.matches("    \"").count();
-    assert_eq!(
-        perms.iter().filter(|p| p.starts_with("allow-")).count(),
-        listed
-    );
+    let start = build.find("const COMMANDS: &[&str] = &[").unwrap();
+    let body = &build[start..];
+    let body = &body[body.find('[').unwrap() + 1..];
+    let body = &body[body.find('[').unwrap() + 1..body.find("];").unwrap()];
+    body.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_matches('"').to_string())
+        .collect()
+}
+
+/// The functions marked `#[tauri::command…]` in commands.rs.
+fn command_fns() -> BTreeSet<String> {
+    let src = read("src/commands.rs");
+    src.split("\n#[tauri::command")
+        .skip(1)
+        .map(|rest| {
+            let f = &rest[rest.find("fn ").unwrap() + 3..];
+            f[..f.find(['(', '<']).unwrap()].to_string()
+        })
+        .collect()
+}
+
+/// The `commands::…` entries of `generate_handler!` in lib.rs.
+fn handled_commands() -> BTreeSet<String> {
+    let src = read("src/lib.rs");
+    let start = src.find("generate_handler![").unwrap();
+    let body = &src[start + "generate_handler![".len()..];
+    let body = &body[..body.find(']').unwrap()];
+    body.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_start_matches("commands::").to_string())
+        .collect()
 }
