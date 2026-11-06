@@ -29,9 +29,28 @@ pub fn discover(sim: &mut DeviceSim, now: Instant) -> DeviceInfo {
 pub fn pump(
     server: &mut ServerSession,
     sim: &mut DeviceSim,
-    mut now: Instant,
+    now: Instant,
     limit: Duration,
     mut deliver: impl FnMut(Direction, &Frame) -> bool,
+) -> PumpResult {
+    pump_with(server, sim, now, limit, |dir, f| {
+        if deliver(dir, &f) {
+            vec![f]
+        } else {
+            Vec::new()
+        }
+    })
+}
+
+/// Like [`pump`], but `route` returns the frames actually delivered to the
+/// receiving side in place of each frame: an empty list drops it, and the
+/// list may hold modified or extra (injected) frames.
+pub fn pump_with(
+    server: &mut ServerSession,
+    sim: &mut DeviceSim,
+    mut now: Instant,
+    limit: Duration,
+    mut route: impl FnMut(Direction, Frame) -> Vec<Frame>,
 ) -> PumpResult {
     let end = now + limit;
     loop {
@@ -39,15 +58,15 @@ pub fn pump(
         while let Some(f) = server.poll_transmit(now) {
             progressed = true;
             let wire = Frame::decode(&f.encode()).expect("decodable");
-            if deliver(Direction::ToDevice, &wire) {
-                sim.handle_frame(&wire, now);
+            for f in route(Direction::ToDevice, wire) {
+                sim.handle_frame(&f, now);
             }
         }
         while let Some(f) = sim.poll_transmit() {
             progressed = true;
             let wire = Frame::decode(&f.encode()).expect("decodable");
-            if deliver(Direction::ToServer, &wire) {
-                server.handle_frame(&wire, now);
+            for f in route(Direction::ToServer, wire) {
+                server.handle_frame(&f, now);
             }
         }
         if server.is_finished() {
