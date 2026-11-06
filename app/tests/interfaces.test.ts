@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultInterface, orderInterfaces, visibleInterfaces } from "../src/lib/interfaces";
+import { capableInterfaces, defaultInterface } from "../src/lib/interfaces";
 import type { InterfaceView } from "../src/lib/types";
 
 function iface(name: string, extra: Partial<InterfaceView> = {}): InterfaceView {
@@ -12,41 +12,41 @@ function iface(name: string, extra: Partial<InterfaceView> = {}): InterfaceView 
     up: true,
     running: true,
     default_route: false,
-    thunderbolt: false,
+    netinstall_capable: true,
     ...extra,
   };
 }
 
 const ip = [{ address: "192.168.88.1", prefix: 24 }];
-const TB1 = iface("en1", { display_name: "Thunderbolt 1", thunderbolt: true, ipv4: ip });
-const TB2 = iface("en4", { display_name: "Thunderbolt 2", thunderbolt: true });
-const WIFI = iface("en0", { kind: "wifi", ipv4: ip });
-const BRIDGE = iface("bridge0", { kind: "bridge" });
+const TB_PORT = iface("en1", { display_name: "Thunderbolt 1", kind: "thunderbolt_ip", netinstall_capable: false, ipv4: ip });
+const WIFI = iface("en0", { kind: "wifi", netinstall_capable: false, ipv4: ip });
+const BRIDGE = iface("bridge0", { kind: "bridge", netinstall_capable: false });
+const USB_DEVICE_MODE = iface("en2", { display_name: "Ethernet Adapter (en2)", kind: "virtual", netinstall_capable: false });
 const USB = iface("en7", { display_name: "USB 10/100/1000 LAN" });
-const USB_IP = iface("en8", { display_name: "USB 10/100/1000 LAN", ipv4: ip });
+const TB_ADAPTER = iface("en8", { display_name: "Thunderbolt Ethernet Slot 1", ipv4: ip });
 
-describe("interface order", () => {
-  it("puts Ethernet adapters first and Thunderbolt ports last", () => {
-    const list = [TB1, WIFI, BRIDGE, TB2, USB, USB_IP];
-    expect(orderInterfaces(list).map((i) => i.name)).toEqual(["en7", "en8", "en0", "bridge0", "en1", "en4"]);
-    expect(visibleInterfaces(list, false, null).map((i) => i.name)).toEqual(["en7", "en8", "en1", "en4"]);
+describe("capable interfaces", () => {
+  it("lists only real wired Ethernet, whatever the bus", () => {
+    const list = [TB_PORT, WIFI, BRIDGE, USB_DEVICE_MODE, USB, TB_ADAPTER];
+    expect(capableInterfaces(list).map((i) => i.name)).toEqual(["en7", "en8"]);
+    expect(capableInterfaces([WIFI, TB_PORT])).toEqual([]);
   });
 });
 
 describe("default interface", () => {
-  it("prefers the last used one, if it is listed", () => {
-    expect(defaultInterface([USB, USB_IP, TB1], "en1")).toBe("en1");
-    expect(defaultInterface([USB, USB_IP], "en9")).toBe("en8");
+  it("prefers the last used one while it is capable", () => {
+    expect(defaultInterface([USB, TB_ADAPTER], "en7")).toBe("en7");
+    expect(defaultInterface([USB, TB_ADAPTER, TB_PORT], "en1")).toBe("en8");
+    expect(defaultInterface([USB, TB_ADAPTER], "en9")).toBe("en8");
   });
 
-  it("then an Ethernet adapter with an address, then any adapter", () => {
-    expect(defaultInterface([TB1, USB, USB_IP], null)).toBe("en8");
-    expect(defaultInterface([TB1, WIFI, USB], null)).toBe("en7");
+  it("then a capable adapter with an address, then any capable one", () => {
+    expect(defaultInterface([TB_PORT, USB, TB_ADAPTER], null)).toBe("en8");
+    expect(defaultInterface([TB_PORT, WIFI, USB], null)).toBe("en7");
   });
 
-  it("never picks Wi-Fi; a Thunderbolt port only if nothing else is there", () => {
-    expect(defaultInterface([WIFI, BRIDGE, TB1], null)).toBe("en1");
-    expect(defaultInterface([WIFI, BRIDGE], null)).toBeNull();
+  it("is nothing without a capable interface", () => {
+    expect(defaultInterface([WIFI, BRIDGE, TB_PORT, USB_DEVICE_MODE], "en0")).toBeNull();
     expect(defaultInterface([], null)).toBeNull();
   });
 });

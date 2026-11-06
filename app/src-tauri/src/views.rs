@@ -30,9 +30,9 @@ pub struct InterfaceView {
     pub running: bool,
     /// It carries an IPv4 default route (probably a real LAN).
     pub default_route: bool,
-    /// A Thunderbolt networking port (`Thunderbolt 1`, a member of the
-    /// Thunderbolt Bridge), not an Ethernet adapter: listed last.
-    pub thunderbolt: bool,
+    /// A real wired Ethernet NIC (built-in, USB, Thunderbolt or dock
+    /// adapter): the only interfaces the window lists.
+    pub netinstall_capable: bool,
 }
 
 impl InterfaceView {
@@ -53,7 +53,7 @@ impl InterfaceView {
             up: i.is_up,
             running: i.is_running,
             default_route: routed.contains(&i.name),
-            thunderbolt: i.thunderbolt_port,
+            netinstall_capable: i.is_netinstall_capable(),
         }
     }
 }
@@ -137,7 +137,6 @@ mod tests {
             is_loopback: false,
             kind: InterfaceKind::Ethernet,
             display_name: Some("USB 10/100/1000 LAN".into()),
-            thunderbolt_port: false,
         };
         let routed: BTreeSet<String> = ["en7".to_string()].into();
         let v = serde_json::to_value(InterfaceView::new(&i, &routed)).unwrap();
@@ -148,17 +147,18 @@ mod tests {
                 "mac": "48:A9:8A:01:02:03",
                 "ipv4": [{"address": "192.168.88.1", "prefix": 24}],
                 "up": true, "running": false, "default_route": true,
-                "thunderbolt": false
+                "netinstall_capable": true
             })
         );
         let tb = Interface {
             name: "en1".into(),
             display_name: Some("Thunderbolt 1".into()),
-            thunderbolt_port: true,
+            kind: InterfaceKind::ThunderboltIp,
             ..i
         };
         let v = serde_json::to_value(InterfaceView::new(&tb, &routed)).unwrap();
-        assert_eq!(v["thunderbolt"], true);
+        assert_eq!(v["netinstall_capable"], false);
+        assert_eq!(v["kind"], "thunderbolt_ip");
     }
 
     #[test]

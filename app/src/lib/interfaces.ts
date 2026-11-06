@@ -1,41 +1,17 @@
 import type { InterfaceView } from "./types";
 
-/** Only wired Ethernet can network-boot a RouterBOARD. */
-export function suitable(i: InterfaceView): boolean {
-  return i.kind === "ethernet";
+/** Only real wired Ethernet NICs (built-in, USB, Thunderbolt or dock
+ *  adapters) can netinstall a RouterBOARD; Rust decides (`ni-net`). */
+export function capableInterfaces(list: InterfaceView[]): InterfaceView[] {
+  return list.filter((i) => i.netinstall_capable);
 }
 
-/** A real Ethernet adapter (USB, PCI, built-in), not a Thunderbolt port. */
-export function adapter(i: InterfaceView): boolean {
-  return suitable(i) && !i.thunderbolt;
-}
-
-/** Ethernet adapters first, then other kinds, Thunderbolt ports last
- *  (the given order within each group). */
-export function orderInterfaces(list: InterfaceView[]): InterfaceView[] {
-  const rank = (i: InterfaceView) => (adapter(i) ? 0 : i.thunderbolt ? 2 : 1);
-  return [...list].sort((a, b) => rank(a) - rank(b));
-}
-
-/** The picker's list, ordered: Ethernet only unless `all` (the selected one
- *  is always kept, so a remembered choice does not vanish). */
-export function visibleInterfaces(
-  list: InterfaceView[],
-  all: boolean,
-  selected: string | null,
-): InterfaceView[] {
-  return orderInterfaces(list.filter((i) => all || suitable(i) || i.name === selected));
-}
-
-/** What to select: the last used interface if it is listed, else the first
- *  Ethernet adapter with an IPv4 address, else the first adapter, else
- *  (only Thunderbolt ports) the first Ethernet-kind interface. */
+/** What to select: the last used interface if it is still capable, else
+ *  the first capable one with an IPv4 address, else the first capable one. */
 export function defaultInterface(list: InterfaceView[], last: string | null): string | null {
-  if (last && list.some((i) => i.name === last)) return last;
-  const ordered = orderInterfaces(list);
-  const pick =
-    ordered.find((i) => adapter(i) && i.ipv4.length > 0) ?? ordered.find(adapter) ?? ordered.find(suitable);
-  return pick?.name ?? null;
+  const capable = capableInterfaces(list);
+  if (last && capable.some((i) => i.name === last)) return last;
+  return (capable.find((i) => i.ipv4.length > 0) ?? capable[0])?.name ?? null;
 }
 
 /** `192.168.88.1/24`, or `null` without IPv4. */

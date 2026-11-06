@@ -14,7 +14,7 @@
 //! `IFT_ETHER`). The UI uses it to hide interfaces that cannot boot a router.
 
 use crate::error::NetError;
-use crate::link::{hardware_addresses, known_mac, thunderbolt_ports};
+use crate::link::{controller_classes, hardware_addresses, known_mac};
 use ni_proto::Mac;
 use nix::ifaddrs::getifaddrs;
 use nix::net::if_::{if_nametoindex, InterfaceFlags};
@@ -27,9 +27,18 @@ use system_configuration::network_configuration::{get_interfaces, SCNetworkInter
 /// What kind of link an interface is, as far as booting a router goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InterfaceKind {
-    /// Wired Ethernet (built-in, USB or Thunderbolt adapters): the only
-    /// kind that can network-boot a RouterBOARD.
+    /// A real wired Ethernet NIC, whatever the bus: built-in, PCIe, USB
+    /// adapters, Thunderbolt Ethernet adapters, docks. The only kind that
+    /// can network-boot a RouterBOARD.
     Ethernet,
+    /// A Thunderbolt port used for IP over Thunderbolt (`Thunderbolt 1`,
+    /// a member of the Thunderbolt Bridge): looks like Ethernet, is not.
+    ThunderboltIp,
+    /// Software or host-internal links that look like Ethernet: the Mac's
+    /// USB-C ports in USB device mode (`anpi*`, "Ethernet Adapter (en2)"),
+    /// virtual machine and fake Ethernet interfaces (`vmenet*`, `feth*`,
+    /// `vlan*`).
+    Virtual,
     /// IEEE 802.11 (`en0` on most Macs).
     WiFi,
     Loopback,
@@ -48,6 +57,8 @@ impl InterfaceKind {
     pub fn as_str(self) -> &'static str {
         match self {
             InterfaceKind::Ethernet => "ethernet",
+            InterfaceKind::ThunderboltIp => "thunderbolt_ip",
+            InterfaceKind::Virtual => "virtual",
             InterfaceKind::WiFi => "wifi",
             InterfaceKind::Loopback => "loopback",
             InterfaceKind::Bridge => "bridge",
@@ -69,16 +80,30 @@ const IFT_STF: u8 = 0x39;
 /// `IFT_BRIDGE`.
 const IFT_BRIDGE: u8 = 0xd1;
 
-/// Classify from the BSD name, the `AF_LINK` `sdl_type` (if any) and
-/// whether SystemConfiguration reports the interface as Wi-Fi.
-pub fn classify(name: &str, link_type: Option<u8>, is_wifi: bool) -> InterfaceKind {
+/// Classify from the BSD name, the `AF_LINK` `sdl_type` (if any),
+/// whether SystemConfiguration reports the interface as Wi-Fi, its display
+/// name, and the IOKit classes of its controller and providers
+/// (`controllers`, nearest first; see [`crate::link::controller_classes`]).
+///
+/// IOKit decides between a real NIC and a look-alike (Thunderbolt IP port,
+/// Wi-Fi, USB device mode) by class, never by bus: a USB or Thunderbolt
+/// Ethernet adapter is Ethernet. Names and the display name are only the
+/// fallback when IOKit knows nothing.
+pub fn classify(
+    name: &str,
+    link_type: Option<u8>,
+    is_wifi: bool,
+    display_name: Option<&str>,
+    controllers: &[&str],
+) -> InterfaceKind {
     let prefixed = |prefixes: &[&str]| prefixes.iter().any(|p| name.starts_with(p));
     if prefixed(&["awdl", "llw", "nan"]) {
         return InterfaceKind::AppleWireless;
     }
-    if prefixed(&["anpi"]) {
-        // Apple's internal network peripheral links (`anpi0`, ...).
-        return InterfaceKind::Other;
+    if prefixed(&["anpi", "vmenet", "feth", "vlan"]) {
+        // Apple's internal network peripheral links (`anpi0`), VM and fake
+        // Ethernet, VLANs on top of something else.
+        return InterfaceKind::Virtual;
     }
     let digits_after = |p: &str| {
         name.strip_prefix(p)
@@ -95,28 +120,38 @@ pub fn classify(name: &str, link_type: Option<u8>, is_wifi: bool) -> InterfaceKi
     if prefixed(&["bridge"]) {
         return InterfaceKind::Bridge;
     }
+    let any_class = |test: &dyn Fn(&str) -> bool| controllers.iter().any(|c| test(c));
+    if any_class(&|c| c.contains("ThunderboltIP")) {
+        return InterfaceKind::ThunderboltIp;
+    }
+    if is_wifi || any_class(&|c| c.contains("WLAN") || c.contains("AirPort") || c.contains("80211"))
+    {
+        return InterfaceKind::WiFi;
+    }
+    if any_class(&|c| c == "IOUSBDeviceInterface" || c.starts_with("AppleUSBDevice")) {
+        // The Mac is the USB *device* here (its own USB-C port).
+        return InterfaceKind::Virtual;
+    }
     match link_type {
         Some(IFT_LOOP) => InterfaceKind::Loopback,
         Some(IFT_BRIDGE) => InterfaceKind::Bridge,
         Some(IFT_GIF | IFT_STF) => InterfaceKind::Tunnel,
-        Some(IFT_ETHER) if is_wifi => InterfaceKind::WiFi,
+        Some(IFT_ETHER) if controllers.is_empty() && is_thunderbolt_port_name(display_name) => {
+            InterfaceKind::ThunderboltIp
+        }
         Some(IFT_ETHER) => InterfaceKind::Ethernet,
         _ if prefixed(&["lo"]) => InterfaceKind::Loopback,
         _ => InterfaceKind::Other,
     }
 }
 
-/// A Thunderbolt networking port (IP over Thunderbolt; System Settings
-/// calls it `Thunderbolt 1`, `Thunderbolt 2`, ... and puts it in the
-/// Thunderbolt Bridge): IOKit says so (`iokit_port`, see
-/// [`crate::link::thunderbolt_ports`]), or the display name is exactly
-/// `Thunderbolt <number>`. Ethernet adapters attached over Thunderbolt
-/// (`Thunderbolt Ethernet ...`) are not ports.
-pub fn is_thunderbolt_port(display_name: Option<&str>, iokit_port: bool) -> bool {
-    iokit_port
-        || display_name
-            .and_then(|d| d.strip_prefix("Thunderbolt "))
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+/// System Settings' name of a Thunderbolt IP port: exactly
+/// `Thunderbolt <number>` (Thunderbolt Ethernet adapters are named
+/// otherwise, e.g. `Thunderbolt Ethernet Slot 1`).
+fn is_thunderbolt_port_name(display_name: Option<&str>) -> bool {
+    display_name
+        .and_then(|d| d.strip_prefix("Thunderbolt "))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// SystemConfiguration's view: BSD name -> (is Wi-Fi, localized display
@@ -168,9 +203,14 @@ pub struct Interface {
     /// Localized name from System Settings (e.g. `USB 10/100/1000 LAN`),
     /// if SystemConfiguration knows the interface.
     pub display_name: Option<String>,
-    /// A Thunderbolt networking port, not an Ethernet adapter (see
-    /// [`is_thunderbolt_port`]); its `kind` is still `Ethernet`.
-    pub thunderbolt_port: bool,
+}
+
+impl Interface {
+    /// A real wired Ethernet NIC ([`InterfaceKind::Ethernet`]): the only
+    /// kind of interface a RouterBOARD can be netinstalled through.
+    pub fn is_netinstall_capable(&self) -> bool {
+        self.kind == InterfaceKind::Ethernet && !self.is_loopback
+    }
 }
 
 /// List all interfaces, sorted by name.
@@ -190,7 +230,6 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
                 is_loopback: false,
                 kind: InterfaceKind::Other,
                 display_name: None,
-                thunderbolt_port: false,
             });
         entry.is_up |= ifa.flags.contains(InterfaceFlags::IFF_UP);
         entry.is_running |= ifa.flags.contains(InterfaceFlags::IFF_RUNNING);
@@ -216,15 +255,23 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
     let mut out: Vec<Interface> = by_name.into_values().collect();
     let sc = system_configuration_info();
     let mut hardware: Option<HashMap<String, Mac>> = None;
-    let tb_ports = thunderbolt_ports();
+    let controllers = controller_classes();
     for iface in &mut out {
         let (wifi, display) = match sc.get(&iface.name) {
             Some((wifi, display)) => (*wifi, Some(display.clone()).filter(|d| !d.is_empty())),
             None => (false, None),
         };
-        iface.kind = classify(&iface.name, link_types.get(&iface.name).copied(), wifi);
-        iface.thunderbolt_port = iface.kind == InterfaceKind::Ethernet
-            && is_thunderbolt_port(display.as_deref(), tb_ports.contains(&iface.name));
+        let classes: Vec<&str> = controllers
+            .get(&iface.name)
+            .map(|c| c.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        iface.kind = classify(
+            &iface.name,
+            link_types.get(&iface.name).copied(),
+            wifi,
+            display.as_deref(),
+            &classes,
+        );
         iface.display_name = display;
         if iface.mac.is_none() && iface.kind != InterfaceKind::WiFi {
             // Masked (or missing): the hardware address is the one in use
@@ -296,41 +343,173 @@ mod tests {
             ("ap1", Some(IFT_ETHER), false, InterfaceKind::WiFi),
             ("apx", Some(IFT_ETHER), false, InterfaceKind::Ethernet),
             ("nan0", Some(IFT_ETHER), false, InterfaceKind::AppleWireless),
-            ("anpi0", Some(IFT_ETHER), false, InterfaceKind::Other),
+            ("anpi0", Some(IFT_ETHER), false, InterfaceKind::Virtual),
+            ("vmenet0", Some(IFT_ETHER), false, InterfaceKind::Virtual),
             ("xyz0", None, false, InterfaceKind::Other),
         ];
         for (name, link, wifi, kind) in cases {
-            assert_eq!(classify(name, link, wifi), kind, "{name}");
+            assert_eq!(classify(name, link, wifi, None, &[]), kind, "{name}");
         }
         assert_eq!(InterfaceKind::AppleWireless.as_str(), "apple_wireless");
     }
 
+    /// IOKit provider classes (controller first) as seen on real Macs.
+    const USB_ADAPTER: &[&str] = &["AppleUserECM", "IOUSBHostInterface", "IOUSBHostDevice"];
+    const USB_RTL8153: &[&str] = &["AppleUserRTL815x", "IOUSBHostInterface", "IOUSBHostDevice"];
+    const TB_ETHERNET: &[&str] = &["AppleBCM5701Ethernet", "IOPCIDevice", "IOPCI2PCIBridge"];
+    const DOCK_AQUANTIA: &[&str] = &[
+        "AppleEthernetAquantiaAqtion",
+        "IOPCIDevice",
+        "IOPCI2PCIBridge",
+    ];
+    const BUILT_IN: &[&str] = &["AppleBCM5701Ethernet", "IOPCIDevice", "AppleT8103PCIeCPort"];
+    const TB_IP_PORT: &[&str] = &[
+        "AppleThunderboltIPPort",
+        "AppleThunderboltIPService",
+        "IOThunderboltXDomainServiceClientManager",
+    ];
+    const WLAN: &[&str] = &[
+        "IOSkywalkLegacyEthernet",
+        "IOUserNetworkWLAN",
+        "CCIOService",
+    ];
+    /// The Mac's own USB-C ports in USB device mode ("Ethernet Adapter
+    /// (en2)" in System Settings, and `anpi*`).
+    const USB_DEVICE_MODE: &[&str] = &[
+        "AppleUSBDeviceNCM11Data",
+        "IOUSBDeviceInterface",
+        "AppleUSBDeviceNCM11Control",
+    ];
+
     #[test]
-    fn thunderbolt_ports_by_iokit_or_display_name() {
-        let cases = [
-            (Some("Thunderbolt 1"), false, true),
-            (Some("Thunderbolt 12"), false, true),
-            (None, true, true),
-            (Some("USB 10/100/1000 LAN"), true, true),
-            // Thunderbolt-attached Ethernet adapters are real Ethernet.
-            (Some("Thunderbolt Ethernet"), false, false),
-            (Some("Thunderbolt Ethernet Slot 1"), false, false),
-            (Some("Thunderbolt Bridge"), false, false),
-            (Some("Thunderbolt "), false, false),
-            (Some("USB 10/100/1000 LAN"), false, false),
-            (None, false, false),
-        ];
-        for (display, iokit, want) in cases {
-            assert_eq!(is_thunderbolt_port(display, iokit), want, "{display:?}");
+    fn real_ethernet_nics_are_capable_whatever_the_bus() {
+        let ether = Some(IFT_ETHER);
+        for (name, display, controllers) in [
+            ("en7", Some("USB 10/100/1000 LAN"), USB_ADAPTER),
+            ("en8", Some("USB 10/100/1G/2.5G LAN"), USB_RTL8153),
+            ("en9", Some("Thunderbolt Ethernet Slot 1"), TB_ETHERNET),
+            ("en10", Some("Thunderbolt Ethernet"), TB_ETHERNET),
+            ("en11", Some("Dock Ethernet"), DOCK_AQUANTIA),
+            ("en0", Some("Ethernet"), BUILT_IN),
+            // IOKit unavailable: the name and link type decide.
+            ("en12", None, &[][..]),
+        ] {
+            let kind = classify(name, ether, false, display, controllers);
+            assert_eq!(kind, InterfaceKind::Ethernet, "{name} {display:?}");
         }
     }
 
     #[test]
-    fn listed_thunderbolt_ports_are_ethernet_kind() {
-        for iface in list_interfaces().unwrap() {
-            if iface.thunderbolt_port {
-                assert_eq!(iface.kind, InterfaceKind::Ethernet, "{}", iface.name);
+    fn ports_wifi_and_virtual_interfaces_are_not_capable() {
+        let ether = Some(IFT_ETHER);
+        for (name, wifi, display, controllers, want) in [
+            (
+                "en1",
+                false,
+                Some("Thunderbolt 1"),
+                TB_IP_PORT,
+                InterfaceKind::ThunderboltIp,
+            ),
+            ("en4", false, None, TB_IP_PORT, InterfaceKind::ThunderboltIp),
+            // Without IOKit, the port's display name gives it away.
+            (
+                "en5",
+                false,
+                Some("Thunderbolt 2"),
+                &[][..],
+                InterfaceKind::ThunderboltIp,
+            ),
+            ("en0", true, Some("Wi-Fi"), WLAN, InterfaceKind::WiFi),
+            ("en0", false, None, WLAN, InterfaceKind::WiFi),
+            (
+                "en2",
+                false,
+                Some("Ethernet Adapter (en2)"),
+                USB_DEVICE_MODE,
+                InterfaceKind::Virtual,
+            ),
+            (
+                "anpi0",
+                false,
+                None,
+                USB_DEVICE_MODE,
+                InterfaceKind::Virtual,
+            ),
+            (
+                "bridge0",
+                false,
+                Some("Thunderbolt Bridge"),
+                &[][..],
+                InterfaceKind::Bridge,
+            ),
+            ("bridge100", false, None, &[][..], InterfaceKind::Bridge),
+            ("utun3", false, None, &[][..], InterfaceKind::Tunnel),
+            ("vmenet0", false, None, &[][..], InterfaceKind::Virtual),
+        ] {
+            assert_eq!(
+                classify(name, ether, wifi, display, controllers),
+                want,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_ethernet_is_netinstall_capable() {
+        let mut i = Interface {
+            name: "en7".into(),
+            index: 7,
+            mac: None,
+            ipv4: Vec::new(),
+            is_up: true,
+            is_running: true,
+            is_loopback: false,
+            kind: InterfaceKind::Ethernet,
+            display_name: None,
+        };
+        assert!(i.is_netinstall_capable());
+        for kind in [
+            InterfaceKind::ThunderboltIp,
+            InterfaceKind::Virtual,
+            InterfaceKind::WiFi,
+            InterfaceKind::Bridge,
+            InterfaceKind::Loopback,
+        ] {
+            i.kind = kind;
+            assert!(!i.is_netinstall_capable(), "{kind:?}");
+        }
+    }
+
+    /// On the development Mac (a Mac Studio without an Ethernet adapter
+    /// plugged in): en2/en3 are the USB-C ports in device mode, en1/en4
+    /// the Thunderbolt IP ports, en0 Wi-Fi. Skipped where those are absent.
+    #[test]
+    fn this_macs_interfaces_split_as_expected() {
+        let all = list_interfaces().unwrap();
+        let by_name = |n: &str| all.iter().find(|i| i.name == n);
+        let expected = [
+            ("en1", InterfaceKind::ThunderboltIp),
+            ("en4", InterfaceKind::ThunderboltIp),
+            ("anpi0", InterfaceKind::Virtual),
+            ("anpi1", InterfaceKind::Virtual),
+        ];
+        if expected.iter().any(|(n, _)| by_name(n).is_none()) {
+            eprintln!("not the development Mac; skipped");
+            return;
+        }
+        for (name, kind) in expected {
+            assert_eq!(by_name(name).unwrap().kind, kind, "{name}");
+        }
+        for name in [
+            "en0", "en1", "en2", "en3", "en4", "anpi0", "anpi1", "bridge0", "lo0",
+        ] {
+            if let Some(i) = by_name(name) {
+                assert!(!i.is_netinstall_capable(), "{name}: {:?}", i.kind);
             }
+        }
+        // Whatever is capable is a real NIC per IOKit.
+        for i in all.iter().filter(|i| i.is_netinstall_capable()) {
+            assert_eq!(i.kind, InterfaceKind::Ethernet, "{}", i.name);
         }
     }
 

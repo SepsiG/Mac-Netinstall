@@ -115,8 +115,8 @@ export interface InterfaceView {
   up: boolean;
   running: boolean;
   default_route: boolean;
-  /** A Thunderbolt networking port (`Thunderbolt 1`), not an adapter. */
-  thunderbolt: boolean;
+  /** A real wired Ethernet NIC: the only interfaces offered. */
+  netinstall_capable: boolean;
 }
 
 export type ConfigMode = { mode: "default" } | { mode: "custom_script"; local_name: string };

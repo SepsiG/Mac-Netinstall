@@ -25,7 +25,6 @@
   let preferred: string[] = [];
   let interfaces = $state<InterfaceView[]>([]);
   let iface = $state<string | null>(null);
-  let showAll = $state(false);
   let profiles = $state<Profile[]>([]);
   let profile = $state<string | null>(null);
   let autoRepeat = $state(false);
@@ -103,7 +102,6 @@
       settings = (await attempt(() => backend.getSettings())) ?? null;
       preferred = (await attempt(() => backend.preferredLanguages())) ?? [];
       applyLanguage();
-      showAll = settings?.show_all_interfaces ?? false;
       iface = settings?.last_interface ?? null;
       profile = settings?.last_profile ?? null;
       autoRepeat = settings?.auto_repeat ?? false;
@@ -234,22 +232,13 @@
     }
   }
 
-  $effect(() => {
-    // Remember "show all" with the other settings.
-    const s = settings;
-    if (s && s.show_all_interfaces !== showAll) {
-      const next = { ...s, show_all_interfaces: showAll };
-      backend.setSettings(next).then((r) => (settings = r), () => {});
-    }
-  });
-
   const current = $derived(profiles.find((p) => p.name === profile) ?? null);
 </script>
 
 <main>
   <header class="toolbar">
     <div class="row">
-      <InterfacePicker {interfaces} bind:selected={iface} bind:showAll disabled={engine.running} onrefresh={loadInterfaces} />
+      <InterfacePicker {interfaces} bind:selected={iface} disabled={engine.running} onrefresh={loadInterfaces} />
       <span class="spacer"></span>
       <button
         class="primary start"

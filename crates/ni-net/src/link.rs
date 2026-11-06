@@ -10,8 +10,9 @@
 //! is not the address in use.
 //!
 //! [`known_mac`] turns placeholders into "unknown"; [`hardware_addresses`]
-//! reads IOKit. [`thunderbolt_ports`] (also IOKit) finds the Thunderbolt
-//! networking ports (IP over Thunderbolt), which look like Ethernet.
+//! reads IOKit. [`controller_classes`] (also IOKit) gives the classes of
+//! each interface's controller and its providers, to tell real Ethernet
+//! NICs from look-alikes.
 
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::data::CFData;
@@ -20,7 +21,7 @@ use core_foundation_sys::base::{CFAllocatorRef, CFTypeRef};
 use core_foundation_sys::dictionary::CFMutableDictionaryRef;
 use core_foundation_sys::string::CFStringRef;
 use ni_proto::Mac;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, CStr};
 
 /// The masked address macOS hands out instead of the real one.
@@ -57,7 +58,7 @@ extern "C" {
         plane: *const c_char,
         parent: *mut IoObject,
     ) -> KernReturn;
-    fn IOObjectConformsTo(object: IoObject, class_name: *const c_char) -> u32;
+    fn IOObjectGetClass(object: IoObject, class_name: *mut c_char) -> KernReturn;
     fn IOObjectRelease(object: IoObject) -> KernReturn;
     fn IORegistryEntryCreateCFProperty(
         entry: IoObject,
@@ -100,37 +101,56 @@ pub fn hardware_addresses() -> HashMap<String, Mac> {
         .collect()
 }
 
-/// BSD names of the Thunderbolt networking ports (`Thunderbolt 1`, ...):
-/// `IOEthernetInterface`s provided by an `AppleThunderboltIPPort`. They
-/// are usually members of the Thunderbolt Bridge (`bridge0`) and cannot be
-/// cabled to a router. Empty if IOKit cannot be queried.
-pub fn thunderbolt_ports() -> HashSet<String> {
+/// BSD name -> IOKit class names of the providers of every
+/// `IOEthernetInterface`, nearest first (the controller, then its
+/// providers; up to [`PROVIDER_DEPTH`]). They tell a real Ethernet NIC
+/// (whatever the bus: PCIe, USB, Thunderbolt) from a Thunderbolt IP port
+/// (`AppleThunderboltIPPort`), Wi-Fi (`IOUserNetworkWLAN`, ...) or the
+/// Mac's own USB-C ports in device mode (`IOUSBDeviceInterface`). Empty if
+/// IOKit cannot be queried.
+pub fn controller_classes() -> HashMap<String, Vec<String>> {
     ethernet_interfaces()
         .into_iter()
-        .filter_map(|(name, i)| i.thunderbolt_port.then_some(name))
+        .map(|(name, i)| (name, i.providers))
         .collect()
 }
 
 /// What IOKit says about one `IOEthernetInterface`.
 struct IoInterface {
     mac: Option<Mac>,
-    thunderbolt_port: bool,
+    providers: Vec<String>,
 }
 
 const PLANE: &CStr = c"IOService";
+/// How many providers [`controller_classes`] lists per interface.
+pub const PROVIDER_DEPTH: usize = 5;
 
-/// Whether the provider (parent in the service plane) of `entry` is an
-/// `AppleThunderboltIPPort`.
-fn provided_by_thunderbolt_port(entry: &Object) -> bool {
-    let mut parent: IoObject = 0;
-    // SAFETY: valid entry and plane name; on success `parent` is +1.
-    let kr = unsafe { IORegistryEntryGetParentEntry(entry.0, PLANE.as_ptr(), &mut parent) };
-    if kr != 0 || parent == 0 {
-        return false;
+/// The class names of `entry`'s providers in the service plane, nearest
+/// first.
+fn provider_classes(entry: &Object) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current: IoObject = entry.0;
+    let mut owned: Option<Object> = None;
+    for _ in 0..PROVIDER_DEPTH {
+        let mut parent: IoObject = 0;
+        // SAFETY: valid entry and plane name; on success `parent` is +1.
+        let kr = unsafe { IORegistryEntryGetParentEntry(current, PLANE.as_ptr(), &mut parent) };
+        if kr != 0 || parent == 0 {
+            break;
+        }
+        let parent = Object(parent);
+        let mut name = [0 as c_char; 128];
+        // SAFETY: valid object; `io_name_t` is 128 bytes.
+        if unsafe { IOObjectGetClass(parent.0, name.as_mut_ptr()) } == 0 {
+            // SAFETY: IOKit wrote a NUL-terminated name.
+            let class = unsafe { CStr::from_ptr(name.as_ptr()) };
+            out.push(class.to_string_lossy().into_owned());
+        }
+        current = parent.0;
+        owned = Some(parent); // keeps `current` alive; the previous one is released
     }
-    let parent = Object(parent);
-    // SAFETY: valid object and class name.
-    unsafe { IOObjectConformsTo(parent.0, c"AppleThunderboltIPPort".as_ptr()) != 0 }
+    drop(owned);
+    out
 }
 
 /// Every `IOEthernetInterface` by BSD name.
@@ -185,14 +205,8 @@ fn ethernet_interfaces() -> HashMap<String, IoInterface> {
         let mac = mac
             .and_then(|m| m.downcast_into::<CFData>())
             .and_then(|m| mac_from_bytes(m.bytes()));
-        let thunderbolt_port = provided_by_thunderbolt_port(&entry);
-        out.insert(
-            name.to_string(),
-            IoInterface {
-                mac,
-                thunderbolt_port,
-            },
-        );
+        let providers = provider_classes(&entry);
+        out.insert(name.to_string(), IoInterface { mac, providers });
     }
     out
 }
@@ -222,12 +236,10 @@ mod tests {
     }
 
     #[test]
-    fn iokit_flags_only_listed_interfaces_as_thunderbolt_ports() {
-        let ports = thunderbolt_ports();
-        let all = hardware_addresses();
-        for name in &ports {
-            assert!(all.contains_key(name), "{name} is not an IOKit interface");
-        }
+    fn iokit_names_the_controllers() {
+        let all = controller_classes();
+        assert!(!all.is_empty(), "IOKit listed no IOEthernetInterface");
+        assert!(all.values().all(|chain| !chain.is_empty()));
     }
 
     #[test]

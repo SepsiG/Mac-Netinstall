@@ -368,7 +368,6 @@ pub(crate) fn test_iface(name: &str, ipv4: &[(Ipv4Addr, Ipv4Addr)], mac: Option<
         is_loopback: false,
         kind: ni_net::InterfaceKind::Ethernet,
         display_name: None,
-        thunderbolt_port: false,
     }
 }
 

@@ -62,13 +62,8 @@ describe("App", () => {
     expect(screen.getByLabelText("Interface")).toHaveValue("en7");
     expect(backend.preflight).toHaveBeenLastCalledWith({ interface: "en7", profile: null, auto_repeat: false });
     expect(await screen.findByText(/Ready to start/)).toBeInTheDocument();
-    // Wi-Fi is hidden until "Show all".
+    // Wi-Fi is never offered.
     expect(screen.queryByRole("option", { name: /en0/ })).toBeNull();
-    await userEvent.click(screen.getByLabelText("Show all"));
-    expect(screen.getByRole("option", { name: /en0/ })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(backend.setSettings).toHaveBeenCalledWith(expect.objectContaining({ show_all_interfaces: true })),
-    );
   });
 
   it("follows the macOS language and switches in Settings", async () => {
@@ -271,7 +266,7 @@ describe("App", () => {
     expect(screen.getByText(/Last known state/)).toBeInTheDocument();
   });
 
-  it("selects an Ethernet adapter with an address and lists Thunderbolt ports last", async () => {
+  it("selects a capable adapter with an address; ports and Wi-Fi are not offered", async () => {
     const eth = (name: string, extra = {}) => ({
       name,
       display_name: null,
@@ -281,20 +276,32 @@ describe("App", () => {
       up: true,
       running: true,
       default_route: false,
-      thunderbolt: false,
+      netinstall_capable: true,
       ...extra,
     });
     await start({
       listInterfaces: vi.fn(async () => [
-        eth("en1", { display_name: "Thunderbolt 1", thunderbolt: true, ipv4: [{ address: "169.254.1.1", prefix: 16 }] }),
+        eth("en1", { display_name: "Thunderbolt 1", kind: "thunderbolt_ip", netinstall_capable: false, ipv4: [{ address: "169.254.1.1", prefix: 16 }] }),
         eth("en7"),
-        eth("en8", { ipv4: [{ address: "192.168.88.1", prefix: 24 }] }),
+        eth("en8", { display_name: "Thunderbolt Ethernet Slot 1", ipv4: [{ address: "192.168.88.1", prefix: 24 }] }),
       ]),
     });
     const picker = screen.getByLabelText("Interface");
     await waitFor(() => expect(picker).toHaveValue("en8"));
     const names = within(picker).getAllByRole("option").map((o) => (o as HTMLOptionElement).value);
-    expect(names).toEqual(["en7", "en8", "en1"]);
+    expect(names).toEqual(["en7", "en8"]);
+  });
+
+  it("explains when there is no usable adapter", async () => {
+    const backend = mockBackend({
+      listInterfaces: vi.fn(async () => [
+        { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true, netinstall_capable: false },
+      ]),
+    });
+    render(App, { props: { backend } });
+    expect(await screen.findByText(/No usable wired Ethernet interface/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+    expect(backend.preflight).not.toHaveBeenCalled();
   });
 
   it("opens Settings with the stored settings, not a stale copy", async () => {

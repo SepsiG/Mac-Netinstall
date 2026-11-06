@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar from "../src/components/StatusBar.svelte";
 import InterfacePicker from "../src/components/InterfacePicker.svelte";
 import { locale } from "../src/lib/i18n";
-import { visibleInterfaces } from "../src/lib/interfaces";
 import type { InterfaceView, KernelState, PreflightReport } from "../src/lib/types";
 
 const base = {
@@ -101,46 +100,36 @@ describe("StatusBar", () => {
 });
 
 const IFACES: InterfaceView[] = [
-  { name: "en7", display_name: "USB LAN", kind: "ethernet", mac: null, ipv4: [{ address: "192.168.88.1", prefix: 24 }], up: true, running: true, default_route: false, thunderbolt: false },
-  { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true, thunderbolt: false },
-  { name: "bridge0", display_name: null, kind: "bridge", mac: null, ipv4: [], up: true, running: true, default_route: false, thunderbolt: false },
+  { name: "en7", display_name: "USB LAN", kind: "ethernet", mac: null, ipv4: [{ address: "192.168.88.1", prefix: 24 }], up: true, running: true, default_route: false, netinstall_capable: true },
+  { name: "en8", display_name: "Thunderbolt Ethernet Slot 1", kind: "ethernet", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: true },
+  { name: "en0", display_name: "Wi-Fi", kind: "wifi", mac: null, ipv4: [], up: true, running: true, default_route: true, netinstall_capable: false },
+  { name: "en1", display_name: "Thunderbolt 1", kind: "thunderbolt_ip", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: false },
+  { name: "bridge0", display_name: null, kind: "bridge", mac: null, ipv4: [], up: true, running: true, default_route: false, netinstall_capable: false },
 ];
 
 describe("InterfacePicker", () => {
   it("has a translated label on the refresh button", () => {
     locale.set("hu");
-    render(InterfacePicker, { props: { interfaces: IFACES, selected: "en7", showAll: false, onrefresh: () => {} } });
+    render(InterfacePicker, { props: { interfaces: IFACES, selected: "en7", onrefresh: () => {} } });
     expect(screen.getByRole("button", { name: "Csatolólista frissítése" })).toBeInTheDocument();
   });
 
-  it("lists Thunderbolt ports last, with a hint", () => {
-    const tb: InterfaceView = { ...IFACES[0]!, name: "en1", display_name: "Thunderbolt 1", ipv4: [], thunderbolt: true };
-    render(InterfacePicker, {
-      props: { interfaces: [tb, ...IFACES], selected: "en7", showAll: false, onrefresh: () => {} },
-    });
-    const options = screen.getAllByRole("option");
-    expect(options.map((o) => o.textContent)).toEqual([
-      "en7 – USB LAN · 192.168.88.1/24",
-      "en1 – Thunderbolt 1 · no IPv4 address · (Thunderbolt)",
-    ]);
-    expect(options[1]).toHaveClass("dim");
-  });
-
-  it("hides Wi-Fi, bridges and the like unless asked", () => {
-    expect(visibleInterfaces(IFACES, false, null).map((i) => i.name)).toEqual(["en7"]);
-    expect(visibleInterfaces(IFACES, false, "en0").map((i) => i.name)).toEqual(["en7", "en0"]);
-    expect(visibleInterfaces(IFACES, true, null)).toHaveLength(3);
-  });
-
-  it("labels interfaces with name, address and kind", () => {
-    render(InterfacePicker, {
-      props: { interfaces: IFACES, selected: "en7", showAll: true, onrefresh: () => {} },
-    });
+  it("lists only wired Ethernet adapters, with name and address", () => {
+    render(InterfacePicker, { props: { interfaces: IFACES, selected: "en7", onrefresh: () => {} } });
     const options = screen.getAllByRole("option").map((o) => o.textContent);
-    expect(options).toEqual([
-      "en7 – USB LAN · 192.168.88.1/24",
-      "en0 – Wi-Fi · no IPv4 address · Wi-Fi",
-      "bridge0 · no IPv4 address · bridge",
-    ]);
+    expect(options).toEqual(["en7 – USB LAN · 192.168.88.1/24", "en8 – Thunderbolt Ethernet Slot 1 · no IPv4 address"]);
+    expect(screen.queryByLabelText(/Show all/)).toBeNull();
+  });
+
+  it("says so when there is no usable adapter, and can look again", async () => {
+    locale.set("hu");
+    const onrefresh = vi.fn();
+    render(InterfacePicker, { props: { interfaces: IFACES.slice(2), selected: null, onrefresh } });
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(
+      screen.getByText("Nincs használható vezetékes Ethernet-csatoló. Csatlakoztass egy USB vagy Thunderbolt Ethernet-adaptert."),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Csatolólista frissítése" }));
+    expect(onrefresh).toHaveBeenCalled();
   });
 });

@@ -691,3 +691,22 @@ async fn cancel_and_forget_need_a_running_engine() {
     assert_eq!(engine.cancel(A).await.unwrap_err().code, "not_running");
     assert_eq!(engine.forget(A).await.unwrap_err().code, "not_running");
 }
+
+#[tokio::test]
+async fn start_refuses_an_interface_that_cannot_netinstall() {
+    let cache = ni_assets::testutil::tempdir("control-not-ethernet");
+    let engine = EngineHandle::spawn(cache.join("cache"), offline_http()).unwrap();
+    let lan = ni_sim::lan::SimLan::bind().await.unwrap();
+    let mut port = real_lo0();
+    port.is_loopback = false;
+    port.kind = ni_net::InterfaceKind::ThunderboltIp;
+    let (source, _cell) = fake_interfaces(Some(port));
+    let mut cfg = config(&lan);
+    cfg.interfaces = source;
+    let err = engine.start(cfg).await.unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("kind")),
+        ("interface_not_ethernet", Some("thunderbolt_ip"))
+    );
+    assert!(!engine.snapshot().await.unwrap().running);
+}

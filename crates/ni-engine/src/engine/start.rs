@@ -24,7 +24,7 @@ use super::core::{Internal, Io, Link, Running};
 use crate::config::{link_status, resolve_network, EngineConfig, LinkStatus};
 use crate::event::{Failure, KernelState, StartInfo};
 use crate::gate::Gate;
-use crate::preflight::bind_failure;
+use crate::preflight::{bind_failure, not_ethernet};
 use ni_bootp::{serve_shared, BootpConfig, BootpHandle, BootpResponder};
 use ni_net::{bind_udp, BindOptions};
 use ni_tftp::{serve_watched, FileMap, TftpConfig};
@@ -75,6 +75,14 @@ pub(crate) fn start(
         .interfaces
         .list()
         .map_err(|e| Failure::new("interface_list_failed").with("detail", e))?;
+    // Defense in depth: the UI lists only capable interfaces.
+    if let Some(f) = ifaces
+        .iter()
+        .find(|i| i.name == cfg.interface)
+        .and_then(not_ethernet)
+    {
+        return Err(f);
+    }
     let net = resolve_network(&ifaces, &cfg)?;
     let link = match link_status(&ifaces, &cfg.interface, net.server_ip) {
         LinkStatus::Up => Link::Up,

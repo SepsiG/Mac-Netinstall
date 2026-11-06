@@ -25,6 +25,7 @@ pub const FAILURES: &[&str] = &[
     "interface_down",
     "interface_gone",
     "interface_list_failed",
+    "interface_not_ethernet",
     "invalid_cooldown",
     "invalid_max_parallel",
     "invalid_name",
@@ -116,6 +117,8 @@ pub const PHASES: &[&str] = &[
 /// [`ni_net::InterfaceKind::as_str`].
 pub const INTERFACE_KINDS: &[&str] = &[
     "ethernet",
+    "thunderbolt_ip",
+    "virtual",
     "wifi",
     "loopback",
     "bridge",
@@ -300,12 +303,14 @@ mod tests {
     fn interface_kind_index(k: &InterfaceKind) -> usize {
         match k {
             InterfaceKind::Ethernet => 0,
-            InterfaceKind::WiFi => 1,
-            InterfaceKind::Loopback => 2,
-            InterfaceKind::Bridge => 3,
-            InterfaceKind::AppleWireless => 4,
-            InterfaceKind::Tunnel => 5,
-            InterfaceKind::Other => 6,
+            InterfaceKind::ThunderboltIp => 1,
+            InterfaceKind::Virtual => 2,
+            InterfaceKind::WiFi => 3,
+            InterfaceKind::Loopback => 4,
+            InterfaceKind::Bridge => 5,
+            InterfaceKind::AppleWireless => 6,
+            InterfaceKind::Tunnel => 7,
+            InterfaceKind::Other => 8,
         }
     }
 
@@ -393,6 +398,8 @@ mod tests {
         );
         let kinds = [
             InterfaceKind::Ethernet,
+            InterfaceKind::ThunderboltIp,
+            InterfaceKind::Virtual,
             InterfaceKind::WiFi,
             InterfaceKind::Loopback,
             InterfaceKind::Bridge,

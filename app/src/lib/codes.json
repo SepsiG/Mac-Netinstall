@@ -16,6 +16,7 @@
     "interface_down",
     "interface_gone",
     "interface_list_failed",
+    "interface_not_ethernet",
     "invalid_cooldown",
     "invalid_max_parallel",
     "invalid_name",
@@ -137,6 +138,8 @@
   ],
   "interface_kinds": [
     "ethernet",
+    "thunderbolt_ip",
+    "virtual",
     "wifi",
     "loopback",
     "bridge",

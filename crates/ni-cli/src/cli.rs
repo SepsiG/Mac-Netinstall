@@ -100,9 +100,12 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List network interfaces with their kind and IPv4 addresses.
+    /// List the interfaces a RouterBOARD can be netinstalled through (real
+    /// wired Ethernet NICs: built-in, USB, Thunderbolt or dock adapters),
+    /// with their kind and IPv4 addresses.
     Interfaces {
-        /// Also list loopback, tunnel and interfaces without IPv4.
+        /// List every interface (Wi-Fi, Thunderbolt IP ports, bridges,
+        /// tunnels, virtual and loopback ones too).
         #[arg(long)]
         all: bool,
     },

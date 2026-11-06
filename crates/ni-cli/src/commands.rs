@@ -6,7 +6,7 @@ use ni_assets::{default_cache_root, AssetEvent, Assets, HttpConfig, PkgArch, Ver
 use ni_engine::preflight::{self, PreflightReport};
 use ni_engine::profile::spec_to_string;
 use ni_engine::{default_profiles_root, ConfigMode, EngineConfig, Failure, Profile, ProfileStore};
-use ni_net::{list_interfaces, Interface, InterfaceKind};
+use ni_net::{list_interfaces, Interface};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -125,10 +125,7 @@ fn interfaces(ctx: &Ctx, all: bool) -> Outcome {
         list_interfaces().map_err(|e| Failure::new("interface_list_failed").with("detail", e))?;
     let shown: Vec<&Interface> = list
         .iter()
-        .filter(|i| {
-            all || (!i.ipv4.is_empty()
-                && matches!(i.kind, InterfaceKind::Ethernet | InterfaceKind::WiFi))
-        })
+        .filter(|i| all || i.is_netinstall_capable())
         .collect();
     let addrs = |i: &Interface| -> Vec<String> {
         i.ipv4
@@ -148,6 +145,7 @@ fn interfaces(ctx: &Ctx, all: bool) -> Outcome {
                     "ipv4": addrs(i),
                     "up": i.is_up,
                     "running": i.is_running,
+                    "netinstall_capable": i.is_netinstall_capable(),
                 })
             })
             .collect();

@@ -121,6 +121,12 @@ async fn interfaces_lists_lo0_with_all() {
         list.iter().all(|i| i["name"] != "lo0"),
         "hidden without --all"
     );
+    // By default only interfaces a RouterBOARD can be netinstalled through.
+    assert!(
+        list.iter()
+            .all(|i| i["kind"] == "ethernet" && i["netinstall_capable"] == true),
+        "{list:?}"
+    );
     assert!(env.logs().contains("ni-cli started"));
 }
 

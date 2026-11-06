@@ -78,7 +78,20 @@ impl PreflightReport {
 /// (`reason`: `no_ip`, `no_carrier`; no cable yet? With a configured
 /// server IP a missing address is only this warning: macOS removes a
 /// manual address while there is no carrier), `unsuitable_interface`
-/// (`kind`: wifi, loopback, bridge, tunnel, apple_wireless, other).
+/// (`kind`: loopback; for tests). Error: `interface_not_ethernet`
+/// (`interface`, `kind`): see [`not_ethernet`].
+/// `interface_not_ethernet` (`interface`, `kind`) unless `iface` can
+/// netinstall a RouterBOARD ([`ni_net::Interface::is_netinstall_capable`]:
+/// a real wired Ethernet NIC). Loopback is let through: tests and the
+/// simulator run on `lo0`, and nothing real can boot from it anyway.
+pub fn not_ethernet(iface: &Interface) -> Option<Failure> {
+    (!iface.is_netinstall_capable() && iface.kind != InterfaceKind::Loopback).then(|| {
+        Failure::new("interface_not_ethernet")
+            .with("interface", &iface.name)
+            .with("kind", iface.kind.as_str())
+    })
+}
+
 pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>, Option<NetPlan>) {
     let mut out = Vec::new();
     let Some(iface) = ifaces.iter().find(|i| i.name == cfg.interface) else {
@@ -106,7 +119,10 @@ pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>,
             ));
         }
     }
-    if iface.kind != InterfaceKind::Ethernet {
+    if let Some(f) = not_ethernet(iface) {
+        out.push(Finding::error(f));
+    } else if iface.kind != InterfaceKind::Ethernet {
+        // Loopback: tests and simulations only.
         out.push(Finding::warning(
             Failure::new("unsuitable_interface")
                 .with("interface", &iface.name)
@@ -314,12 +330,26 @@ mod tests {
             codes(&findings),
             [
                 ("link_down", Severity::Warning),
-                ("unsuitable_interface", Severity::Warning)
+                ("interface_not_ethernet", Severity::Error)
             ]
         );
         assert_eq!(findings[0].failure.param("reason"), Some("no_carrier"));
         assert_eq!(findings[1].failure.param("kind"), Some("wifi"));
         assert!(plan.is_some());
+        for kind in [
+            InterfaceKind::ThunderboltIp,
+            InterfaceKind::Virtual,
+            InterfaceKind::Bridge,
+        ] {
+            let mut port = iface("en1", &[(ip(1), MASK24)], Some(MAC));
+            port.kind = kind;
+            let (findings, _) = check_network(&[port], &EngineConfig::new("en1"));
+            assert_eq!(
+                codes(&findings),
+                [("interface_not_ethernet", Severity::Error)],
+                "{kind:?}"
+            );
+        }
         en7.is_up = false;
         en7.ipv4.clear();
         let (findings, plan) = check_network(&[en7], &EngineConfig::new("en7"));
@@ -327,7 +357,7 @@ mod tests {
             codes(&findings),
             [
                 ("interface_down", Severity::Error),
-                ("unsuitable_interface", Severity::Warning),
+                ("interface_not_ethernet", Severity::Error),
                 ("no_ipv4", Severity::Error)
             ]
         );
