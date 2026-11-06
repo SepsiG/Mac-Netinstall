@@ -1,4 +1,9 @@
 //! tokio runner: a listener plus one task (and ephemeral socket) per transfer.
+//!
+//! [`serve`] serves a fixed file map. [`serve_watched`] takes the map from a
+//! `watch` channel (so the engine can publish boot kernels once they are
+//! downloaded), reports throttled [`TftpEvent::Progress`] and sends events
+//! to a bounded channel.
 
 use crate::accept::{accept, Accept, FileMap, TransferConfig};
 use crate::packet::{ErrorCode, Packet};
@@ -11,8 +16,12 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Sender, UnboundedSender};
+use tokio::sync::watch;
 use tokio::task::{Id, JoinError, JoinSet};
+
+/// Where a runner delivers its events.
+type Emit = Arc<dyn Fn(TftpEvent) + Send + Sync>;
 
 /// Runner settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +65,15 @@ pub enum TftpEvent {
         peer: SocketAddr,
         file: String,
         error: TransferError,
+    },
+    /// The client has acknowledged `acked` of `size` bytes. Only sent by
+    /// [`serve_watched`], at most once per `progress_step` bytes, and never
+    /// for the final block (that is [`TftpEvent::Completed`]).
+    Progress {
+        peer: SocketAddr,
+        file: String,
+        acked: u64,
+        size: u64,
     },
     /// Request answered with an ERROR packet.
     Rejected {
@@ -126,6 +144,43 @@ pub async fn serve(
     cfg: TftpConfig,
     events: UnboundedSender<TftpEvent>,
 ) -> io::Result<()> {
+    let (_files_tx, files_rx) = watch::channel(files);
+    let emit: Emit = Arc::new(move |e| {
+        let _ = events.send(e);
+    });
+    run(listener, files_rx, cfg, None, emit).await
+}
+
+/// Like [`serve`], with three differences for long-running use:
+///
+/// - the file map is read from `files` for every new request, so the
+///   caller can replace it while the server runs (running transfers keep
+///   the data they started with);
+/// - [`TftpEvent::Progress`] is sent every `progress_step` acknowledged
+///   bytes (`0` disables it);
+/// - events go to a bounded channel and are dropped when it is full, so a
+///   flood of requests cannot grow memory (the engine uses 256).
+pub async fn serve_watched(
+    listener: UdpSocket,
+    files: watch::Receiver<Arc<FileMap>>,
+    cfg: TftpConfig,
+    progress_step: u64,
+    events: Sender<TftpEvent>,
+) -> io::Result<()> {
+    let emit: Emit = Arc::new(move |e| {
+        let _ = events.try_send(e);
+    });
+    let step = (progress_step > 0).then_some(progress_step);
+    run(listener, files, cfg, step, emit).await
+}
+
+async fn run(
+    listener: UdpSocket,
+    files: watch::Receiver<Arc<FileMap>>,
+    cfg: TftpConfig,
+    progress_step: Option<u64>,
+    emit: Emit,
+) -> io::Result<()> {
     let mut transfers = Transfers::default();
     let mut buf = vec![0u8; 2048];
     let mut recv_errors = RecvErrorGuard::default();
@@ -141,7 +196,7 @@ pub async fn serve(
                         RecvErrorAction::Fatal => return Err(e),
                         RecvErrorAction::Retry { report } => {
                             if let Some(count) = report {
-                                let _ = events.send(TftpEvent::RecvError {
+                                emit(TftpEvent::RecvError {
                                     error: e.to_string(),
                                     count,
                                 });
@@ -154,23 +209,27 @@ pub async fn serve(
                 if transfers.contains(&peer) {
                     continue;
                 }
-                match accept(&buf[..n], &files, &cfg.transfer, Instant::now()) {
+                let current = Arc::clone(&files.borrow());
+                match accept(&buf[..n], &current, &cfg.transfer, Instant::now()) {
                     Accept::Start(t) => {
                         let file = t.file().to_string();
-                        let _ = events.send(TftpEvent::Started {
+                        emit(TftpEvent::Started {
                             peer,
                             file: file.clone(),
                             size: t.size(),
                         });
-                        transfers.spawn(
+                        let job = run_transfer(
+                            t,
                             peer,
-                            file,
-                            run_transfer(t, peer, cfg.transfer_socket(), events.clone()),
+                            cfg.transfer_socket(),
+                            progress_step,
+                            emit.clone(),
                         );
+                        transfers.spawn(peer, file, job);
                     }
                     Accept::Reject(r) => {
                         let _ = listener.send_to(&r.packet(), peer).await;
-                        let _ = events.send(TftpEvent::Rejected {
+                        emit(TftpEvent::Rejected {
                             peer,
                             file: r.file,
                             code: r.code,
@@ -181,7 +240,7 @@ pub async fn serve(
             }
             Some((peer, file, error)) = transfers.join_next(), if !transfers.is_empty() => {
                 if let Some(e) = error {
-                    let _ = events.send(TftpEvent::Failed {
+                    emit(TftpEvent::Failed {
                         peer,
                         file,
                         error: TransferError::Io(format!("transfer task ended: {e}")),
@@ -196,10 +255,18 @@ async fn run_transfer(
     mut t: Transfer,
     peer: SocketAddr,
     bind: BindOptions,
-    events: UnboundedSender<TftpEvent>,
+    progress_step: Option<u64>,
+    emit: Emit,
 ) {
     match bind_udp(&bind) {
-        Ok(sock) => drive(&mut t, &sock, peer).await,
+        Ok(sock) => {
+            let mut progress = progress_step.map(|step| Progress {
+                step,
+                reported: 0,
+                emit: emit.clone(),
+            });
+            drive(&mut t, &sock, peer, progress.as_mut()).await
+        }
         Err(e) => t.abort(TransferError::Io(e.to_string())),
     }
     let file = t.file().to_string();
@@ -216,10 +283,38 @@ async fn run_transfer(
         },
         Status::Running => unreachable!("drive returns only when finished"),
     };
-    let _ = events.send(event);
+    emit(event);
 }
 
-async fn drive(t: &mut Transfer, sock: &UdpSocket, peer: SocketAddr) {
+/// Throttled progress reporting for one transfer.
+struct Progress {
+    step: u64,
+    reported: u64,
+    emit: Emit,
+}
+
+impl Progress {
+    fn update(&mut self, t: &Transfer, peer: SocketAddr) {
+        let acked = t.acked_bytes();
+        if t.is_finished() || acked < self.reported + self.step {
+            return;
+        }
+        self.reported = acked;
+        (self.emit)(TftpEvent::Progress {
+            peer,
+            file: t.file().to_string(),
+            acked,
+            size: t.size(),
+        });
+    }
+}
+
+async fn drive(
+    t: &mut Transfer,
+    sock: &UdpSocket,
+    peer: SocketAddr,
+    mut progress: Option<&mut Progress>,
+) {
     let unknown_tid = Packet::Error {
         code: ErrorCode::UnknownTransferId,
         message: "unknown transfer id".into(),
@@ -242,6 +337,9 @@ async fn drive(t: &mut Transfer, sock: &UdpSocket, peer: SocketAddr) {
                 Ok((n, from)) if from == peer => {
                     recv_errors.on_success();
                     t.handle_packet(&buf[..n], Instant::now());
+                    if let Some(p) = progress.as_deref_mut() {
+                        p.update(t, peer);
+                    }
                 }
                 Ok((n, from)) => {
                     recv_errors.on_success();
