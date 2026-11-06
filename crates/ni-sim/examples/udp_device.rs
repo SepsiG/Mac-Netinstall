@@ -43,6 +43,8 @@ fn main() -> ExitCode {
         Some("pynetinstall") => AfterFiles::PyNetinstall,
         Some("never") => AfterFiles::NeverWtrm,
         Some("early") => AfterFiles::EarlyWtrm,
+        Some("nack-file-end") => AfterFiles::NackFileEnd,
+        Some("silent") => AfterFiles::Silent,
         Some(other) => panic!("--after-files {other}"),
     };
     std::fs::create_dir_all(&out).expect("output directory");

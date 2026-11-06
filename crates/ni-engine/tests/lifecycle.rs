@@ -298,6 +298,27 @@ async fn a_device_that_stops_before_the_last_file_is_flash_ended_early() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_that_never_says_wtrm_is_done_with_a_warning() {
+    let mut rig = rig(|_| {}).await;
+    let mut never = sim_config(A);
+    never.after_files = AfterFiles::NeverWtrm;
+    let sim = boot(&rig, A, never).await;
+    rig.lan.add(sim).await;
+    let w = next(
+        &mut rig.events,
+        |e| matches!(e, EngineEvent::Warning(f) if f.code == "finish_unconfirmed"),
+    )
+    .await;
+    let EngineEvent::Warning(f) = w else {
+        unreachable!()
+    };
+    assert_eq!(f.param("mac"), Some("48:A9:8A:00:00:0A"));
+    state(&mut rig.events, A, "done").await;
+    let report = rig.lan.wait_terminated(A, WAIT).await;
+    assert!(report.is_some(), "TERM reached the device");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_newer_min_os_is_only_a_warning() {
     let mut rig = rig(|_| {}).await;
     let mut newer = sim_config(A);

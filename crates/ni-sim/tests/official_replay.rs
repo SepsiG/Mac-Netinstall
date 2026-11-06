@@ -54,6 +54,7 @@ fn our_device_answers_the_official_server_like_the_capture() {
                     };
                     sim.handle_frame(&Frame::new(*src, *dst, *seq, *ack, bytes), now);
                 }
+                Line::Hello { .. } => unreachable!("complete captures have no re-sent hello"),
                 Line::Device { seq, payload } => {
                     let reply = sim
                         .poll_transmit()

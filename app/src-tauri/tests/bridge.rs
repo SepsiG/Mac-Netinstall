@@ -62,8 +62,9 @@ async fn rig(name: &str) -> Rig {
                 max_retransmits: 2,
                 chunk_delay: Duration::from_millis(1),
                 offer_retry: Duration::from_millis(50),
-                finish_polls: 5,
+                finish_timeout: Duration::from_millis(50),
                 poll_interval: Duration::from_millis(10),
+                finish_reply_timeout: Duration::from_millis(150),
             };
         }));
     let mut p = Profile::new("test", VersionSpec::Channel(Channel::Stable));

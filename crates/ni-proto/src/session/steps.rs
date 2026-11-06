@@ -20,8 +20,12 @@ pub(super) enum Expect {
     /// The empty poll after a file. `remaining` files are still to be
     /// sent: then the device must not answer `WTRM`. After the last file
     /// (`remaining == 0`) `WTRM` ends the upload and anything else is
-    /// polled again.
+    /// polled again (see the session for the bounds); a `NACK` or no
+    /// answer there leads to the fallback.
     Poll { remaining: usize },
+    /// pyNetinstall's `FILE\n`: any answer, a `NACK` or none at all (once
+    /// re-sends are exhausted) moves on to `TERM`.
+    Fallback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +33,8 @@ pub(super) enum TimeoutKind {
     Reply,
     Format,
     Optional,
+    /// A poll after the last file.
+    Finish,
 }
 
 #[derive(Debug, Clone)]
@@ -105,23 +111,23 @@ pub(super) fn build_steps(plan: &InstallPlan) -> Vec<Step> {
         let name: Arc<str> = Arc::from(name.as_str());
         push_file(&mut steps, Arc::clone(&name), data);
         let remaining = files.len() - 1 - i;
-        let phase = if remaining == 0 {
-            Phase::Finishing
+        let (phase, timeout) = if remaining == 0 {
+            (Phase::Finishing, TimeoutKind::Finish)
         } else {
-            Phase::Uploading { file: name }
+            (Phase::Uploading { file: name }, Reply)
         };
         steps.push(Step::control(
             phase,
             Bytes::new(),
             Expect::Poll { remaining },
-            Reply,
+            timeout,
         ));
     }
     steps.push(Step::control(
         Phase::Finishing,
         Bytes::from_static(message::FILE_END),
-        Any,
-        Reply,
+        Expect::Fallback,
+        TimeoutKind::Optional,
     ));
     steps.push(Step::control(
         Phase::Rebooting,

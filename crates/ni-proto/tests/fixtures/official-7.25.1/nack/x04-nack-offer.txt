@@ -1,0 +1,102 @@
+# Official netinstall-cli 7.25.1 (MikroTik), captured in spike 5 (run x04_nack)
+# against the device simulator sim.py --nack-offer; see
+# docs/superpowers/research/2026-11-06-official-netinstall-wire-spec.md.
+# Format as in ../e01-keep.txt, plus
+# H <t>: the device re-sent its hello (seq 1 ack 0) at <t> s on the
+# capture clock (the first hello: 1.358 s, its offer 0.414 s later; every
+# later offer followed its hello within 1 ms).
+# The device answers every offer NACK and says hello again about once a
+# second; the official server answers each hello with the same offer
+# (seq 1, ack 0), forever (the run was stopped after 30 s).
+args 
+packages routeros-7.25.1-arm64.npk
+size routeros-7.25.1-arm64.npk 13984181
+device 64:d1:54:aa:bb:01
+hello "DSCV\nABCD-1234\n\nRB5009UG+S+\narm64\n7.1\nx\ny\n"
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 2.777
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 3.781
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 4.785
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 5.788
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 6.790
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 7.793
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 8.796
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 9.800
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 10.804
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 11.808
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 12.811
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 13.813
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 14.816
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 15.819
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 16.823
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 17.826
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 18.829
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 19.833
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 20.835
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 21.838
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 22.840
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 23.843
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 24.846
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 25.849
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 26.852
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 27.856
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 28.859
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 29.862
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "NACK\n"
+H 30.866

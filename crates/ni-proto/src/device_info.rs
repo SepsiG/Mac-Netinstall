@@ -23,6 +23,10 @@ pub struct DeviceInfo {
     pub min_os: String,
     /// Fields after `min_os` (real devices send two).
     pub extra: Vec<String>,
+    /// `[6:12]` of the hello (the broadcast address in every capture). The
+    /// server's offer echoes it in its `[0:6]`, as the official server
+    /// mirrors the frame it answers.
+    pub hello_dst: Mac,
 }
 
 impl DeviceInfo {
@@ -52,6 +56,7 @@ impl DeviceInfo {
             arch: rows[4].to_string(),
             min_os: rows[5].to_string(),
             extra: rows[6..].iter().map(|s| s.to_string()).collect(),
+            hello_dst: frame.dst,
         })
     }
 
@@ -97,6 +102,22 @@ mod tests {
         assert_eq!(info.arch, "arm64");
         assert_eq!(info.min_os, "7.1");
         assert!(info.extra.is_empty());
+        assert_eq!(info.hello_dst, Mac::BROADCAST);
+    }
+
+    #[test]
+    fn keeps_the_hellos_dst() {
+        let f = Frame::new(
+            Mac([0xaa; 6]),
+            Mac([0x02, 0, 0, 0, 0, 7]),
+            1,
+            0,
+            &b"DSCV\n\n\nhEX\nmmips\n7.1\n"[..],
+        );
+        assert_eq!(
+            DeviceInfo::parse(&f).unwrap().hello_dst,
+            Mac([0x02, 0, 0, 0, 0, 7])
+        );
     }
 
     #[test]

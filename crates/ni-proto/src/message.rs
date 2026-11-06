@@ -111,6 +111,23 @@ pub fn parse_term(payload: &[u8]) -> Option<AfterInstall> {
     .find(|a| term(*a) == payload)
 }
 
+/// A license key from a key file's contents (the official tool's `-k`):
+/// `\n` and `\r` removed (the official tool removes `\n`; `\r` too, so a
+/// key file saved with Windows line endings works). `None` unless the rest
+/// is 1 ..= [`MAX_LICENSE_KEY`] printable ASCII characters.
+pub fn license_key_from_file(data: &[u8]) -> Option<String> {
+    let key: Vec<u8> = data
+        .iter()
+        .copied()
+        .filter(|b| !matches!(b, b'\n' | b'\r'))
+        .collect();
+    let printable = key.iter().all(|b| (0x20..0x7f).contains(b));
+    if key.is_empty() || key.len() > MAX_LICENSE_KEY || !printable {
+        return None;
+    }
+    String::from_utf8(key).ok()
+}
+
 /// `FILE\n<name>\n<size>\n\0` header announcing a file upload.
 pub fn file_header(name: &str, size: u64) -> Vec<u8> {
     format!("FILE\n{name}\n{size}\n\0").into_bytes()
@@ -215,6 +232,26 @@ mod tests {
         assert_eq!(parse_offer(b"OFFR\n\nmaybe\n\n\0"), None);
         assert_eq!(parse_offer(b"OFFR\n\n\n\nextra\n\0"), None);
         assert_eq!(parse_offer(b"YACK\n"), None);
+    }
+
+    #[test]
+    fn license_keys_come_from_key_files() {
+        let file = b"-----BEGIN MIKROTIK SOFTWARE KEY------------\r\nAAAA\nBBBB==\n-----END\n";
+        assert_eq!(
+            license_key_from_file(file).as_deref(),
+            Some("-----BEGIN MIKROTIK SOFTWARE KEY------------AAAABBBB==-----END")
+        );
+        for bad in [
+            &b""[..],
+            b"\n\r\n",
+            b"key\0x",
+            b"tab\tkey",
+            "kulcs\u{e9}".as_bytes(),
+            &[b'k'; MAX_LICENSE_KEY + 1],
+        ] {
+            assert_eq!(license_key_from_file(bad), None, "{bad:?}");
+        }
+        assert!(license_key_from_file(&[b'k'; MAX_LICENSE_KEY]).is_some());
     }
 
     #[test]

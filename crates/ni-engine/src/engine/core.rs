@@ -1376,6 +1376,11 @@ impl Core {
                     dev.state = Some(state);
                 }
             }
+            ni_proto::Event::FinishUnconfirmed => {
+                // `TERM` was sent anyway; `Done` follows.
+                warn!(%mac, "device never confirmed the end of the upload");
+                self.warning(Failure::new("finish_unconfirmed").with("mac", mac));
+            }
             ni_proto::Event::Done => {
                 dev.session = None;
                 // `cooldown` is at most `MAX_COOLDOWN`; never panic anyway.

@@ -451,36 +451,125 @@ fn every_configuration_reaches_the_device() {
     }
 }
 
+/// Run a one-package install against a device answering the polls after
+/// the last file with `after`; returns the server frames' kinds, the
+/// events and when the session ended (from the start).
+fn finish_with(after: AfterFiles, mut sim_cfg: SimConfig) -> (Vec<String>, Vec<Event>, Duration) {
+    sim_cfg.after_files = after;
+    let plan = one_package(npk(2000, 21));
+    let (mut server, mut sim, now) = setup(sim_cfg, &plan);
+    let mut sent = Vec::new();
+    let end = pump(
+        &mut server,
+        &mut sim,
+        now,
+        Duration::from_secs(600),
+        |dir, f| {
+            if dir == Direction::ToDevice {
+                sent.push(kind(&f.payload));
+            }
+            true
+        },
+    );
+    assert!(sim.is_terminated(), "{after:?}: TERM reached the device");
+    assert_no_violations(&sim);
+    assert_eq!(sim.received_files().len(), 1);
+    (sent, events(&mut server), end.now - now)
+}
+
 #[test]
 fn a_pynetinstall_era_device_finishes_through_the_file_end_fallback() {
+    let cfg = SessionConfig::default();
     for after in [AfterFiles::PyNetinstall, AfterFiles::NeverWtrm] {
-        let mut sim_cfg = SimConfig::new(DEVICE, "hEX", "mmips");
-        sim_cfg.after_files = after;
-        let plan = one_package(npk(2000, 21));
-        let (mut server, mut sim, now) = setup(sim_cfg, &plan);
-        let mut sent = Vec::new();
-        let end = pump(
-            &mut server,
-            &mut sim,
-            now,
-            Duration::from_secs(60),
-            |dir, f| {
-                if dir == Direction::ToDevice {
-                    sent.push(kind(&f.payload));
-                }
-                true
-            },
-        );
-        assert_eq!(events(&mut server).last(), Some(&Event::Done), "{after:?}");
-        assert!(sim.is_terminated());
-        assert_no_violations(&sim);
-        let cfg = SessionConfig::default();
+        let (sent, ev, end) = finish_with(after, SimConfig::new(DEVICE, "hEX", "mmips"));
+        assert_eq!(ev.last(), Some(&Event::Done), "{after:?}");
+        let unconfirmed = ev.contains(&Event::FinishUnconfirmed);
+        assert_eq!(unconfirmed, after == AfterFiles::NeverWtrm, "{after:?}");
         let polls = sent.iter().skip(5).filter(|k| *k == "EMPTY").count();
-        assert_eq!(polls, cfg.finish_polls as usize, "{after:?}");
+        // A poll every second for the whole window: 0, 1, ..., 60 s.
+        let window = cfg.finish_timeout.as_secs() / cfg.poll_interval.as_secs();
+        assert_eq!(polls as u64, window + 1, "{after:?}");
         assert_eq!(sent[sent.len() - 2..], ["FILE_END", "TERM Reboot"]);
-        // The polls were paced: the fallback costs finish_polls - 1 intervals.
-        assert!(end.now >= now + cfg.poll_interval * (cfg.finish_polls - 1));
+        assert!(end >= cfg.finish_timeout);
     }
+}
+
+#[test]
+fn a_device_slower_than_the_old_bound_finishes_with_wtrm() {
+    // RETR to the polls for 12 s after the file (the old bound gave up
+    // after 20 polls, 250 ms apart: 5 s), then WTRM.
+    let (sent, ev, end) = finish_with(
+        AfterFiles::SlowWtrm(Duration::from_secs(12)),
+        SimConfig::new(DEVICE, "hEX", "mmips"),
+    );
+    assert_eq!(ev.last(), Some(&Event::Done));
+    assert!(!ev.contains(&Event::FinishUnconfirmed));
+    assert!(!sent.contains(&"FILE_END".to_string()));
+    assert_eq!(sent.last().map(String::as_str), Some("TERM Reboot"));
+    assert!(
+        end >= Duration::from_secs(12) && end < Duration::from_secs(14),
+        "{end:?}"
+    );
+}
+
+#[test]
+fn a_device_that_nacks_file_end_still_gets_term() {
+    let (sent, ev, _) = finish_with(
+        AfterFiles::NackFileEnd,
+        SimConfig::new(DEVICE, "hEX", "mmips"),
+    );
+    assert_eq!(sent[sent.len() - 2..], ["FILE_END", "TERM Reboot"]);
+    assert_eq!(ev[ev.len() - 2..], [Event::FinishUnconfirmed, Event::Done]);
+}
+
+#[test]
+fn a_device_silent_after_the_last_file_still_gets_term() {
+    let cfg = SessionConfig::default();
+    let (sent, ev, end) = finish_with(AfterFiles::Silent, SimConfig::new(DEVICE, "hEX", "mmips"));
+    assert_eq!(sent[sent.len() - 2..], ["FILE_END", "TERM Reboot"]);
+    assert_eq!(ev[ev.len() - 2..], [Event::FinishUnconfirmed, Event::Done]);
+    // Bounded: the finish window, then FILE\n and its re-sends.
+    let bound = cfg.finish_timeout
+        + cfg.finish_reply_timeout
+        + cfg.optional_timeout * (cfg.max_retransmits + 1)
+        + Duration::from_secs(10);
+    assert!(end <= bound, "{end:?}");
+}
+
+#[test]
+fn a_device_replying_with_its_own_mac_in_the_dst_slot_installs() {
+    // reply_dst = the device's MAC: we mirror it, so every server frame
+    // after the offer carries the device's MAC in [0:6].
+    let mut sim_cfg = SimConfig::new(DEVICE, "hEX", "mmips");
+    sim_cfg.reply_dst = DEVICE;
+    let (sent, ev, _) = finish_with(AfterFiles::Official, sim_cfg);
+    assert_eq!(ev.last(), Some(&Event::Done));
+    assert!(!ev.contains(&Event::FinishUnconfirmed));
+    assert!(!sent.contains(&"FILE_END".to_string()));
+}
+
+#[test]
+fn the_offer_echoes_a_non_broadcast_hello_dst() {
+    let mut sim_cfg = SimConfig::new(DEVICE, "hEX", "mmips");
+    let echo = Mac([0x02, 0, 0, 0, 0, 0x33]);
+    sim_cfg.info.hello_dst = echo;
+    let plan = one_package(npk(100, 2));
+    let (mut server, mut sim, now) = setup(sim_cfg, &plan);
+    let mut first = None;
+    pump(
+        &mut server,
+        &mut sim,
+        now,
+        Duration::from_secs(60),
+        |dir, f| {
+            if dir == Direction::ToDevice && first.is_none() {
+                first = Some((f.src, f.dst));
+            }
+            true
+        },
+    );
+    assert_eq!(first, Some((echo, DEVICE)));
+    assert_eq!(events(&mut server).last(), Some(&Event::Done));
 }
 
 #[test]

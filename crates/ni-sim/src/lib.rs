@@ -50,6 +50,14 @@ pub enum AfterFiles {
     NeverWtrm,
     /// `WTRM` to the first poll after the first file: stops early.
     EarlyWtrm,
+    /// `RETR` to the polls until this long after the last file was received
+    /// (a device busy writing its flash), then `WTRM`. `WTRM` to `FILE\n`.
+    SlowWtrm(Duration),
+    /// `RETR` to every poll, `NACK` to `FILE\n`; then waits for `TERM`.
+    NackFileEnd,
+    /// Never answers a poll or `FILE\n`; then waits for `TERM`. Only for
+    /// single-file plans (it cannot tell the last file).
+    Silent,
 }
 
 #[derive(Debug, Clone)]
@@ -70,9 +78,13 @@ pub struct SimConfig {
     pub reject_offer: bool,
     /// Default [`AfterFiles::Official`].
     pub after_files: AfterFiles,
-    /// `[6:12]` of its replies (`[6:12]` of a hello is always the
-    /// broadcast address). Default zeros, the only value the official
-    /// server handled cleanly (see the research doc, §5).
+    /// `[6:12]` of its replies (`[6:12]` of a hello is
+    /// [`DeviceInfo::hello_dst`], the broadcast address unless changed).
+    /// Default zeros, the only value the official server handled cleanly
+    /// (see the research doc, §5). A server that mirrors it (ours, the
+    /// official one) then sends frames whose `[0:6]` is this value; with the
+    /// device's own MAC those carry the device as `src` (see
+    /// [`DeviceSim::handle_frame`]).
     pub reply_dst: Mac,
 }
 
@@ -88,6 +100,7 @@ impl SimConfig {
                 arch: arch.into(),
                 min_os: "7.0".into(),
                 extra: vec!["0".into(), "0".into()],
+                hello_dst: Mac::BROADCAST,
             },
             hello_interval: Duration::from_secs(1),
             resend_interval: Duration::from_millis(500),
@@ -147,6 +160,8 @@ pub struct DeviceSim {
     tx: VecDeque<Frame>,
     next_timer: Option<Instant>,
     received: Vec<ReceivedFile>,
+    /// When the last file was complete.
+    file_done_at: Option<Instant>,
     offer: Option<Offer>,
     after_install: Option<AfterInstall>,
     violations: Vec<String>,
@@ -162,6 +177,7 @@ impl DeviceSim {
             tx: VecDeque::new(),
             next_timer: Some(now),
             received: Vec::new(),
+            file_done_at: None,
             offer: None,
             after_install: None,
             violations: Vec::new(),
@@ -217,7 +233,7 @@ impl DeviceSim {
             State::Discovering => {
                 let hello = Frame::new(
                     self.cfg.info.mac,
-                    Mac::BROADCAST,
+                    self.cfg.info.hello_dst,
                     1,
                     0,
                     self.cfg.info.to_payload(),
@@ -241,9 +257,17 @@ impl DeviceSim {
         }
     }
 
+    /// Feed a frame seen on the wire. Frames for other devices and the
+    /// device's own frames looped back (a reply, `seq == ack`, or a hello)
+    /// are ignored. A server frame may carry the device's MAC as `src`: a
+    /// mirroring server echoes [`SimConfig::reply_dst`] there, and a server
+    /// frame never has `seq == ack` (its `ack` is `seq - 2`, 0 for the first
+    /// two).
     pub fn handle_frame(&mut self, frame: &Frame, now: Instant) {
         let me = self.cfg.info.mac;
-        if self.state == State::Terminated || frame.dst != me || frame.src == me {
+        let own =
+            frame.src == me && (frame.seq == frame.ack || frame.payload.starts_with(b"DSCV\n"));
+        if self.state == State::Terminated || frame.dst != me || own {
             return;
         }
         if self.last_seq.is_some_and(|last| frame.seq < last) {
@@ -286,7 +310,7 @@ impl DeviceSim {
                 return;
             }
         };
-        if replies.first() == Some(&message::NACK) {
+        if self.state == State::Discovering && replies.first() == Some(&message::NACK) {
             // A refused offer: answered, but the same frame may come again.
             self.nack(frame.seq);
             self.schedule(now);
@@ -320,12 +344,20 @@ impl DeviceSim {
                 }
             }
             State::Formatted if payload.is_empty() => Ok((State::Ready, vec![RETR])),
-            State::Ready => self.header(State::Ready, payload),
+            State::Ready => self.header(State::Ready, payload, now),
             State::AfterFile { polls } if payload.is_empty() => {
                 let wtrm = match self.cfg.after_files {
                     AfterFiles::Official => polls > 0,
-                    AfterFiles::PyNetinstall | AfterFiles::NeverWtrm => false,
+                    AfterFiles::PyNetinstall | AfterFiles::NeverWtrm | AfterFiles::NackFileEnd => {
+                        false
+                    }
                     AfterFiles::EarlyWtrm => true,
+                    AfterFiles::SlowWtrm(after) => self
+                        .file_done_at
+                        .is_some_and(|t| now.saturating_duration_since(t) >= after),
+                    AfterFiles::Silent => {
+                        return Ok((State::AfterFile { polls: polls + 1 }, vec![]));
+                    }
                 };
                 if wtrm {
                     Ok((State::Finished, vec![WTRM]))
@@ -335,8 +367,12 @@ impl DeviceSim {
             }
             State::AfterFile { polls } if payload == message::FILE_END => {
                 match self.cfg.after_files {
-                    AfterFiles::PyNetinstall => Ok((State::Finished, vec![WTRM])),
+                    AfterFiles::PyNetinstall | AfterFiles::SlowWtrm(_) => {
+                        Ok((State::Finished, vec![WTRM]))
+                    }
                     AfterFiles::NeverWtrm => Ok((State::Finished, vec![RETR])),
+                    AfterFiles::NackFileEnd => Ok((State::Finished, vec![message::NACK])),
+                    AfterFiles::Silent => Ok((State::Finished, vec![])),
                     AfterFiles::Official | AfterFiles::EarlyWtrm => Err((
                         State::AfterFile { polls },
                         "FILE\\n although the device would have said WTRM".into(),
@@ -347,7 +383,7 @@ impl DeviceSim {
                 State::AfterFile { polls },
                 format!("expected the poll after a file, got {what}"),
             )),
-            State::AfterFile { polls } => self.header(State::AfterFile { polls }, payload),
+            State::AfterFile { polls } => self.header(State::AfterFile { polls }, payload, now),
             State::Receiving {
                 name,
                 size,
@@ -382,6 +418,7 @@ impl DeviceSim {
                     return Ok((State::Receiving { name, size, data }, vec![RETR]));
                 }
                 self.received.push(ReceivedFile { name, data });
+                self.file_done_at = Some(now);
                 Ok((State::AfterFile { polls: 0 }, vec![RETR]))
             }
             State::Finished => match message::parse_term(payload) {
@@ -399,7 +436,7 @@ impl DeviceSim {
     }
 
     /// A `FILE` header: start receiving (an empty file is complete at once).
-    fn header(&mut self, state: State, payload: &[u8]) -> Step {
+    fn header(&mut self, state: State, payload: &[u8], now: Instant) -> Step {
         let Some((name, size)) = message::parse_file_header(payload) else {
             let why = format!("expected FILE header, got {}", describe(payload));
             return Err((state, why));
@@ -413,6 +450,7 @@ impl DeviceSim {
                 name,
                 data: Vec::new(),
             });
+            self.file_done_at = Some(now);
             return Ok((State::AfterFile { polls: 0 }, vec![message::RETR]));
         }
         let data = Vec::new();
@@ -631,6 +669,88 @@ mod tests {
     }
 
     #[test]
+    fn slow_nack_and_silent_after_files_behaviours() {
+        let h1 = header("a.npk", 1);
+        let start: Vec<&[u8]> = vec![OFFER, b"", b"", &h1, b"a"];
+        // Slow: RETR until 5 s after the file, then WTRM.
+        let (mut sim, now) =
+            sim_with(|c| c.after_files = AfterFiles::SlowWtrm(Duration::from_secs(5)));
+        let mut seq = 0;
+        feed(&mut sim, &mut seq, &start, now);
+        let mut tail = Vec::new();
+        for t in [0, 2, 4, 5] {
+            tail.extend(feed(
+                &mut sim,
+                &mut seq,
+                &[b""],
+                now + Duration::from_secs(t),
+            ));
+        }
+        assert_eq!(strs(&tail), ["RETR", "RETR", "RETR", "WTRM"]);
+        feed(&mut sim, &mut seq, &[TERM], now);
+        assert!(sim.is_terminated());
+        assert!(sim.violations().is_empty(), "{:?}", sim.violations());
+        // NACK to FILE\n, then TERM is accepted.
+        let (mut sim, now) = sim_with(|c| c.after_files = AfterFiles::NackFileEnd);
+        let mut seq = 0;
+        feed(&mut sim, &mut seq, &start, now);
+        let r = feed(
+            &mut sim,
+            &mut seq,
+            &[b"", b"", message::FILE_END, TERM],
+            now,
+        );
+        assert_eq!(strs(&r), ["RETR", "RETR", "NACK"]);
+        assert!(sim.is_terminated());
+        assert!(sim.violations().is_empty(), "{:?}", sim.violations());
+        // Silent: no answer to polls or FILE\n, then TERM is accepted.
+        let (mut sim, now) = sim_with(|c| c.after_files = AfterFiles::Silent);
+        let mut seq = 0;
+        feed(&mut sim, &mut seq, &start, now);
+        let r = feed(
+            &mut sim,
+            &mut seq,
+            &[b"", b"", message::FILE_END, TERM],
+            now,
+        );
+        assert!(r.is_empty(), "{r:?}");
+        assert!(sim.is_terminated());
+        assert!(sim.violations().is_empty(), "{:?}", sim.violations());
+    }
+
+    #[test]
+    fn server_frames_mirroring_the_device_mac_are_accepted() {
+        // reply_dst = the device: a mirroring server puts the device's MAC
+        // in [0:6] of every frame after the offer.
+        let (mut sim, now) = sim_with(|c| c.reply_dst = DEVICE);
+        sim.handle_frame(&Frame::new(Mac::BROADCAST, DEVICE, 1, 0, OFFER), now);
+        let yack = sim.poll_transmit().unwrap();
+        assert_eq!((yack.src, yack.dst), (DEVICE, DEVICE));
+        // Our own reply looped back is not a server frame.
+        sim.handle_frame(&yack, now);
+        assert_eq!(sim.poll_transmit(), None);
+        // The server's next frame, src = the echoed device MAC.
+        sim.handle_frame(&Frame::new(DEVICE, DEVICE, 2, 0, &b""[..]), now);
+        let strt = sim.poll_transmit().unwrap();
+        assert_eq!(strt.payload.as_ref(), message::STRT);
+        assert!(sim.violations().is_empty(), "{:?}", sim.violations());
+    }
+
+    #[test]
+    fn a_hello_to_its_own_mac_is_not_taken_for_a_server_frame() {
+        let now = Instant::now();
+        let mut cfg = SimConfig::new(DEVICE, "hEX", "mmips");
+        cfg.info.hello_dst = DEVICE;
+        let mut sim = DeviceSim::new(cfg, now);
+        sim.handle_timeout(now);
+        let hello = sim.poll_transmit().unwrap();
+        assert_eq!((hello.src, hello.dst), (DEVICE, DEVICE));
+        sim.handle_frame(&hello, now);
+        assert_eq!(sim.poll_transmit(), None);
+        assert!(sim.violations().is_empty(), "{:?}", sim.violations());
+    }
+
+    #[test]
     fn reject_offer_answers_every_offer_with_nack() {
         let (mut sim, now) = sim_with(|c| c.reject_offer = true);
         let r = feed(&mut sim, &mut 0, &[OFFER], now);
@@ -735,7 +855,8 @@ mod tests {
         let (mut sim, now) = sim_with(|_| {});
         let other = Mac([0x02, 0, 0, 0, 0, 0x99]);
         sim.handle_frame(&Frame::new(Mac::BROADCAST, other, 1, 0, OFFER), now);
-        sim.handle_frame(&Frame::new(DEVICE, DEVICE, 1, 0, OFFER), now);
+        // Its own reply (seq = ack) looped back.
+        sim.handle_frame(&Frame::new(DEVICE, DEVICE, 1, 1, message::YACK), now);
         assert_eq!(sim.poll_transmit(), None);
         assert!(sim.violations().is_empty());
         let r = feed(&mut sim, &mut 0, &[OFFER], now);

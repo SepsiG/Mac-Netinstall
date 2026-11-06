@@ -21,14 +21,23 @@
 //!    must be answered `RETR`; `WTRM` there means the device stopped early
 //!    ([`FailReason::EndedEarly`]).
 //! 5. after the last file: empty polls while the device answers `RETR`
-//!    (every [`SessionConfig::poll_interval`], at most
-//!    [`SessionConfig::finish_polls`]) until it answers `WTRM`;
-//! 6. fallback, only if it never did: pyNetinstall's `FILE\n` → any reply;
+//!    (every [`SessionConfig::poll_interval`] for up to
+//!    [`SessionConfig::finish_timeout`], at most [`MAX_FINISH_POLLS`];
+//!    each reply awaited [`SessionConfig::finish_reply_timeout`]) until it
+//!    answers `WTRM`;
+//! 6. fallback, only if it never did (the window passed, the polls went
+//!    unanswered or were refused): pyNetinstall's `FILE\n`, whatever the
+//!    answer (`WTRM`, anything else, `NACK` or none at all);
 //! 7. `TERM\n<message>\0` → no reply, session done.
 //!
+//! Once every file is sent the session always ends with `TERM` and
+//! [`Event::Done`]: a formatted device that has all its files is never left
+//! without it. If the device never said `WTRM`, [`Event::FinishUnconfirmed`]
+//! precedes [`Event::Done`].
+//!
 //! Frame header: `[0:6]` mirrors `[6:12]` of the last device frame
-//! answered (`ff:ff:ff:ff:ff:ff` for the offer, as a hello carries the
-//! broadcast address there) and `[6:12]` is the device's MAC: our own MAC
+//! answered (for the offer: the hello's, [`DeviceInfo::hello_dst`], the
+//! broadcast address in every capture) and `[6:12]` is the device's MAC: our own MAC
 //! is never on the wire. The k-th server frame has `seq = k` and
 //! `ack = k - 2` (0 for the first two); the device answers with
 //! `seq = ack = k`.
@@ -54,7 +63,9 @@ use steps::{build_steps, Expect, Step, TimeoutKind};
 use thiserror::Error;
 
 /// Most empty polls after the last file before the session falls back to
-/// `FILE\n` (the upper bound of [`SessionConfig::finish_polls`]).
+/// `FILE\n`, whatever [`SessionConfig::finish_timeout`] and
+/// [`SessionConfig::poll_interval`] allow (the default 60 s window at 1 s
+/// needs 61).
 pub const MAX_FINISH_POLLS: u32 = 64;
 
 /// A file to upload.
@@ -241,11 +252,16 @@ pub struct SessionConfig {
     /// Pause before offering again after a `NACK` (the official server
     /// waits 1 s).
     pub offer_retry: Duration,
-    /// Empty polls after the last file before falling back to `FILE\n`
-    /// (1 ..= [`MAX_FINISH_POLLS`]; values outside are clamped).
-    pub finish_polls: u32,
+    /// How long to keep polling after the last file for `WTRM`, counted
+    /// from the first poll, before falling back to `FILE\n` (at most
+    /// [`MAX_FINISH_POLLS`] polls are sent whatever the timing).
+    pub finish_timeout: Duration,
     /// Pause between those polls (the first follows the last file at once).
     pub poll_interval: Duration,
+    /// Wait for the answer to a poll after the last file (the device may be
+    /// busy writing its flash). Unanswered polls are re-sent while
+    /// [`SessionConfig::finish_timeout`] lasts.
+    pub finish_reply_timeout: Duration,
 }
 
 impl Default for SessionConfig {
@@ -257,8 +273,9 @@ impl Default for SessionConfig {
             max_retransmits: 3,
             chunk_delay: Duration::from_millis(5),
             offer_retry: Duration::from_secs(1),
-            finish_polls: 20,
-            poll_interval: Duration::from_millis(250),
+            finish_timeout: Duration::from_secs(60),
+            poll_interval: Duration::from_secs(1),
+            finish_reply_timeout: Duration::from_secs(20),
         }
     }
 }
@@ -333,6 +350,11 @@ pub enum Event {
         bytes_sent: u64,
         bytes_total: u64,
     },
+    /// The device never answered `WTRM` after the last file (the polls ran
+    /// out, went unanswered or were refused); `TERM` was sent anyway and
+    /// [`Event::Done`] follows. The device got every file, but did not
+    /// confirm it is ready.
+    FinishUnconfirmed,
     Done,
     Failed(FailReason),
 }
@@ -370,6 +392,10 @@ pub struct ServerSession {
     echo: Mac,
     /// Polls sent after the last file.
     finish_polls: u32,
+    /// Until when polls after the last file are sent (set by the first).
+    finish_deadline: Option<Instant>,
+    /// The device said `WTRM` after the last file.
+    finish_confirmed: bool,
     bytes_sent: u64,
     bytes_total: u64,
     events: VecDeque<Event>,
@@ -379,13 +405,13 @@ impl ServerSession {
     pub fn new(
         device: DeviceInfo,
         plan: &InstallPlan,
-        mut cfg: SessionConfig,
+        cfg: SessionConfig,
         now: Instant,
     ) -> Result<Self, PlanError> {
         plan.validate()?;
-        cfg.finish_polls = cfg.finish_polls.clamp(1, MAX_FINISH_POLLS);
         let mut events = VecDeque::new();
         events.push_back(Event::PhaseChanged(Phase::Offering));
+        let echo = device.hello_dst;
         Ok(Self {
             device,
             cfg,
@@ -398,8 +424,10 @@ impl ServerSession {
             },
             phase: Phase::Offering,
             last_frame: None,
-            echo: Mac::BROADCAST,
+            echo,
             finish_polls: 0,
+            finish_deadline: None,
+            finish_confirmed: false,
             bytes_sent: 0,
             bytes_total: plan.total_bytes(),
             events,
@@ -453,6 +481,9 @@ impl ServerSession {
             payload,
         );
         self.last_frame = Some(frame.clone());
+        if expect == (Expect::Poll { remaining: 0 }) && self.finish_deadline.is_none() {
+            self.finish_deadline = Some(now + self.cfg.finish_timeout);
+        }
         if expect == Expect::None {
             self.advance(now, false);
         } else {
@@ -476,6 +507,35 @@ impl ServerSession {
         let nack = frame.payload.starts_with(message::NACK);
         let wtrm = frame.payload.as_ref() == message::WTRM;
         match step.expect {
+            Expect::Poll { remaining: 0 } => {
+                self.echo = frame.dst;
+                if wtrm {
+                    // Done: skip the `FILE\n` fallback, straight to `TERM`.
+                    self.finish_confirmed = true;
+                    self.idx = self.steps.len() - 2;
+                    self.advance(now, false);
+                } else if nack {
+                    self.advance(now, false); // to the fallback
+                } else {
+                    self.finish_polls += 1;
+                    let at = now + self.cfg.poll_interval;
+                    let open = self.finish_deadline.is_some_and(|d| at <= d);
+                    if open && self.finish_polls < MAX_FINISH_POLLS {
+                        // Poll again (a new frame, not a re-send).
+                        self.wait = Wait::Send { at, resend: None };
+                    } else {
+                        self.advance(now, false);
+                    }
+                }
+                return;
+            }
+            Expect::Fallback => {
+                // Whatever the answer, `TERM` follows.
+                self.echo = frame.dst;
+                self.finish_confirmed |= wtrm;
+                self.advance(now, false);
+                return;
+            }
             Expect::Offer if nack => {
                 if retries_left == 0 {
                     self.fail(FailReason::Rejected {
@@ -502,23 +562,6 @@ impl ServerSession {
             _ => {}
         }
         self.echo = frame.dst;
-        if let Expect::Poll { remaining: 0 } = step.expect {
-            self.finish_polls += 1;
-            if wtrm {
-                // Done: skip the `FILE\n` fallback, straight to `TERM`.
-                self.idx = self.steps.len() - 2;
-                self.advance(now, false);
-            } else if self.finish_polls < self.cfg.finish_polls {
-                // Poll again (a new frame, not a re-send).
-                self.wait = Wait::Send {
-                    at: now + self.cfg.poll_interval,
-                    resend: None,
-                };
-            } else {
-                self.advance(now, false);
-            }
-            return;
-        }
         let delay = step.delay_after;
         if let Some(chunk) = &step.chunk {
             self.bytes_sent += step.payload.len() as u64;
@@ -546,13 +589,17 @@ impl ServerSession {
         if now < deadline {
             return;
         }
-        if retries_left > 0 {
+        let expect = self.steps[self.idx].expect;
+        let finishing = expect == (Expect::Poll { remaining: 0 });
+        let window_open = self.finish_deadline.is_some_and(|d| now < d);
+        if retries_left > 0 && (!finishing || window_open) {
             self.wait = Wait::Send {
                 at: now,
                 resend: Some(retries_left - 1),
             };
-        } else if self.steps[self.idx].expect == Expect::Optional {
-            // Some devices never answer this step; move on.
+        } else if matches!(expect, Expect::Optional | Expect::Fallback) || finishing {
+            // Some devices never answer this step; move on. After the last
+            // file this leads to `FILE\n` and then `TERM`.
             self.advance(now, false);
         } else {
             self.fail(FailReason::Timeout {
@@ -587,6 +634,7 @@ impl ServerSession {
             TimeoutKind::Reply => self.cfg.reply_timeout,
             TimeoutKind::Format => self.cfg.format_timeout,
             TimeoutKind::Optional => self.cfg.optional_timeout,
+            TimeoutKind::Finish => self.cfg.finish_reply_timeout,
         }
     }
 
@@ -595,6 +643,9 @@ impl ServerSession {
         if self.idx >= self.steps.len() {
             self.wait = Wait::Finished;
             self.phase = Phase::Done;
+            if !self.finish_confirmed {
+                self.events.push_back(Event::FinishUnconfirmed);
+            }
             self.events.push_back(Event::Done);
         } else {
             let at = if delay {
@@ -629,6 +680,7 @@ mod tests {
             arch: "mmips".into(),
             min_os: "7.0".into(),
             extra: Vec::new(),
+            hello_dst: Mac::BROADCAST,
         }
     }
 
@@ -867,6 +919,16 @@ mod tests {
         assert_eq!((f.src, f.dst, f.seq, f.ack), (Mac::BROADCAST, DEVICE, 1, 0));
         assert_eq!(&f.payload[..], b"OFFR\n\n\nremoveBranding\n\0");
         assert_eq!(s.poll_transmit(now), None, "must wait for reply");
+    }
+
+    #[test]
+    fn the_offer_echoes_the_hellos_dst() {
+        let now = Instant::now();
+        let mut info = device();
+        info.hello_dst = Mac([0x02, 0, 0, 0, 0, 0x42]);
+        let mut s = ServerSession::new(info, &plan(), SessionConfig::default(), now).unwrap();
+        let f = s.poll_transmit(now).unwrap();
+        assert_eq!((f.src, f.dst), (Mac([0x02, 0, 0, 0, 0, 0x42]), DEVICE));
     }
 
     #[test]
@@ -1155,7 +1217,7 @@ mod tests {
     fn a_device_that_never_says_wtrm_gets_file_end_after_the_polls() {
         let now = Instant::now();
         let cfg = SessionConfig {
-            finish_polls: 3,
+            finish_timeout: Duration::from_secs(2),
             ..SessionConfig::default()
         };
         let mut s = ServerSession::new(device(), &plan(), cfg.clone(), now).unwrap();
@@ -1191,13 +1253,161 @@ mod tests {
         assert_eq!(events.last(), Some(&Event::Done));
     }
 
-    #[test]
-    fn finish_polls_are_clamped() {
+    /// A device that answers every frame `RETR` except the polls after the
+    /// last file, which it answers with `finish(t)` (`None`: silence), and
+    /// `FILE\n`, which it answers with `file_end` (`None`: silence).
+    /// Returns the payloads sent with their times and the events.
+    fn run_finish(
+        cfg: SessionConfig,
+        mut finish: impl FnMut(Duration) -> Option<&'static [u8]>,
+        file_end: Option<&'static [u8]>,
+    ) -> (Vec<(Duration, Vec<u8>)>, Vec<Event>) {
         let now = Instant::now();
-        for (polls, sent) in [(0, 1), (MAX_FINISH_POLLS + 5, MAX_FINISH_POLLS as usize)] {
+        let mut s = ServerSession::new(device(), &plan(), cfg, now).unwrap();
+        let mut t = now;
+        let mut sent = Vec::new();
+        let mut last_file_at = None;
+        while !s.is_finished() {
+            let Some(f) = s.poll_transmit(t) else {
+                t = s.poll_timeout().unwrap();
+                s.handle_timeout(t);
+                continue;
+            };
+            sent.push((t - now, f.payload.to_vec()));
+            let p = &f.payload[..];
+            let answer = if p.starts_with(b"OFFR") {
+                Some(message::YACK)
+            } else if p == message::FILE_END {
+                file_end
+            } else if p.starts_with(b"TERM") {
+                None
+            } else if p.is_empty() && sent.len() > 5 {
+                let since = t - *last_file_at.get_or_insert(t);
+                finish(since)
+            } else {
+                Some(message::RETR)
+            };
+            if let Some(a) = answer {
+                s.handle_frame(&reply(f.seq, a), t);
+            }
+        }
+        (sent, std::iter::from_fn(|| s.poll_event()).collect())
+    }
+
+    fn payloads(sent: &[(Duration, Vec<u8>)]) -> Vec<&[u8]> {
+        sent.iter().map(|(_, p)| p.as_slice()).collect()
+    }
+
+    #[test]
+    fn a_slow_device_is_polled_every_second_until_it_says_wtrm() {
+        // RETR to the polls for 30 s (far past the old 5 s bound), then WTRM.
+        let (sent, events) = run_finish(
+            SessionConfig::default(),
+            |since| {
+                Some(if since >= Duration::from_secs(30) {
+                    message::WTRM
+                } else {
+                    message::RETR
+                })
+            },
+            Some(message::WTRM),
+        );
+        let p = payloads(&sent);
+        assert_eq!(p.last(), Some(&&b"TERM\n\0"[..]));
+        assert!(!p.contains(&message::FILE_END), "no fallback needed");
+        assert_eq!(p[5..p.len() - 1].len(), 31, "polls at 0, 1, ..., 30 s");
+        let gaps: Vec<Duration> = sent[5..sent.len() - 1]
+            .windows(2)
+            .map(|w| w[1].0 - w[0].0)
+            .collect();
+        assert!(
+            gaps.iter().all(|g| *g == Duration::from_secs(1)),
+            "{gaps:?}"
+        );
+        assert_eq!(events.last(), Some(&Event::Done));
+        assert!(!events.contains(&Event::FinishUnconfirmed));
+    }
+
+    #[test]
+    fn polling_stops_after_the_finish_timeout_then_file_end_and_term() {
+        let cfg = SessionConfig::default();
+        let (sent, events) = run_finish(cfg.clone(), |_| Some(message::RETR), Some(message::RETR));
+        let p = payloads(&sent);
+        assert_eq!(&p[p.len() - 2..], [message::FILE_END, b"TERM\n\0"]);
+        let polls = &sent[5..sent.len() - 2];
+        assert_eq!(polls.len(), 61, "polls at 0, 1, ..., 60 s");
+        assert_eq!(polls.last().unwrap().0 - polls[0].0, cfg.finish_timeout);
+        assert_eq!(
+            events[events.len() - 2..],
+            [Event::FinishUnconfirmed, Event::Done]
+        );
+    }
+
+    #[test]
+    fn a_nack_to_file_end_still_gets_term() {
+        let (sent, events) = run_finish(
+            SessionConfig::default(),
+            |_| Some(message::RETR),
+            Some(b"NACK\n"),
+        );
+        assert_eq!(
+            sent.last().map(|(_, p)| p.as_slice()),
+            Some(&b"TERM\n\0"[..])
+        );
+        assert_eq!(
+            events[events.len() - 2..],
+            [Event::FinishUnconfirmed, Event::Done]
+        );
+    }
+
+    #[test]
+    fn a_nack_to_a_finish_poll_still_gets_term() {
+        let (sent, events) = run_finish(
+            SessionConfig::default(),
+            |_| Some(b"NACK\n"),
+            Some(message::WTRM),
+        );
+        let p = payloads(&sent);
+        assert_eq!(&p[p.len() - 2..], [message::FILE_END, b"TERM\n\0"]);
+        // WTRM to the fallback confirms the end.
+        assert_eq!(events.last(), Some(&Event::Done));
+        assert!(!events.contains(&Event::FinishUnconfirmed));
+    }
+
+    #[test]
+    fn a_device_silent_after_the_last_file_still_gets_term() {
+        let cfg = SessionConfig::default();
+        let (sent, events) = run_finish(cfg.clone(), |_| None, None);
+        let p = payloads(&sent);
+        assert_eq!(p.last(), Some(&&b"TERM\n\0"[..]));
+        assert!(p.contains(&message::FILE_END));
+        // The poll is re-sent while the finish window lasts, then FILE\n
+        // (re-sent, unanswered), then TERM: bounded.
+        let end = sent.last().unwrap().0 - sent[5].0;
+        assert!(
+            end <= cfg.finish_timeout
+                + cfg.finish_reply_timeout
+                + cfg.optional_timeout * (cfg.max_retransmits + 1),
+            "{end:?}"
+        );
+        assert_eq!(
+            events[events.len() - 2..],
+            [Event::FinishUnconfirmed, Event::Done]
+        );
+    }
+
+    #[test]
+    fn finish_polls_are_capped() {
+        let now = Instant::now();
+        // A poll every 1 ms for `polls` ms: polls + 1 of them, at most MAX_FINISH_POLLS.
+        for (polls, sent) in [
+            (0, 1),
+            (3, 4),
+            (MAX_FINISH_POLLS + 5, MAX_FINISH_POLLS as usize),
+        ] {
             let cfg = SessionConfig {
-                finish_polls: polls,
-                poll_interval: Duration::ZERO,
+                finish_timeout: Duration::from_millis(polls.into()),
+                poll_interval: Duration::from_millis(1),
                 ..SessionConfig::default()
             };
             let mut s = ServerSession::new(device(), &plan(), cfg, now).unwrap();
@@ -1209,7 +1419,7 @@ mod tests {
                 }
             });
             let empties_after_data = frames[5..].iter().filter(|(_, p)| p.is_empty()).count();
-            assert_eq!(empties_after_data, sent, "finish_polls = {polls}");
+            assert_eq!(empties_after_data, sent, "finish window {polls} ms");
         }
     }
 
@@ -1262,7 +1472,11 @@ mod tests {
         let cfg = SessionConfig::default();
         assert_eq!(cfg.optional_timeout, Duration::from_secs(10));
         assert_eq!(cfg.offer_retry, Duration::from_secs(1));
-        assert_eq!(cfg.finish_polls, 20);
+        assert_eq!(cfg.poll_interval, Duration::from_secs(1));
+        assert_eq!(cfg.finish_timeout, Duration::from_secs(60));
+        assert!(cfg.finish_reply_timeout > cfg.reply_timeout);
+        // The whole window fits in MAX_FINISH_POLLS polls.
+        assert!(cfg.finish_timeout.as_secs() < u64::from(MAX_FINISH_POLLS));
     }
 
     #[test]

@@ -29,6 +29,10 @@ pub enum Line {
         seq: u16,
         payload: Vec<u8>,
     },
+    /// The device said hello again (`H` lines), at this capture time in ms.
+    Hello {
+        at_ms: u64,
+    },
 }
 
 /// One captured run.
@@ -50,7 +54,8 @@ pub fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../ni-proto/tests/fixtures/official-7.25.1")
 }
 
-/// Every capture, by name.
+/// Every complete capture (ending with `TERM`), by name. Captures of runs
+/// that never end live in subdirectories; see [`load`].
 pub fn all() -> Vec<Capture> {
     let mut names: Vec<PathBuf> = std::fs::read_dir(dir())
         .unwrap()
@@ -85,7 +90,8 @@ fn unquote(s: &str) -> Vec<u8> {
     out
 }
 
-fn load(path: &Path) -> Capture {
+/// Load one capture file.
+pub fn load(path: &Path) -> Capture {
     let text = std::fs::read_to_string(path).unwrap();
     let mut cap = Capture {
         name: path.file_stem().unwrap().to_string_lossy().into_owned(),
@@ -127,6 +133,12 @@ fn load(path: &Path) -> Capture {
                 cap.lines.push(Line::Device {
                     seq: num(0),
                     payload: unquote(rest.splitn(3, ' ').nth(2).unwrap()),
+                });
+            }
+            "H" => {
+                let secs: f64 = words[0].parse().unwrap();
+                cap.lines.push(Line::Hello {
+                    at_ms: (secs * 1000.0).round() as u64,
                 });
             }
             "R" => {
@@ -204,10 +216,7 @@ impl Capture {
                 "-b" => plan.remove_branding = true,
                 "-s" => script = Some(Bytes::from(value())),
                 "-sm" => plan.mode_script = Some(Bytes::from(value())),
-                "-k" => {
-                    let key = String::from_utf8(value()).unwrap();
-                    plan.license_key = key.replace(['\n', '\r'], "");
-                }
+                "-k" => plan.license_key = message::license_key_from_file(&value()).unwrap(),
                 "--reboot" => plan.after_install = AfterInstall::RebootWithMessage,
                 "--shutdown" => plan.after_install = AfterInstall::Shutdown,
                 other => panic!("{}: unknown option {other}", self.name),
