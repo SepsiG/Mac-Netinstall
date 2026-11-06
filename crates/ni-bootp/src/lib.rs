@@ -3,13 +3,17 @@
 //! RouterBOOT sends a BOOTP or DHCP request with its architecture in the
 //! vendor class (option 60). The reply assigns an address from a MAC-keyed
 //! pool and names the boot kernel to fetch over TFTP from `siaddr`.
+//!
+//! [`BootpResponder`] is sans-IO; [`serve`] runs it on a tokio socket.
 
 pub mod arch;
 pub mod packet;
 pub mod pool;
 pub mod responder;
+pub mod server;
 
 pub use arch::{BootArch, VendorClass};
 pub use packet::{MessageType, PacketError, ReplyKind, Request, CLIENT_PORT, SERVER_PORT};
 pub use pool::{LeasePool, PoolError};
 pub use responder::{BootpConfig, BootpResponder, ConfigError, IgnoreReason, Outcome, Reply};
+pub use server::{serve, BootpEvent};
