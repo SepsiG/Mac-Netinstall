@@ -77,6 +77,8 @@ pub enum PlanError {
     NoPackages,
     #[error("{name} does not look like a RouterOS package (missing NPK magic)")]
     NotAnNpk { name: String },
+    /// A package name is empty, contains `\n` or `/`, or is the reserved
+    /// configuration script name ([`message::CONFIG_SCRIPT_NAME`]).
     #[error("invalid file name {name:?}")]
     InvalidFileName { name: String },
     #[error("the plan needs {frames} frames, at most {max} are supported")]
@@ -92,11 +94,7 @@ impl InstallPlan {
                 name: first.name.clone(),
             });
         }
-        if let Some(bad) = self
-            .packages
-            .iter()
-            .find(|p| p.name.is_empty() || p.name.contains('\n'))
-        {
+        if let Some(bad) = self.packages.iter().find(|p| !valid_package_name(&p.name)) {
             return Err(PlanError::InvalidFileName {
                 name: bad.name.clone(),
             });
@@ -108,6 +106,12 @@ impl InstallPlan {
         }
         Ok(())
     }
+}
+
+/// Package names travel in the newline-separated `FILE` header and become
+/// file names on the device; `autorun.scr` is reserved for the script.
+fn valid_package_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['\n', '/']) && name != message::CONFIG_SCRIPT_NAME
 }
 
 /// Timing parameters.
@@ -219,9 +223,6 @@ enum Wait {
     Reply {
         deadline: Instant,
         retries_left: u32,
-        /// State-matched replies received for the current transmission
-        /// (only counted for [`Expect::SecondIs`]; reset on retransmit).
-        replies: u8,
     },
     Finished,
 }
@@ -241,6 +242,10 @@ pub struct ServerSession {
     wait: Wait,
     phase: Phase,
     last_frame: Option<Frame>,
+    /// State-matched replies received for the current step (only counted
+    /// for [`Expect::SecondIs`]). Kept across retransmits, so a device that
+    /// answers once and only repeats when we re-send still completes.
+    step_replies: u8,
     bytes_sent: u64,
     bytes_total: u64,
     events: VecDeque<Event>,
@@ -270,6 +275,7 @@ impl ServerSession {
             },
             phase: Phase::Offering,
             last_frame: None,
+            step_replies: 0,
             bytes_sent: 0,
             bytes_total: plan.total_bytes(),
             events,
@@ -302,7 +308,6 @@ impl ServerSession {
             self.wait = Wait::Reply {
                 deadline: now + timeout,
                 retries_left,
-                replies: 0,
             };
             return Some(frame);
         }
@@ -324,13 +329,13 @@ impl ServerSession {
             payload,
         );
         self.last_frame = Some(frame.clone());
+        self.step_replies = 0;
         if expect == Expect::None {
             self.advance(now, false);
         } else {
             self.wait = Wait::Reply {
                 deadline: now + self.timeout(timeout),
                 retries_left: self.cfg.max_retransmits,
-                replies: 0,
             };
         }
         Some(frame)
@@ -338,9 +343,9 @@ impl ServerSession {
 
     /// Feed a frame received on the wire. Unrelated frames are ignored.
     pub fn handle_frame(&mut self, frame: &Frame, now: Instant) {
-        let Wait::Reply { replies, .. } = &mut self.wait else {
+        if !matches!(self.wait, Wait::Reply { .. }) {
             return;
-        };
+        }
         if frame.src != self.device.mac || frame.seq != self.seq || frame.ack != self.seq {
             return;
         }
@@ -352,8 +357,8 @@ impl ServerSession {
         }
         let step = &self.steps[self.idx];
         if let Expect::SecondIs(expected) = step.expect {
-            if *replies == 0 {
-                *replies = 1;
+            if self.step_replies == 0 {
+                self.step_replies = 1;
                 return;
             }
             if frame.payload.as_ref() != expected {
@@ -545,7 +550,12 @@ mod tests {
 
     #[test]
     fn rejects_invalid_file_names() {
-        for bad in ["", "evil\nname.npk"] {
+        for bad in [
+            "",
+            "evil\nname.npk",
+            "dir/name.npk",
+            message::CONFIG_SCRIPT_NAME,
+        ] {
             let p = InstallPlan {
                 packages: vec![file("routeros.npk", npk(10)), file(bad, npk(10))],
                 config_script: None,
@@ -715,6 +725,22 @@ mod tests {
         let spacer = s.poll_transmit(now).expect("spacer after the file");
         assert_eq!(spacer.seq, 6);
         assert!(spacer.payload.is_empty());
+    }
+
+    #[test]
+    fn final_reply_count_survives_retransmit() {
+        let now = Instant::now();
+        let mut s = session(&plan(), now);
+        send_until_last_chunk(&mut s, now);
+        s.handle_frame(&reply(5, message::RETR), now);
+        // No second reply: retransmit the last chunk.
+        let t = s.poll_timeout().unwrap();
+        s.handle_timeout(t);
+        let again = s.poll_transmit(t).unwrap();
+        assert_eq!(again.seq, 5);
+        // The device repeats its answer once; that is the second reply.
+        s.handle_frame(&reply(5, message::RETR), t);
+        assert_eq!(s.poll_transmit(t).map(|f| f.seq), Some(6));
     }
 
     #[test]

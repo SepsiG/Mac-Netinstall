@@ -17,8 +17,10 @@ pub(super) enum Expect {
     /// Two state-matched replies: the first with any payload, the second
     /// exactly this one (later mismatching replies are ignored). Mirrors
     /// pyNetinstall `do_file`, which reads twice after the last chunk and
-    /// requires the second read to be `RETR`. Real devices periodically
-    /// re-send their last reply, so waiting for a second one cannot deadlock.
+    /// requires the second read to be `RETR`. The count is kept across
+    /// retransmits, so the second reply can come from the device's periodic
+    /// re-send of its last answer or from its answer to our retransmit
+    /// (a de-duplicating device repeats it); waiting cannot deadlock.
     SecondIs(&'static [u8]),
 }
 
