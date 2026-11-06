@@ -1,13 +1,19 @@
-//! The `ni-cli` binary: arguments, exit codes, and (Task 5) a real `flash`
-//! run against a simulated RouterBOARD over loopback.
+//! The `ni-cli` binary: arguments, exit codes, and a real `flash` run
+//! against a simulated RouterBOARD over loopback.
 
-use ni_assets::testutil::{tempdir, TempDir};
+use ni_assets::testutil::{mirror, tempdir, TempDir, TestServer};
+use ni_proto::Mac;
+use ni_sim::lan::{tftp_get, SimLan};
+use ni_sim::{DeviceSim, SimConfig};
 use serde_json::Value;
+use std::net::SocketAddr;
 use std::process::Stdio;
-use std::time::Duration;
-use tokio::process::Command;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, BufReader, Lines};
+use tokio::process::{ChildStdout, Command};
 
 const WAIT: Duration = Duration::from_secs(20);
+const DEVICE: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 0x0c]);
 
 /// Temp dirs for cache, profiles and logs: tests never touch `~/Library`.
 struct Env {
@@ -53,6 +59,29 @@ impl Env {
         }
         text
     }
+}
+
+/// The next JSON line on `lines` matching `pred`.
+async fn json_line(
+    lines: &mut Lines<BufReader<ChildStdout>>,
+    pred: impl Fn(&Value) -> bool,
+) -> Value {
+    let end = tokio::time::Instant::now() + WAIT;
+    loop {
+        let line = tokio::time::timeout_at(end, lines.next_line())
+            .await
+            .expect("expected line in time")
+            .unwrap()
+            .expect("stdout still open");
+        let v: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{line}: {e}"));
+        if pred(&v) {
+            return v;
+        }
+    }
+}
+
+fn addr(v: &Value, key: &str) -> SocketAddr {
+    v[key].as_str().unwrap().parse().unwrap()
 }
 
 #[tokio::test]
@@ -181,4 +210,124 @@ async fn preflight_failure_exits_with_4() {
         "{out}"
     );
     assert!(out.ends_with("preflight passed\n"), "{out}");
+}
+
+/// Common `flash` arguments for `lo0` with the simulated LAN.
+fn flash_args(srv: &TestServer, lan: &SimLan) -> Vec<String> {
+    [
+        "--json",
+        "--download-base",
+        &format!("{}/dl/", srv.base),
+        "--upgrade-base",
+        &format!("{}/up", srv.base),
+        "flash",
+        "--iface",
+        "lo0",
+        "--version",
+        "stable",
+        "--package",
+        "wireless",
+        "--server-mac",
+        "02:00:00:00:00:01",
+        "--bootp-port",
+        "0",
+        "--tftp-port",
+        "0",
+        "--netinstall-port",
+        "0",
+        "--bootp-reply-to",
+        &lan.bootp_addr().to_string(),
+        "--netinstall-dest",
+        &lan.netinstall_addr().to_string(),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flash_installs_one_simulated_device_and_exits() {
+    let env = Env::new("cli-flash");
+    let srv = TestServer::start().await;
+    let (_, main, wireless) = mirror(&srv);
+    let lan = SimLan::bind().await.unwrap();
+    let args = flash_args(&srv, &lan);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = env.cmd(&args).spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+
+    let warning = json_line(&mut lines, |v| v["event"] == "preflight").await;
+    assert_eq!(warning["severity"], "warning");
+    let started = json_line(&mut lines, |v| v["event"] == "started").await;
+    lan.connect(addr(&started, "netinstall")).await;
+    json_line(&mut lines, |v| v["event"] == "kernels_ready").await;
+
+    let reply = lan
+        .boot(DEVICE, "ARM64__boot", addr(&started, "bootp"), WAIT)
+        .await
+        .expect("BOOTP reply");
+    let tftp = SocketAddr::from((reply.server, addr(&started, "tftp").port()));
+    tftp_get(tftp, &reply.file).await.unwrap();
+    let mut sim = SimConfig::new(DEVICE, "hAP ax2", "arm64");
+    sim.hello_interval = Duration::from_millis(100);
+    lan.add(DeviceSim::new(sim, Instant::now())).await;
+
+    let done = json_line(&mut lines, |v| {
+        v["event"] == "device" && v["state"] == "done"
+    })
+    .await;
+    assert_eq!(done["mac"], "48:A9:8A:00:00:0C");
+    json_line(&mut lines, |v| v["event"] == "stopped").await;
+    let status = tokio::time::timeout(WAIT, child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.code(), Some(0));
+
+    let report = lan.wait_terminated(DEVICE, WAIT).await.unwrap();
+    let files: Vec<(&str, &[u8])> = report
+        .received
+        .iter()
+        .map(|f| (f.name.as_str(), f.data.as_slice()))
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ("routeros-7.25.1-arm64.npk", main.as_slice()),
+            ("wireless-7.25.1-arm64.npk", wireless.as_slice())
+        ]
+    );
+    let logs = env.logs();
+    assert!(logs.contains("device flashed"), "{logs}");
+    assert!(logs.contains("flash finished"), "{logs}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctrl_c_stops_auto_repeat_cleanly() {
+    let env = Env::new("cli-sigint");
+    let srv = TestServer::start().await;
+    mirror(&srv);
+    let lan = SimLan::bind().await.unwrap();
+    let mut args = flash_args(&srv, &lan);
+    args.push("--auto-repeat".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = env.cmd(&args).spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    json_line(&mut lines, |v| v["event"] == "kernels_ready").await;
+    let pid = child.id().unwrap().to_string();
+    let kill = std::process::Command::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .unwrap();
+    assert!(kill.success());
+    json_line(&mut lines, |v| v["event"] == "stopped").await;
+    let status = tokio::time::timeout(WAIT, child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "auto-repeat ends normally on Ctrl-C"
+    );
 }

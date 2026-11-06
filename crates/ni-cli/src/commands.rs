@@ -80,7 +80,7 @@ pub async fn run(cli: Cli) -> Outcome {
                 },
         } => fetch(&ctx, &version, &archs, &packages).await,
         Command::Profiles { command } => profiles(&ctx, command).await,
-        Command::Flash(_) => Err(Failure::new("not_implemented")),
+        Command::Flash(args) => crate::flash::flash(&ctx, args).await,
     }
 }
 

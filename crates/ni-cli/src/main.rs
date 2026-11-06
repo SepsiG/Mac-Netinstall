@@ -5,6 +5,7 @@
 
 mod cli;
 mod commands;
+mod flash;
 mod logging;
 mod output;
 
