@@ -7,6 +7,12 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+### Added
+
+- User guide in English and Hungarian
+  ([docs/user-guide.en.md](docs/user-guide.en.md),
+  [docs/user-guide.hu.md](docs/user-guide.hu.md)), linked from the README.
+
 ## [0.1.0] - 2026-11-06
 
 First release: a native macOS (Apple Silicon, macOS 13 or later)
