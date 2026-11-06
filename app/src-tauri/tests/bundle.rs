@@ -49,7 +49,10 @@ fn strings_file(path: &str) -> std::collections::BTreeMap<String, String> {
         .filter_map(|l| {
             let l = l.trim();
             let (k, v) = l.strip_suffix(';')?.split_once(" = ")?;
-            Some((k.trim_matches('"').to_string(), v.trim_matches('"').to_string()))
+            Some((
+                k.trim_matches('"').to_string(),
+                v.trim_matches('"').to_string(),
+            ))
         })
         .collect()
 }
