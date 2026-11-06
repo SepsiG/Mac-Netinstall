@@ -8,6 +8,9 @@ Not affiliated with MikroTik.
 Status: early development, not yet validated on real hardware (see
 [CHANGELOG.md](CHANGELOG.md)). See `docs/superpowers/specs/` for the design.
 
+**User guide:** [English](docs/user-guide.en.md) · [Magyar](docs/user-guide.hu.md)
+— installing, preparing the Mac, profiles, flashing, troubleshooting.
+
 ## Installing the app
 
 Requires an Apple Silicon Mac with macOS 13 or later.
