@@ -5,6 +5,7 @@ members = [
     "crates/ni-sim",
     "crates/ni-net",
     "crates/ni-bootp",
+    "crates/ni-tftp",
 ]
 
 [workspace.package]
