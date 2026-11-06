@@ -34,6 +34,13 @@ describe("locales", () => {
     expect(words.size).toBe(3);
   });
 
+  it("tells to hold the reset button while powering on, in natural Hungarian", () => {
+    expect(HU["code.kernel_version_unknown"]).toMatch(/kapcsold be úgy, hogy közben nyomva tartod a reset gombot/);
+    for (const [key, text] of Object.entries(HU)) {
+      expect(text, key).not.toMatch(/gombot nyomva tartva/);
+    }
+  });
+
   it("busy devices are described the same way everywhere", () => {
     for (const key of ["confirm.quit_body", "confirm.stop_body"]) {
       expect(EN[key], key).toMatch(/being prepared or flashed/);

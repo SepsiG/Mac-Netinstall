@@ -280,7 +280,7 @@
   "code.invalid_profile": "Egy profilfájl sérült.",
   "code.invalid_script_name": "„{name}” nem használható szkriptnévként.",
   "code.kernel_transfer_failed": "Nem sikerült elküldeni a boot kernelt.",
-  "code.kernel_version_unknown": "Nem tudni, melyik boot kernel fut ezen: {mac}, ezért most nem telepíthető. Indítsd újra hálózatról (kapcsold be a reset gombot nyomva tartva).",
+  "code.kernel_version_unknown": "Nem tudni, melyik boot kernel fut ezen: {mac}, ezért most nem telepíthető. Indítsd újra hálózatról: kapcsold be úgy, hogy közben nyomva tartod a reset gombot.",
   "code.kernels_not_cached": "A RouterOS {version} boot kerneleit indításkor tölti le.",
   "code.kernels_offline_fallback": "Offline mód: a gyorsítótárban lévő RouterOS {version} kerül telepítésre.",
   "code.kernels_unavailable": "Nincsenek boot kernelek: {cause}.",
