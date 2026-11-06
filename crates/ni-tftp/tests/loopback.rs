@@ -21,7 +21,6 @@ fn lo0() -> BindOptions {
     BindOptions::new(0)
         .addr(Ipv4Addr::LOCALHOST)
         .interface("lo0")
-        .reuse(false)
 }
 
 struct Server {
@@ -37,17 +36,27 @@ impl Drop for Server {
 }
 
 async fn start(transfer: TransferConfig) -> Server {
+    start_on(lo0(), Ipv4Addr::LOCALHOST, Some("lo0"), transfer).await
+}
+
+async fn start_on(
+    listen: BindOptions,
+    server_ip: Ipv4Addr,
+    interface: Option<&str>,
+    transfer: TransferConfig,
+) -> Server {
     let files = FileMap::from([
         ("kernel".to_string(), content(1600)),
         ("exact".to_string(), content(1024)),
         ("empty".to_string(), Bytes::new()),
     ]);
-    let listener = ni_net::bind_udp(&lo0()).unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = ni_net::bind_udp(&listen).unwrap();
+    let addr = SocketAddr::from((server_ip, listener.local_addr().unwrap().port()));
     let (tx, events) = mpsc::unbounded_channel();
     let cfg = TftpConfig {
         transfer,
-        transfer_socket: lo0(),
+        server_ip,
+        interface: interface.map(str::to_string),
     };
     let task = tokio::spawn(serve(listener, Arc::new(files), cfg, tx));
     Server { addr, events, task }
@@ -145,6 +154,7 @@ async fn downloads_multi_block_file_from_new_tid() {
     assert_eq!(dl.blocks, vec![(1, 512), (2, 512), (3, 512), (4, 64)]);
     assert_eq!(dl.oack, None);
     assert_ne!(dl.tid, s.addr, "data comes from a per-transfer port");
+    assert_eq!(dl.tid.ip(), s.addr.ip(), "and from the server IP");
     let peer = match next_event(&mut s).await {
         TftpEvent::Started { peer, file, size } => {
             assert_eq!((file.as_str(), size), ("kernel", 1600));
@@ -348,4 +358,60 @@ async fn concurrent_downloads() {
     assert_eq!(a.unwrap().data, content(1600).to_vec());
     assert_eq!(b.unwrap().data, content(1024).to_vec());
     assert_eq!(c.unwrap().data, content(1600).to_vec());
+}
+
+#[tokio::test]
+async fn foreign_error_packet_on_transfer_port_gets_no_reply() {
+    let mut s = start(fast()).await;
+    let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client.send_to(&rrq("kernel", &[]), s.addr).await.unwrap();
+    let (_, tid) = recv(&client).await;
+    let stranger = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let error = Packet::Error {
+        code: ErrorCode::NotDefined,
+        message: "go away".into(),
+    };
+    stranger.send_to(&error.encode(), tid).await.unwrap();
+    let mut buf = [0u8; 1500];
+    let nothing =
+        tokio::time::timeout(Duration::from_millis(300), stranger.recv_from(&mut buf)).await;
+    assert!(nothing.is_err(), "never answer an ERROR with an ERROR");
+    // The stranger's ERROR does not disturb the real transfer.
+    assert!(matches!(
+        next_event(&mut s).await,
+        TftpEvent::Started { .. }
+    ));
+    assert!(matches!(
+        next_event(&mut s).await,
+        TftpEvent::Failed {
+            error: TransferError::Timeout { .. },
+            ..
+        }
+    ));
+}
+
+/// DATA must come from the IP the client sent its RRQ to. On loopback
+/// everything is 127.0.0.1, so this uses the Mac's own non-loopback IPv4
+/// address (traffic to it still stays inside the host): a transfer socket
+/// bound to `0.0.0.0` would answer a 127.0.0.1 client from 127.0.0.1.
+#[tokio::test]
+async fn data_source_ip_is_the_server_ip() {
+    let Some(server_ip) = ni_net::list_interfaces()
+        .unwrap()
+        .into_iter()
+        .filter(|i| i.is_up && !i.is_loopback)
+        .flat_map(|i| i.ipv4)
+        .map(|(ip, _)| ip)
+        .find(|ip| !ip.is_link_local())
+    else {
+        eprintln!("skipped: no non-loopback IPv4 address on this machine");
+        return;
+    };
+    let s = start_on(BindOptions::new(0).addr(server_ip), server_ip, None, fast()).await;
+    let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client.send_to(&rrq("kernel", &[]), s.addr).await.unwrap();
+    let (pkt, tid) = recv(&client).await;
+    assert!(matches!(pkt, Packet::Data { block: 1, .. }), "{pkt:?}");
+    assert_eq!(tid.ip(), std::net::IpAddr::V4(server_ip));
+    assert_ne!(tid.port(), s.addr.port());
 }

@@ -4,8 +4,13 @@
 use crate::packet::{ErrorCode, Packet, Request, DEFAULT_BLKSIZE};
 use crate::transfer::Transfer;
 use bytes::Bytes;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+
+/// Smallest `blksize` allowed by RFC 2348.
+const MIN_BLKSIZE: usize = 8;
+/// Largest `blksize` allowed by RFC 2348.
+const MAX_BLKSIZE: usize = 65464;
 
 /// Read-only files served, keyed by name (no leading `/`).
 pub type FileMap = HashMap<String, Bytes>;
@@ -22,6 +27,8 @@ pub struct TransferConfig {
     /// pyNetinstall docs configure dnsmasq with `tftp-no-blocksize`).
     pub honor_blksize: bool,
     /// Upper bound for a negotiated `blksize` (1468 fits a 1500 MTU).
+    /// Values outside RFC 2348's `8..=65464` are clamped into that range
+    /// (so `0` behaves like `8`), never rejected and never a panic.
     pub max_blksize: usize,
     /// Honor the client's `timeout` option (RFC 2349).
     pub honor_timeout: bool,
@@ -123,15 +130,23 @@ fn start(
     };
     let mut blksize = DEFAULT_BLKSIZE;
     let mut timeout = cfg.timeout;
+    let max_blksize = cfg.max_blksize.clamp(MIN_BLKSIZE, MAX_BLKSIZE);
     let mut acked = Vec::new();
+    // Option names are already lowercased by the parser. Only the first
+    // occurrence of a name counts (even if its value is ignored), so the
+    // OACK never repeats an option.
+    let mut seen = HashSet::new();
     for (opt, value) in &req.options {
+        if !seen.insert(opt.as_str()) {
+            continue;
+        }
         match opt.as_str() {
             "tsize" if value.parse::<u64>().is_ok() => {
                 acked.push((opt.clone(), data.len().to_string()));
             }
             "blksize" if cfg.honor_blksize => {
-                if let Ok(v @ 8..=65464) = value.parse::<usize>() {
-                    blksize = v.min(cfg.max_blksize);
+                if let Ok(v @ MIN_BLKSIZE..=MAX_BLKSIZE) = value.parse::<usize>() {
+                    blksize = v.min(max_blksize);
                     acked.push((opt.clone(), blksize.to_string()));
                 }
             }
@@ -249,6 +264,63 @@ mod tests {
         assert_eq!(first, b"\x00\x06blksize\x001468\x00tsize\x001500\x00");
         let t = started(go(&rrq("boot.elf", "octet", &[("blksize", "4")]), &cfg));
         assert_eq!(t.blksize(), 512, "out-of-range blksize ignored");
+    }
+
+    #[test]
+    fn duplicate_options_keep_the_first_only() {
+        let cfg = TransferConfig {
+            honor_blksize: true,
+            ..Default::default()
+        };
+        // The parser lowercases names, so `TSIZE` duplicates `tsize`.
+        let buf = b"\x00\x01boot.elf\x00octet\x00tsize\x000\x00blksize\x00600\x00\
+                    TSIZE\x000\x00timeout\x002\x00BlkSize\x001000\x00timeout\x009\x00";
+        let mut t = started(go(buf, &cfg));
+        assert_eq!(t.blksize(), 600);
+        let now = Instant::now();
+        let first = t.poll_transmit(now).unwrap();
+        assert_eq!(
+            first,
+            b"\x00\x06tsize\x001500\x00blksize\x00600\x00timeout\x002\x00"
+        );
+        assert_eq!(t.poll_timeout(), Some(now + Duration::from_secs(2)));
+        // An ignored first occurrence still shadows later duplicates.
+        let buf = b"\x00\x01boot.elf\x00octet\x00tsize\x00abc\x00tsize\x000\x00";
+        let mut t = started(go(buf, &cfg));
+        let first = t.poll_transmit(Instant::now()).unwrap();
+        assert_eq!(&first[..2], b"\x00\x03", "no OACK");
+    }
+
+    #[test]
+    fn tiny_or_huge_max_blksize_is_clamped_not_a_panic() {
+        for (max, want) in [(0, 8), (4, 8), (7, 8), (8, 8), (100_000, 9000)] {
+            let cfg = TransferConfig {
+                honor_blksize: true,
+                max_blksize: max,
+                ..Default::default()
+            };
+            let t = started(go(&rrq("boot.elf", "octet", &[("blksize", "9000")]), &cfg));
+            assert_eq!(t.blksize(), want, "max_blksize {max}");
+        }
+        let cfg = TransferConfig {
+            honor_blksize: true,
+            max_blksize: usize::MAX,
+            ..Default::default()
+        };
+        let t = started(go(&rrq("boot.elf", "octet", &[("blksize", "65464")]), &cfg));
+        assert_eq!(t.blksize(), 65464);
+    }
+
+    #[test]
+    fn huge_timeout_config_does_not_panic() {
+        let cfg = TransferConfig {
+            timeout: Duration::MAX,
+            ..Default::default()
+        };
+        let now = Instant::now();
+        let mut t = started(accept(&rrq("boot.elf", "octet", &[]), &files(), &cfg, now));
+        assert!(t.poll_transmit(now).is_some());
+        assert!(t.poll_timeout().unwrap() > now);
     }
 
     #[test]

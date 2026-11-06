@@ -222,9 +222,16 @@ impl Strings<'_> {
         Ok(Some(s))
     }
 
+    /// Option name/value pairs until the end of the packet or the first
+    /// empty option name. Some clients pad requests with extra NULs; an
+    /// empty name ends the option list and everything after it is ignored.
     fn pairs(&mut self) -> Result<Vec<(String, String)>, PacketError> {
         let mut out = Vec::new();
-        while let Some(name) = self.next_str()? {
+        loop {
+            if self.0.first() == Some(&0) {
+                break;
+            }
+            let Some(name) = self.next_str()? else { break };
             let value = self
                 .next_str()?
                 .ok_or_else(|| PacketError::OptionWithoutValue(name.clone()))?;
@@ -264,6 +271,35 @@ mod tests {
                 ("blksize".to_string(), "1468".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn trailing_nul_padding_is_accepted() {
+        for buf in [
+            &b"\x00\x01k\x00octet\x00\x00"[..],
+            &b"\x00\x01k\x00octet\x00\x00\x00"[..],
+            &b"\x00\x01k\x00octet\x00\x00\x00\x00\x00"[..],
+        ] {
+            let Packet::Rrq(r) = Packet::parse(buf).unwrap() else {
+                panic!()
+            };
+            assert_eq!((r.filename.as_str(), r.mode.as_str()), ("k", "octet"));
+            assert_eq!(r.options, vec![], "{buf:?}");
+        }
+    }
+
+    #[test]
+    fn options_stop_at_first_empty_name() {
+        let Packet::Rrq(r) =
+            Packet::parse(b"\x00\x01k\x00octet\x00tsize\x000\x00\x00\x00junk\x00x").unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(r.options, vec![("tsize".to_string(), "0".to_string())]);
+        let Packet::Oack(opts) = Packet::parse(b"\x00\x06tsize\x0042\x00\x00").unwrap() else {
+            panic!()
+        };
+        assert_eq!(opts, vec![("tsize".to_string(), "42".to_string())]);
     }
 
     #[test]

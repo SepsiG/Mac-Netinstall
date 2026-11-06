@@ -64,6 +64,10 @@ pub struct Transfer {
 
 impl Transfer {
     /// Start sending `data`. With `oack`, the OACK is sent first.
+    ///
+    /// # Panics
+    ///
+    /// If `blksize` is 0. [`crate::accept()`] never passes a value below 8.
     pub fn new(
         file: String,
         data: Bytes,
@@ -130,7 +134,7 @@ impl Transfer {
             return None;
         }
         self.wait = Wait::Ack {
-            deadline: now + self.timeout,
+            deadline: deadline_after(now, self.timeout),
         };
         Some(self.current_packet())
     }
@@ -212,6 +216,14 @@ impl Transfer {
         let end = (start + self.blksize).min(self.data.len());
         encode_data(wire_block(self.block), &self.data[start..end])
     }
+}
+
+/// `now + timeout`, saturating at one day if `Instant` would overflow
+/// (e.g. `Duration::MAX` in a config) instead of panicking.
+fn deadline_after(now: Instant, timeout: Duration) -> Instant {
+    now.checked_add(timeout)
+        .or_else(|| now.checked_add(Duration::from_secs(86_400)))
+        .unwrap_or(now)
 }
 
 /// Block number as sent on the wire (wraps 65535 -> 0).
