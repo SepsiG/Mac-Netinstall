@@ -25,6 +25,8 @@
 //! ([`message::CONFIG_SCRIPT_NAME`]).
 
 pub mod harness;
+#[cfg(feature = "lan")]
+pub mod lan;
 
 use bytes::Bytes;
 use ni_proto::{message, DeviceInfo, Frame, Mac, MAX_CHUNK};
@@ -144,6 +146,10 @@ impl DeviceSim {
 
     pub fn info(&self) -> &DeviceInfo {
         &self.cfg.info
+    }
+
+    pub fn config(&self) -> &SimConfig {
+        &self.cfg
     }
 
     pub fn received_files(&self) -> &[ReceivedFile] {

@@ -817,6 +817,8 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "ni-proto",
+ "ni-tftp",
+ "tokio",
 ]
 
 [[package]]
