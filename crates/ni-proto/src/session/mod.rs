@@ -146,6 +146,18 @@ impl InstallPlan {
     pub fn total_bytes(&self) -> u64 {
         self.files().iter().map(|(_, d)| d.len() as u64).sum()
     }
+
+    /// Move the system package (`routeros.npk` or
+    /// `routeros-<version>-<arch>.npk`) to the front, keeping the order of
+    /// the others: the official tool sends it first whatever the order on
+    /// its command line.
+    pub fn system_package_first(&mut self) {
+        let system = |p: &PlanFile| p.name == "routeros.npk" || p.name.starts_with("routeros-");
+        if let Some(i) = self.packages.iter().position(system) {
+            let p = self.packages.remove(i);
+            self.packages.insert(0, p);
+        }
+    }
 }
 
 /// Reasons an [`InstallPlan`] is rejected before anything is sent.
@@ -794,6 +806,32 @@ mod tests {
             names(&p),
             [("routeros.npk".into(), 10), ("autorun.scr".into(), 28)]
         );
+    }
+
+    #[test]
+    fn the_system_package_goes_first() {
+        let mut p = InstallPlan {
+            packages: vec![
+                file("container-7.25.1-arm64.npk", npk(4)),
+                file("wifi-qcom-7.25.1-arm64.npk", npk(4)),
+                file("routeros-7.25.1-arm64.npk", npk(4)),
+            ],
+            ..InstallPlan::default()
+        };
+        p.system_package_first();
+        let order: Vec<&str> = p.packages.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "routeros-7.25.1-arm64.npk",
+                "container-7.25.1-arm64.npk",
+                "wifi-qcom-7.25.1-arm64.npk"
+            ]
+        );
+        let mut q = plan();
+        q.packages.insert(0, file("a.npk", npk(4)));
+        q.system_package_first();
+        assert_eq!(q.packages[0].name, "routeros.npk");
     }
 
     #[test]
