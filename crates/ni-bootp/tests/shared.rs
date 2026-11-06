@@ -101,7 +101,8 @@ async fn boot_files_policy_and_leases_change_while_running() {
             mac: MAC,
             arch: BootArch::Arm64,
             ip,
-            kind: ReplyKind::Bootp
+            kind: ReplyKind::Bootp,
+            file: "kernel-arm64.elf".into(),
         }
     );
     let mut buf = [0u8; 1500];

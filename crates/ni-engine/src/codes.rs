@@ -17,6 +17,7 @@ pub const FAILURES: &[&str] = &[
     "default_route",
     "device_busy",
     "device_done",
+    "device_in_cooldown",
     "duplicate_package",
     "engine_gone",
     "flash_rejected",
@@ -34,6 +35,7 @@ pub const FAILURES: &[&str] = &[
     "invalid_profile",
     "invalid_script_name",
     "kernel_transfer_failed",
+    "kernel_version_unknown",
     "kernels_not_cached",
     "kernels_offline_fallback",
     "kernels_unavailable",
@@ -235,6 +237,78 @@ mod tests {
         assert_listed(link, LINK_REASONS, "link reason");
     }
 
+    /// `samples` must hold one value of every variant, in the order of
+    /// `index` (an exhaustive `match` without a wildcard arm: a new variant
+    /// does not compile until it gets an index, and then fails here until
+    /// it has a sample and a name in the list).
+    fn names_in_order<T>(
+        samples: &[T],
+        index: fn(&T) -> usize,
+        name: fn(&T) -> String,
+        list: &[&str],
+        what: &str,
+    ) {
+        let indices: Vec<usize> = samples.iter().map(index).collect();
+        let want: Vec<usize> = (0..samples.len()).collect();
+        assert_eq!(indices, want, "{what}: one sample per variant, in order");
+        let names: Vec<String> = samples.iter().map(name).collect();
+        assert_eq!(names, list, "{what}");
+    }
+
+    fn device_state_index(s: &DeviceState) -> usize {
+        match s {
+            DeviceState::BootpSeen { .. } => 0,
+            DeviceState::KernelServing { .. } => 1,
+            DeviceState::Discovered => 2,
+            DeviceState::Waiting { .. } => 3,
+            DeviceState::Preparing { .. } => 4,
+            DeviceState::Flashing { .. } => 5,
+            DeviceState::Done => 6,
+            DeviceState::Failed { .. } => 7,
+        }
+    }
+
+    fn wait_reason_index(w: &WaitReason) -> usize {
+        match w {
+            WaitReason::NoProfile => 0,
+            WaitReason::Concurrency => 1,
+        }
+    }
+
+    fn kernel_state_index(k: &KernelState) -> usize {
+        match k {
+            KernelState::Idle => 0,
+            KernelState::Downloading { .. } => 1,
+            KernelState::Ready { .. } => 2,
+            KernelState::Unavailable { .. } => 3,
+        }
+    }
+
+    fn phase_index(p: &Phase) -> usize {
+        match p {
+            Phase::Offering => 0,
+            Phase::Formatting => 1,
+            Phase::Preparing => 2,
+            Phase::Uploading { .. } => 3,
+            Phase::Finishing => 4,
+            Phase::Rebooting => 5,
+            Phase::Done => 6,
+            Phase::Failed => 7,
+        }
+    }
+
+    fn interface_kind_index(k: &InterfaceKind) -> usize {
+        match k {
+            InterfaceKind::Ethernet => 0,
+            InterfaceKind::WiFi => 1,
+            InterfaceKind::Loopback => 2,
+            InterfaceKind::Bridge => 3,
+            InterfaceKind::AppleWireless => 4,
+            InterfaceKind::Tunnel => 5,
+            InterfaceKind::Other => 6,
+        }
+    }
+
     #[test]
     fn enum_names_match_the_lists() {
         let states = [
@@ -257,13 +331,26 @@ mod tests {
             DeviceState::Done,
             DeviceState::failed(Failure::new("cancelled")),
         ];
-        let names: Vec<_> = states.iter().map(DeviceState::name).collect();
-        assert_eq!(names, DEVICE_STATES);
-        let waits: Vec<_> = [WaitReason::NoProfile, WaitReason::Concurrency]
-            .iter()
-            .map(|w| serde_json::to_value(w).unwrap())
-            .collect();
-        assert_eq!(waits, WAIT_REASONS);
+        names_in_order(
+            &states,
+            device_state_index,
+            |s| s.name().to_string(),
+            DEVICE_STATES,
+            "device states",
+        );
+        names_in_order(
+            &[WaitReason::NoProfile, WaitReason::Concurrency],
+            wait_reason_index,
+            |w| {
+                serde_json::to_value(w)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            },
+            WAIT_REASONS,
+            "wait reasons",
+        );
         let kernels = [
             KernelState::Idle,
             KernelState::Downloading {
@@ -280,8 +367,13 @@ mod tests {
                 params: Default::default(),
             },
         ];
-        let names: Vec<_> = kernels.iter().map(KernelState::name).collect();
-        assert_eq!(names, KERNEL_STATES);
+        names_in_order(
+            &kernels,
+            kernel_state_index,
+            |k| k.name().to_string(),
+            KERNEL_STATES,
+            "kernel states",
+        );
         let phases = [
             Phase::Offering,
             Phase::Formatting,
@@ -292,8 +384,13 @@ mod tests {
             Phase::Done,
             Phase::Failed,
         ];
-        let names: Vec<_> = phases.iter().map(Phase::name).collect();
-        assert_eq!(names, PHASES);
+        names_in_order(
+            &phases,
+            phase_index,
+            |p| p.name().to_string(),
+            PHASES,
+            "phases",
+        );
         let kinds = [
             InterfaceKind::Ethernet,
             InterfaceKind::WiFi,
@@ -303,8 +400,13 @@ mod tests {
             InterfaceKind::Tunnel,
             InterfaceKind::Other,
         ];
-        let names: Vec<_> = kinds.iter().map(|k| k.as_str()).collect();
-        assert_eq!(names, INTERFACE_KINDS);
+        names_in_order(
+            &kinds,
+            interface_kind_index,
+            |k| k.as_str().to_string(),
+            INTERFACE_KINDS,
+            "interface kinds",
+        );
     }
 
     #[test]

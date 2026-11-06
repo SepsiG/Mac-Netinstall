@@ -208,6 +208,14 @@ mod tests {
         s.max_parallel = 2;
         s.cooldown_secs = 10;
         assert_eq!(field(&s).0, "invalid_cooldown");
+        for huge in [86_401, u64::MAX] {
+            s.cooldown_secs = huge;
+            let f = s.validate().unwrap_err();
+            assert_eq!(
+                (f.code.as_str(), f.param("max_secs")),
+                ("invalid_cooldown", Some("86400"))
+            );
+        }
         s.cooldown_secs = 30;
         s.download_timeout_secs = 59;
         let f = s.validate().unwrap_err();

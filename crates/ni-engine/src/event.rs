@@ -290,6 +290,17 @@ pub enum EngineEvent {
         #[serde(flatten)]
         info: DeviceInfoView,
     },
+    /// A device was dropped from the device list (`forget`).
+    Forgotten {
+        #[serde(with = "mac_str")]
+        mac: Mac,
+    },
+    /// The device the engine serves exclusively changed (`set_only_mac`;
+    /// `null`: every device).
+    OnlyMacChanged {
+        #[serde(with = "mac_opt")]
+        mac: Option<Mac>,
+    },
     /// A device was not served: `cooldown`, `not_selected`,
     /// `awaiting_bootp` (hellos from a done device that has not netbooted
     /// again), `no_boot_file`, `pool_exhausted` or `unsupported_device`.
@@ -450,6 +461,22 @@ mod tests {
         ] {
             roundtrip(&e);
         }
+    }
+
+    #[test]
+    fn forgotten_and_only_mac_events() {
+        assert_eq!(
+            roundtrip(&EngineEvent::Forgotten { mac: MAC }),
+            json!({"event": "forgotten", "mac": "48:A9:8A:11:22:33"})
+        );
+        assert_eq!(
+            roundtrip(&EngineEvent::OnlyMacChanged { mac: Some(MAC) }),
+            json!({"event": "only_mac_changed", "mac": "48:A9:8A:11:22:33"})
+        );
+        assert_eq!(
+            roundtrip(&EngineEvent::OnlyMacChanged { mac: None }),
+            json!({"event": "only_mac_changed", "mac": null})
+        );
     }
 
     #[test]

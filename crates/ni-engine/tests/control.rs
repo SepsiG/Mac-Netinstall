@@ -152,6 +152,11 @@ async fn the_cooldown_can_change_but_not_below_the_minimum() {
 async fn only_mac_can_change_while_running() {
     let mut rig = rig(|_| {}).await;
     rig.engine.set_only_mac(Some(B)).await.unwrap();
+    let e = next(&mut rig.events, |e| {
+        matches!(e, EngineEvent::OnlyMacChanged { .. })
+    })
+    .await;
+    assert_eq!(e, EngineEvent::OnlyMacChanged { mac: Some(B) });
     assert_eq!(rig.engine.snapshot().await.unwrap().only_mac, Some(B));
     let reply = rig
         .lan
@@ -175,6 +180,11 @@ async fn only_mac_can_change_while_running() {
         }
     );
     rig.engine.set_only_mac(None).await.unwrap();
+    let e = next(&mut rig.events, |e| {
+        matches!(e, EngineEvent::OnlyMacChanged { .. })
+    })
+    .await;
+    assert_eq!(e, EngineEvent::OnlyMacChanged { mac: None });
     let sim = boot(&rig, A, sim_config(A)).await;
     rig.lan.add(sim).await;
     state(&mut rig.events, A, "done").await;
@@ -269,7 +279,7 @@ async fn a_new_active_version_withdraws_and_refetches_the_kernels() {
         })
     );
     // Now A boots and gets 7.24.6.
-    let sim = boot(&rig, A, sim_config(A)).await;
+    let sim = boot_version(&rig, A, sim_config(A), "7.24.6").await;
     rig.lan.add(sim).await;
     let e = state(&mut rig.events, A, "flashing").await;
     let EngineEvent::Device {
@@ -409,28 +419,264 @@ async fn cancelling_a_queued_device_takes_it_out_of_the_queue() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_forgotten_device_is_new_again_without_cooldown() {
+async fn a_forgotten_device_is_reported_and_new_again() {
     let mut rig = rig(|_| {}).await;
-    let sim = boot(&rig, A, sim_config(A)).await;
-    rig.lan.add(sim).await;
-    state(&mut rig.events, A, "done").await;
-    rig.lan.wait_terminated(A, WAIT).await.unwrap();
-    rig.engine.forget(A).await.unwrap();
-    assert!(rig.engine.snapshot().await.unwrap().devices.is_empty());
-    assert_eq!(
-        rig.engine.forget(A).await.unwrap_err().code,
-        "unknown_device"
-    );
-    // No cooldown any more: it gets a boot file at once.
     let reply = rig
         .lan
         .boot(A, "ARM64__boot", rig.started.bootp, WAIT)
         .await;
     assert!(reply.is_some());
-    let e = state(&mut rig.events, A, "bootp_seen").await;
-    assert!(matches!(e, EngineEvent::Device { .. }));
+    state(&mut rig.events, A, "bootp_seen").await;
+    rig.engine.forget(A).await.unwrap();
+    let e = next(&mut rig.events, |e| {
+        matches!(e, EngineEvent::Forgotten { .. })
+    })
+    .await;
+    assert_eq!(e, EngineEvent::Forgotten { mac: A });
+    assert!(rig.engine.snapshot().await.unwrap().devices.is_empty());
+    assert_eq!(
+        rig.engine.forget(A).await.unwrap_err().code,
+        "unknown_device"
+    );
+    // Netbooting again, it starts over as a new device.
+    let reply = rig
+        .lan
+        .boot(A, "ARM64__boot", rig.started.bootp, WAIT)
+        .await;
+    assert!(reply.is_some());
+    state(&mut rig.events, A, "bootp_seen").await;
     let snap = rig.engine.snapshot().await.unwrap();
     assert_eq!(snap.devices[0].attempt, 0, "a new device");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_done_device_cannot_be_forgotten_during_its_cooldown() {
+    let mut rig = rig(|cfg| {
+        cfg.min_cooldown = Duration::from_millis(100);
+        cfg.cooldown = Duration::from_millis(800);
+    })
+    .await;
+    let sim = boot(&rig, A, sim_config(A)).await;
+    rig.lan.add(sim).await;
+    state(&mut rig.events, A, "done").await;
+    let err = rig.engine.forget(A).await.unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("mac")),
+        ("device_in_cooldown", Some(A.to_string().as_str()))
+    );
+    assert_eq!(rig.engine.snapshot().await.unwrap().devices.len(), 1);
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    rig.engine.forget(A).await.unwrap();
+    next(
+        &mut rig.events,
+        |e| matches!(e, EngineEvent::Forgotten { mac } if *mac == A),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_mac_holds_back_queued_devices_of_other_macs() {
+    let mut rig = rig(|cfg| cfg.max_parallel = 1).await;
+    let mut slow = sim_config(A);
+    slow.format_delay = Duration::from_millis(800);
+    let a = boot(&rig, A, slow).await;
+    let b = boot(&rig, B, sim_config(B)).await;
+    rig.lan.add(a).await;
+    state(&mut rig.events, A, "flashing").await;
+    rig.lan.add(b).await;
+    state(&mut rig.events, B, "waiting").await;
+    rig.engine.set_only_mac(Some(A)).await.unwrap();
+    state(&mut rig.events, A, "done").await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let snap = rig.engine.snapshot().await.unwrap();
+    let b_now = snap.devices.iter().find(|d| d.mac == B).unwrap();
+    assert_eq!(b_now.state.name(), "waiting", "B is not admitted");
+    assert_eq!(b_now.attempt, 0);
+    rig.engine.set_only_mac(None).await.unwrap();
+    state(&mut rig.events, B, "preparing").await;
+    state(&mut rig.events, B, "done").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unavailable_kernels_are_fetched_again_for_the_same_spec() {
+    let srv = ni_assets::testutil::TestServer::start().await;
+    ni_assets::testutil::mirror(&srv);
+    let tarball = "/dl/7.25.1/netinstall-7.25.1.tar.gz";
+    srv.route(tarball, Reply::Status(503));
+    let cache = ni_assets::testutil::tempdir("control-refetch");
+    let engine = EngineHandle::spawn(cache.join("cache"), http(&srv)).unwrap();
+    let mut events = engine.subscribe();
+    let lan = ni_sim::lan::SimLan::bind().await.unwrap();
+    engine.start(config(&lan)).await.unwrap();
+    let states = kernel_states(&mut events).await;
+    assert_eq!(states.last().unwrap().name(), "unavailable");
+    srv.route(tarball, Reply::Body(netinstall_tarball()));
+    engine.set_active_profile(Some(profile())).await.unwrap();
+    let states = kernel_states(&mut events).await;
+    assert_eq!(
+        states.last(),
+        Some(&KernelState::Ready {
+            version: "7.25.1".into(),
+            offline: false
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn progress_of_a_superseded_kernel_fetch_is_not_reported() {
+    let mut rig = rig(|_| {}).await;
+    mirror_version(&rig.srv, "7.24.6");
+    mirror_version(&rig.srv, "7.23.2");
+    rig.srv.route(
+        "/dl/7.24.6/netinstall-7.24.6.tar.gz",
+        // Big and slow: still downloading long after it is superseded
+        // (it would fail its checksum in the end; nobody waits for that).
+        Reply::Slow {
+            body: vec![0; 4 << 20],
+            chunk: 64 * 1024,
+            delay: Duration::from_millis(40),
+        },
+    );
+    // The new fetch never gets past its first byte.
+    rig.srv
+        .route("/dl/7.23.2/netinstall-7.23.2.tar.gz", Reply::Stall);
+    rig.engine
+        .set_active_profile(Some(exact("old", "7.24.6")))
+        .await
+        .unwrap();
+    next(&mut rig.events, |e| {
+        matches!(e, EngineEvent::Kernels { state: KernelState::Downloading { done, .. } } if *done > 0)
+    })
+    .await;
+    rig.engine
+        .set_active_profile(Some(exact("older", "7.23.2")))
+        .await
+        .unwrap();
+    let end = tokio::time::Instant::now() + Duration::from_millis(1500);
+    let mut seen = Vec::new();
+    while let Ok(Ok(e)) = tokio::time::timeout_at(end, rig.events.recv()).await {
+        if let EngineEvent::Kernels { state } = e {
+            seen.push(state);
+        }
+    }
+    assert!(!seen.is_empty(), "the new fetch is reported");
+    for s in &seen {
+        match s {
+            KernelState::Downloading { spec, done, .. } => {
+                assert_eq!(spec, "7.23.2", "{seen:?}");
+                assert_eq!(*done, 0, "no progress of the old fetch: {seen:?}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert!(
+        matches!(&snap.kernels, KernelState::Downloading { spec, done: 0, .. } if spec == "7.23.2"),
+        "{:?}",
+        snap.kernels
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn boot_files_name_their_version_so_a_swap_cannot_mix_kernels() {
+    let mut rig = rig(|cfg| cfg.auto_repeat = false).await;
+    mirror_version(&rig.srv, "7.24.6");
+    // A gets its BOOTP reply for the 7.25.1 kernels ...
+    let reply = rig
+        .lan
+        .boot(A, "ARM64__boot", rig.started.bootp, WAIT)
+        .await
+        .expect("BOOTP reply");
+    assert_eq!(reply.file, "kernel-7.25.1-arm64.elf");
+    // ... then the kernels are swapped before it fetches the file.
+    rig.engine
+        .set_active_profile(Some(exact("old", "7.24.6")))
+        .await
+        .unwrap();
+    next(&mut rig.events, |e| {
+        matches!(e, EngineEvent::KernelsReady { .. })
+    })
+    .await;
+    let tftp = std::net::SocketAddr::from((reply.server, rig.started.tftp.port()));
+    assert!(
+        ni_sim::lan::tftp_get(tftp, &reply.file).await.is_err(),
+        "the old name does not give the new kernel"
+    );
+    assert!(ni_sim::lan::tftp_get(tftp, "kernel-7.24.6-arm64.elf")
+        .await
+        .is_ok());
+    // Whatever it booted, the engine goes by the name it was given.
+    rig.lan
+        .add(ni_sim::DeviceSim::new(
+            sim_config(A),
+            std::time::Instant::now(),
+        ))
+        .await;
+    state(&mut rig.events, A, "waiting").await;
+    let err = rig
+        .engine
+        .flash(A, exact("old", "7.24.6"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("kernel_version")),
+        ("profile_version_mismatch", Some("7.25.1"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_with_an_unknown_kernel_is_not_flashed() {
+    let mut rig = rig(|_| {}).await;
+    mirror_version(&rig.srv, "7.24.6");
+    rig.srv
+        .route("/dl/7.24.6/netinstall-7.24.6.tar.gz", Reply::Stall);
+    rig.engine
+        .set_active_profile(Some(exact("old", "7.24.6")))
+        .await
+        .unwrap();
+    // No kernels are served now, and A was never seen netbooting: what it
+    // runs is unknown, so it must not be installed.
+    rig.lan
+        .add(ni_sim::DeviceSim::new(
+            sim_config(A),
+            std::time::Instant::now(),
+        ))
+        .await;
+    let e = state(&mut rig.events, A, "failed").await;
+    let EngineEvent::Device {
+        state: DeviceState::Failed { code, .. },
+        ..
+    } = e
+    else {
+        unreachable!()
+    };
+    assert_eq!(code, "kernel_version_unknown");
+    let err = rig
+        .engine
+        .flash(A, exact("old", "7.24.6"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "kernel_version_unknown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cooldowns_have_an_upper_bound() {
+    let rig = rig(|_| {}).await;
+    for secs in [86_401, u64::MAX] {
+        let err = rig
+            .engine
+            .set_cooldown(Duration::from_secs(secs))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("max_secs")),
+            ("invalid_cooldown", Some("86400"))
+        );
+    }
+    rig.engine
+        .set_cooldown(Duration::from_secs(86_400))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

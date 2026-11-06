@@ -22,7 +22,7 @@ pub mod profile;
 pub use config::{
     check_cooldown, check_max_parallel, check_pool_reserved, default_pool, interface_usable,
     link_status, resolve_network, subnet, EngineConfig, InterfaceSource, LinkStatus, NetPlan,
-    Ports, DEFAULT_NETMASK, MAX_PARALLEL, MIN_COOLDOWN,
+    Ports, DEFAULT_NETMASK, MAX_COOLDOWN, MAX_PARALLEL, MIN_COOLDOWN,
 };
 pub use engine::{DeviceView, EngineHandle, Snapshot, EVENT_CAPACITY};
 pub use event::{

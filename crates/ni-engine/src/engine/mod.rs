@@ -236,7 +236,15 @@ impl EngineHandle {
     /// version other than the boot kernels' (the device already runs the
     /// kernel it was served, so it cannot install another version); a
     /// channel is checked once resolved, and the device fails with that
-    /// code.
+    /// code. `kernel_version_unknown` (`mac`): the device was not seen
+    /// netbooting and no kernels are served right now, so what it runs
+    /// cannot be checked (a device in that state that would be installed
+    /// automatically fails with that code).
+    ///
+    /// The kernel version of a device comes from the boot file name it was
+    /// given (`kernel-<version>-<arch>.elf`, see
+    /// [`crate::prepare::served_kernel_name`]) and is confirmed by the file
+    /// it fetches over TFTP.
     pub async fn flash(&self, mac: Mac, profile: Profile) -> Result<(), Failure> {
         self.call(|tx| Command::Flash(mac, Box::new(profile), tx))
             .await?
@@ -263,7 +271,10 @@ impl EngineHandle {
 
     /// Drop a device that is not being prepared or flashed from the
     /// device list, with its cooldown: if it netboots again it is treated
-    /// as new. Errors: `not_running`, `unknown_device`, `device_busy`.
+    /// as new. Reported as [`EngineEvent::Forgotten`]. A done device in its
+    /// cooldown is refused (it may be rebooting into its new system, and
+    /// must not be served again yet). Errors: `not_running`,
+    /// `unknown_device`, `device_busy`, `device_in_cooldown` (`mac`).
     pub async fn forget(&self, mac: Mac) -> Result<(), Failure> {
         self.call(|tx| Command::Forget(mac, tx)).await?
     }
@@ -285,17 +296,20 @@ impl EngineHandle {
     /// that netboot get no boot file. Devices queued by auto-repeat (no
     /// profile assigned with `flash`) take the new profile. A device keeps
     /// the kernel version it booted: installing another one on it fails
-    /// with `profile_version_mismatch` until it netboots again. Errors:
-    /// `not_running`, profile validation codes.
+    /// with `profile_version_mismatch` until it netboots again. The same
+    /// spec keeps the kernels, unless they are `unavailable`: then they are
+    /// fetched again (a retry without stopping). Errors: `not_running`,
+    /// profile validation codes.
     pub async fn set_active_profile(&self, profile: Option<Profile>) -> Result<(), Failure> {
         self.call(|tx| Command::ActiveProfile(profile.map(Box::new), tx))
             .await?
     }
 
     /// Serve only `mac` from now on (`None`: every device). Others get no
-    /// boot file and their hellos are `ignored` (`not_selected`); devices
-    /// already being prepared or flashed are not affected. Error:
-    /// `not_running`.
+    /// boot file and their hellos are `ignored` (`not_selected`); queued
+    /// ones stay queued (they are not started until it is lifted); devices
+    /// already being prepared or flashed are not affected. Reported as
+    /// [`EngineEvent::OnlyMacChanged`]. Error: `not_running`.
     pub async fn set_only_mac(&self, mac: Option<Mac>) -> Result<(), Failure> {
         self.call(|tx| Command::OnlyMac(mac, tx)).await?
     }
@@ -309,8 +323,8 @@ impl EngineHandle {
 
     /// Change the post-flash cooldown for devices finishing from now on
     /// (running cooldowns keep their end). Errors: `not_running`,
-    /// `invalid_cooldown` (`min_secs`, `secs`; at least
-    /// [`crate::MIN_COOLDOWN`]).
+    /// `invalid_cooldown` (`min_secs`, `max_secs`, `secs`; at least
+    /// [`crate::MIN_COOLDOWN`], at most [`crate::MAX_COOLDOWN`]).
     pub async fn set_cooldown(&self, cooldown: Duration) -> Result<(), Failure> {
         self.call(|tx| Command::Cooldown(cooldown, tx)).await?
     }

@@ -160,8 +160,10 @@ async fn start_flash_and_remember_the_choices() {
     let stored: Settings =
         serde_json::from_slice(&std::fs::read(rig.dir.join("settings.json")).unwrap()).unwrap();
     assert_eq!(stored, s);
-    rig.core.forget(&A.to_string()).await.unwrap();
-    assert!(rig.core.snapshot().await.unwrap().devices.is_empty());
+    // Just flashed: kept until its cooldown is over.
+    let err = rig.core.forget(&A.to_string()).await.unwrap_err();
+    assert_eq!(err.code, "device_in_cooldown");
+    assert_eq!(rig.core.snapshot().await.unwrap().devices.len(), 1);
     rig.core.stop().await.unwrap();
     next(&mut rig, |f| {
         matches!(f, Forwarded::Event(EngineEvent::Stopped))

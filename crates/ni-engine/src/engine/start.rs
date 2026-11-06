@@ -104,10 +104,12 @@ pub(crate) fn start(
     let bootp_sock = bind("bootp", cfg.ports.bootp, true)?;
     let tftp_sock = bind("tftp", cfg.ports.tftp, false)?;
     let socket = bind("netinstall", cfg.ports.netinstall, true)?;
-    let public = |s: &UdpSocket| -> Result<SocketAddr, Failure> {
-        let a = s
-            .local_addr()
-            .map_err(|e| Failure::new("bind_failed").with("detail", e))?;
+    let public = |service: &str, s: &UdpSocket| -> Result<SocketAddr, Failure> {
+        let a = s.local_addr().map_err(|e| {
+            Failure::new("bind_failed")
+                .with("service", service)
+                .with("detail", e)
+        })?;
         Ok(if a.ip().is_unspecified() {
             SocketAddr::from((net.server_ip, a.port()))
         } else {
@@ -117,9 +119,9 @@ pub(crate) fn start(
     let info = StartInfo {
         interface: cfg.interface.clone(),
         server_ip: net.server_ip,
-        bootp: public(&bootp_sock)?,
-        tftp: public(&tftp_sock)?,
-        netinstall: public(&socket)?,
+        bootp: public("bootp", &bootp_sock)?,
+        tftp: public("tftp", &tftp_sock)?,
+        netinstall: public("netinstall", &socket)?,
     };
 
     let gate = Gate::default();
@@ -153,7 +155,7 @@ pub(crate) fn start(
             epoch,
         ),
     ];
-    let next_link_check = cfg.link_check.map(|d| Instant::now() + d);
+    let next_link_check = cfg.link_check.and_then(|d| Instant::now().checked_add(d));
     let running = Running {
         cfg,
         net,
@@ -166,6 +168,7 @@ pub(crate) fn start(
         kernel_version: None,
         kernel_spec: None,
         kernel_gen: 0,
+        kernel_resolved: None,
         kernels: KernelState::Idle,
         queue_seq: 0,
         ignored: HashMap::new(),

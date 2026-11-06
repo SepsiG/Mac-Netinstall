@@ -211,12 +211,17 @@ pub fn sim_config(mac: Mac) -> SimConfig {
 /// the boot file (checked against the synthetic kernel). Returns the
 /// device simulator, ready for [`SimLan::add`].
 pub async fn boot(rig: &Rig, mac: Mac, sim: SimConfig) -> DeviceSim {
+    boot_version(rig, mac, sim, "7.25.1").await
+}
+
+/// Like [`boot`], for boot kernels of `version`.
+pub async fn boot_version(rig: &Rig, mac: Mac, sim: SimConfig, version: &str) -> DeviceSim {
     let reply = rig
         .lan
         .boot(mac, "ARM64__boot", rig.started.bootp, WAIT)
         .await
         .expect("BOOTP reply");
-    assert_eq!(reply.file, "kernel-arm64.elf");
+    assert_eq!(reply.file, format!("kernel-{version}-arm64.elf"));
     assert_eq!(reply.server, rig.started.server_ip);
     let tftp = SocketAddr::from((reply.server, rig.started.tftp.port()));
     let kernel = tftp_get(tftp, &reply.file).await.unwrap();

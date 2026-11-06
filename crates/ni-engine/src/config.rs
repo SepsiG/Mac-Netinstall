@@ -16,14 +16,20 @@ use std::time::Duration;
 /// while it reboots (RouterBOOT may netboot once more).
 pub const MIN_COOLDOWN: Duration = Duration::from_secs(30);
 
+/// Longest allowed cooldown (a day): longer ones are mistakes, and
+/// `Instant + cooldown` must not overflow.
+pub const MAX_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Most devices prepared or flashed at the same time.
 pub const MAX_PARALLEL: usize = 64;
 
-/// `invalid_cooldown` (`min_secs`, `secs`) if `cooldown` is below `min`.
+/// `invalid_cooldown` (`min_secs`, `max_secs`, `secs`) if `cooldown` is
+/// below `min` or above [`MAX_COOLDOWN`].
 pub fn check_cooldown(cooldown: Duration, min: Duration) -> Result<(), Failure> {
-    if cooldown < min {
+    if cooldown < min || cooldown > MAX_COOLDOWN {
         return Err(Failure::new("invalid_cooldown")
             .with("min_secs", min.as_secs())
+            .with("max_secs", MAX_COOLDOWN.as_secs())
             .with("secs", cooldown.as_secs()));
     }
     Ok(())
@@ -190,7 +196,7 @@ impl EngineConfig {
     }
 
     /// Settings `start` refuses. Codes: `invalid_cooldown` (`min_secs`,
-    /// `secs`), `invalid_max_parallel` (`min`, `max`, `value`), profile
+    /// `max_secs`, `secs`), `invalid_max_parallel` (`min`, `max`, `value`), profile
     /// validation codes.
     pub fn validate(&self) -> Result<(), Failure> {
         check_cooldown(self.cooldown, self.min_cooldown)?;
@@ -548,10 +554,28 @@ mod tests {
             err,
             Failure::new("invalid_cooldown")
                 .with("min_secs", 30)
+                .with("max_secs", 86400)
                 .with("secs", 29)
         );
         cfg.cooldown = MIN_COOLDOWN;
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn cooldown_has_an_upper_bound_of_a_day() {
+        let mut cfg = EngineConfig::new("en7");
+        cfg.cooldown = MAX_COOLDOWN;
+        assert!(cfg.validate().is_ok());
+        for secs in [MAX_COOLDOWN.as_secs() + 1, u64::MAX] {
+            cfg.cooldown = Duration::from_secs(secs);
+            let err = cfg.validate().unwrap_err();
+            assert_eq!(err.code, "invalid_cooldown");
+            assert_eq!(err.param("max_secs"), Some("86400"));
+            assert_eq!(err.param("min_secs"), Some("30"));
+        }
+        // Not even a test's lower minimum lifts the upper bound.
+        let err = check_cooldown(Duration::MAX, Duration::ZERO).unwrap_err();
+        assert_eq!(err.code, "invalid_cooldown");
     }
 
     #[test]

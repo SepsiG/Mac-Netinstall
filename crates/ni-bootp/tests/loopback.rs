@@ -105,6 +105,7 @@ async fn discover_then_request_over_udp() {
             arch: BootArch::Arm64,
             ip: Ipv4Addr::new(192, 168, 88, 100),
             kind: ReplyKind::Offer,
+            file: "arm64-boot".into(),
         }
     );
 
