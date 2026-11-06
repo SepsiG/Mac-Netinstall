@@ -4,6 +4,7 @@
 //! [`cli::exit`].
 
 mod cli;
+mod output;
 
 use clap::Parser;
 use std::process::ExitCode;
