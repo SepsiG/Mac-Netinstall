@@ -199,6 +199,31 @@ impl AppCore {
         Ok(s)
     }
 
+    /// Remember the main window's geometry (ignored unless valid).
+    pub fn remember_window(&self, g: crate::settings::WindowGeometry) {
+        if g.is_valid() && self.settings().window != Some(g) {
+            self.remember(|s| s.window = Some(g));
+        }
+    }
+
+    /// Remember a dialog's size. Error: `invalid_setting` (`field`:
+    /// `dialog_sizes`) for a bad id or size, or a new id past
+    /// [`crate::settings::MAX_DIALOGS`].
+    pub fn set_dialog_size(&self, id: &str, width: u32, height: u32) -> Result<(), Failure> {
+        let size = crate::settings::DialogSize { width, height };
+        let mut s = lock(&self.settings);
+        let mut next = s.clone();
+        next.dialog_sizes.insert(id.to_string(), size);
+        if !crate::settings::valid_dialog_id(id) || next.validate().is_err() {
+            return Err(Failure::new("invalid_setting").with("field", "dialog_sizes"));
+        }
+        if let Err(f) = self.store.save(&next) {
+            tracing::warn!("cannot store settings: {f}");
+        }
+        *s = next;
+        Ok(())
+    }
+
     /// Change a few fields and store them; a failure to store is only
     /// logged (remembering the last interface must not fail a start).
     fn remember(&self, change: impl FnOnce(&mut Settings)) {

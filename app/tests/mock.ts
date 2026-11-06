@@ -15,6 +15,8 @@ export const SETTINGS: Settings = {
   auto_repeat: false,
   last_profile: null,
   download_timeout_secs: 1800,
+  window: null,
+  dialog_sizes: {},
 };
 
 export const CACHE: CacheView = {
@@ -158,6 +160,7 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
     pickLicenseKey: vi.fn(async () => ({ key: "-----BEGIN KEY-----AAAA-----END KEY-----" })),
     getSettings: vi.fn(async () => ({ ...SETTINGS })),
     setSettings: vi.fn(async (s: Settings) => s),
+    setDialogSize: vi.fn(async (_id: string, _w: number, _h: number) => {}),
     cacheInventory: vi.fn(async () => structuredClone(CACHE)),
     deleteCached: vi.fn(async () => 1_000_000),
     exportLog: vi.fn(async () => true),

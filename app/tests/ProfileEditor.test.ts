@@ -76,7 +76,7 @@ describe("ProfileEditor", () => {
 
   it("refuses an empty script and points to the empty configuration", async () => {
     const backend = mockBackend();
-    backend.pickScript.mockResolvedValueOnce({ name: "empty.rsc", size: 0 });
+    vi.mocked(backend.pickScript).mockResolvedValueOnce({ name: "empty.rsc", size: 0 });
     open(null, backend);
     await userEvent.type(screen.getByLabelText("Name"), "lab");
     await userEvent.click(screen.getByLabelText("Run my script (.rsc)"));

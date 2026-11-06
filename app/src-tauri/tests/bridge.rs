@@ -334,6 +334,50 @@ async fn a_new_download_timeout_replaces_the_idle_engine() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn window_and_dialog_sizes_are_remembered() {
+    use mac_netinstall_app::settings::WindowGeometry;
+    let rig = rig("bridge-sizes").await;
+    rig.core.set_dialog_size("profile", 700, 520).unwrap();
+    rig.core.set_dialog_size("confirm", 420, 200).unwrap();
+    for (id, w, h) in [
+        ("profile", 50, 520),
+        ("Bad Id", 700, 520),
+        ("x", 700, 100_000),
+    ] {
+        let err = rig.core.set_dialog_size(id, w, h).unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("field")),
+            ("invalid_setting", Some("dialog_sizes")),
+            "{id} {w}x{h}"
+        );
+    }
+    let g = WindowGeometry {
+        x: 30,
+        y: 40,
+        width: 1200,
+        height: 800,
+    };
+    rig.core.remember_window(g);
+    rig.core.remember_window(WindowGeometry { width: 10, ..g }); // ignored
+    let s = rig.core.settings();
+    assert_eq!(s.window, Some(g));
+    assert_eq!(s.dialog_sizes["profile"].width, 700);
+    assert_eq!(s.dialog_sizes.len(), 2);
+    // Stored: a new core reads them back; the settings dialog keeps them.
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(rig.dir.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(stored["dialog_sizes"]["confirm"]["height"], 200);
+    assert_eq!(stored["window"]["width"], 1200);
+    let saved = rig
+        .core
+        .set_settings(mac_netinstall_app::settings::Settings::default())
+        .await
+        .unwrap();
+    assert_eq!(saved.window, Some(g));
+    assert_eq!(saved.dialog_sizes.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn profiles_are_created_renamed_and_deleted() {
     let rig = rig("bridge-profiles").await;
     let mut p = Profile::new("Lab", VersionSpec::Channel(Channel::Testing));

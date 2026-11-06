@@ -226,6 +226,22 @@ export interface Settings {
   auto_repeat: boolean;
   last_profile: string | null;
   download_timeout_secs: number;
+  /** The main window as it was left (Rust restores it). */
+  window: WindowGeometry | null;
+  /** Each dialog's size as the user left it, by dialog id. */
+  dialog_sizes: Record<string, DialogSize>;
+}
+
+export interface WindowGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DialogSize {
+  width: number;
+  height: number;
 }
 
 export const CHANNELS = ["stable", "long-term", "testing", "development"] as const;

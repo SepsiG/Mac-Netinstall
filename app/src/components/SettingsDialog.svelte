@@ -50,7 +50,7 @@
   {#if tried && e}<div class="field-error" role="alert">{$t(e.key, e.values)}</div>{/if}
 {/snippet}
 
-<Modal title={$t("settings.title")} onclose={() => onclose(null)} width={540}>
+<Modal title={$t("settings.title")} onclose={() => onclose(null)} id="settings" width={600} minWidth={460} minHeight={320}>
   <form class="grid" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <label for="s-lang">{$t("settings.language")}</label>
     <select id="s-lang" bind:value={form.language}>

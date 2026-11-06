@@ -142,7 +142,7 @@
   }
 </script>
 
-<Modal title={initial ? $t("profile.edit_title") : $t("profile.new_title")} onclose={requestClose} width={560}>
+<Modal title={initial ? $t("profile.edit_title") : $t("profile.new_title")} onclose={requestClose} id="profile" width={620} minWidth={480} minHeight={360}>
   <form class="grid" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <label for="p-name">{$t("profile.name")}</label>
     <div>

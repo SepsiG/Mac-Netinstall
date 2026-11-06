@@ -23,7 +23,7 @@
   } = $props();
 </script>
 
-<Modal {title} onclose={oncancel} width={400}>
+<Modal {title} onclose={oncancel} id="confirm" width={420} minWidth={300} minHeight={140}>
   <p>{body}</p>
   {#if items.length > 0}
     <ul>

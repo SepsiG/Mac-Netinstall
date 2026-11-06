@@ -50,6 +50,8 @@ export interface Backend {
   pickLicenseKey(): Promise<LicenseKeyView | null>;
   getSettings(): Promise<Settings>;
   setSettings(settings: Settings): Promise<Settings>;
+  /** Remember a dialog's size (validated and stored in Rust). */
+  setDialogSize(id: string, width: number, height: number): Promise<void>;
   /** `verify`: check every file's SHA-256 (slow); else a quick listing. */
   cacheInventory(verify: boolean): Promise<CacheView>;
   /** Bytes freed. */
@@ -104,6 +106,7 @@ export function tauriBackend(): Backend {
     pickLicenseKey: () => invoke("pick_license_key"),
     getSettings: () => invoke("get_settings"),
     setSettings: (settings) => invoke("set_settings", { settings }),
+    setDialogSize: (id, width, height) => invoke("set_dialog_size", { id, width, height }),
     cacheInventory: (verify) => invoke("cache_inventory", { verify }),
     deleteCached: (scope) => invoke("delete_cached", { scope }),
     exportLog: (text) => invoke("export_log", { text }),

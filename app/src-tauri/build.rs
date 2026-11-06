@@ -28,6 +28,7 @@ const COMMANDS: &[&str] = &[
     "pick_license_key",
     "get_settings",
     "set_settings",
+    "set_dialog_size",
     "cache_inventory",
     "delete_cached",
     "export_log",

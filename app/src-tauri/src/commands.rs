@@ -161,6 +161,12 @@ pub fn get_settings(core: State<'_, AppCore>) -> Settings {
     core.settings()
 }
 
+/// Remember a dialog's size (by dialog id), for the next time it opens.
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_dialog_size(core: State<'_, AppCore>, id: String, width: u32, height: u32) -> R<()> {
+    core.set_dialog_size(&id, width, height)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn set_settings(core: State<'_, AppCore>, settings: Settings) -> R<Settings> {
     core.set_settings(settings).await
