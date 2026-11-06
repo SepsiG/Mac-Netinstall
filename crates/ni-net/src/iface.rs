@@ -217,6 +217,50 @@ impl Interface {
     }
 }
 
+/// The parent of a VLAN interface from `ifconfig <vlan>` output
+/// (`vlan: 10 parent interface: en6`).
+pub fn parse_vlan_parent(ifconfig: &str) -> Option<String> {
+    let rest = ifconfig
+        .lines()
+        .find_map(|l| l.split_once("parent interface:"))?
+        .1
+        .trim();
+    (!rest.is_empty() && !rest.starts_with('<')).then(|| rest.to_string())
+}
+
+/// A VLAN (`vlan*`) on a capable adapter is Ethernet too (tagged).
+pub fn apply_vlan_parents(list: &mut [Interface], parents: &BTreeMap<String, String>) {
+    let capable: Vec<String> = list
+        .iter()
+        .filter(|i| i.is_netinstall_capable())
+        .map(|i| i.name.clone())
+        .collect();
+    for iface in list.iter_mut() {
+        if parents
+            .get(&iface.name)
+            .is_some_and(|p| capable.contains(p))
+        {
+            iface.kind = InterfaceKind::Ethernet;
+        }
+    }
+}
+
+/// `vlan*` interface -> its parent, asking `ifconfig` (only run when
+/// there are VLANs).
+fn vlan_parents(list: &[Interface]) -> BTreeMap<String, String> {
+    list.iter()
+        .filter(|i| i.name.starts_with("vlan"))
+        .filter_map(|i| {
+            let out = std::process::Command::new("/sbin/ifconfig")
+                .arg(&i.name)
+                .output()
+                .ok()?;
+            let parent = parse_vlan_parent(&String::from_utf8_lossy(&out.stdout))?;
+            Some((i.name.clone(), parent))
+        })
+        .collect()
+}
+
 /// List all interfaces, sorted by name.
 pub fn list_interfaces() -> io::Result<Vec<Interface>> {
     let mut by_name: BTreeMap<String, Interface> = BTreeMap::new();
@@ -292,6 +336,8 @@ pub fn list_interfaces() -> io::Result<Vec<Interface>> {
             }
         }
     }
+    let parents = vlan_parents(&out);
+    apply_vlan_parents(&mut out, &parents);
     Ok(out)
 }
 
@@ -462,6 +508,55 @@ mod tests {
     }
 
     #[test]
+    fn vlan_parents_are_read_from_ifconfig() {
+        let out = "vlan0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\
+                   \tether 00:e0:4c:68:00:01\n\
+                   \tvlan: 10 parent interface: en6\n\
+                   \tstatus: active\n";
+        assert_eq!(parse_vlan_parent(out).as_deref(), Some("en6"));
+        assert_eq!(
+            parse_vlan_parent("\tvlan: 10 parent interface: <none>\n"),
+            None
+        );
+        assert_eq!(parse_vlan_parent(""), None);
+    }
+
+    #[test]
+    fn a_vlan_on_a_capable_adapter_is_capable() {
+        let iface = |name: &str, kind| Interface {
+            name: name.into(),
+            index: 1,
+            mac: None,
+            ipv4: Vec::new(),
+            is_up: true,
+            is_running: true,
+            is_loopback: false,
+            kind,
+            display_name: None,
+            configured_ipv4: None,
+        };
+        let mut list = vec![
+            iface("en6", InterfaceKind::Ethernet),
+            iface("en1", InterfaceKind::ThunderboltIp),
+            iface("vlan0", InterfaceKind::Virtual),
+            iface("vlan1", InterfaceKind::Virtual),
+            iface("vlan2", InterfaceKind::Virtual),
+        ];
+        let parents: BTreeMap<String, String> = [
+            ("vlan0".to_string(), "en6".to_string()),
+            ("vlan1".to_string(), "en1".to_string()),
+        ]
+        .into();
+        apply_vlan_parents(&mut list, &parents);
+        let capable: Vec<&str> = list
+            .iter()
+            .filter(|i| i.is_netinstall_capable())
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(capable, ["en6", "vlan0"]);
+    }
+
+    #[test]
     fn only_ethernet_is_netinstall_capable() {
         let mut i = Interface {
             name: "en7".into(),
@@ -488,9 +583,9 @@ mod tests {
         }
     }
 
-    /// On the development Mac (a Mac Studio without an Ethernet adapter
-    /// plugged in): en2/en3 are the USB-C ports in device mode, en1/en4
-    /// the Thunderbolt IP ports, en0 Wi-Fi. Skipped where those are absent.
+    /// On a Mac with Thunderbolt IP ports `en1`/`en4` and USB-C device-mode
+    /// links `anpi0`/`anpi1` (as on the development machine): none of the
+    /// built-in look-alikes is offered. Skipped where those are absent.
     #[test]
     fn this_macs_interfaces_split_as_expected() {
         let all = list_interfaces().unwrap();

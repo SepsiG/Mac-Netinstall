@@ -21,7 +21,8 @@ use system_configuration::dynamic_store::SCDynamicStoreBuilder;
 pub enum Ipv4Method {
     /// "Manually": a fixed address and mask.
     Manual,
-    /// "Using DHCP" (also "DHCP with manual address").
+    /// "Using DHCP". ("DHCP with manual address", `INFORM`, is
+    /// [`Ipv4Method::Manual`]: the address is fixed.)
     Dhcp,
     /// Anything else (`BOOTP`, `LinkLocal`, `PPP`, `Off`, ...), as macOS
     /// names it.
@@ -83,17 +84,6 @@ pub fn parse_configured_ipv4(
     }
 }
 
-/// When one device has several services, the one to use: a manual one
-/// first (that is what the user set up for this), else the first.
-pub fn pick_service(candidates: Vec<ConfiguredIpv4>) -> Option<ConfiguredIpv4> {
-    let manual = candidates.iter().position(|c| c.manual().is_some());
-    let mut candidates = candidates;
-    match manual {
-        Some(i) => Some(candidates.swap_remove(i)),
-        None => candidates.into_iter().next(),
-    }
-}
-
 fn dict(p: Option<CFPropertyList>) -> Option<CFDictionary<CFString, CFType>> {
     let d = p?.downcast_into::<core_foundation::dictionary::CFDictionary>()?;
     // SAFETY: a property-list dictionary has CFString keys.
@@ -122,41 +112,94 @@ fn strings(d: &CFDictionary<CFString, CFType>, key: &'static str) -> Vec<String>
         .collect()
 }
 
-/// BSD name -> configured IPv4 of every network service (see
-/// [`pick_service`] for devices with several). Empty if the dynamic store
-/// cannot be read.
+/// One network service as read from the dynamic store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceEntry {
+    pub id: String,
+    /// BSD name of its interface.
+    pub device: String,
+    /// Disabled in System Settings (`__INACTIVE__`).
+    pub inactive: bool,
+    pub ipv4: ConfiguredIpv4,
+}
+
+fn inactive(d: &CFDictionary<CFString, CFType>) -> bool {
+    d.find(CFString::from_static_string("__INACTIVE__"))
+        .is_some()
+}
+
+/// A service from its entities: the service itself (`Setup:/Network/
+/// Service/<id>`, which may carry `__INACTIVE__`), its `Interface` and its
+/// `IPv4`. `None` without a device name.
+pub fn service_entry(
+    id: &str,
+    service: Option<&CFDictionary<CFString, CFType>>,
+    iface: &CFDictionary<CFString, CFType>,
+    ipv4: Option<&CFDictionary<CFString, CFType>>,
+) -> Option<ServiceEntry> {
+    let device = string(iface, "DeviceName")?;
+    let parsed = match ipv4 {
+        Some(d) => parse_configured_ipv4(
+            string(d, "ConfigMethod").as_deref(),
+            &strings(d, "Addresses"),
+            &strings(d, "SubnetMasks"),
+        ),
+        None => parse_configured_ipv4(None, &[], &[]),
+    };
+    Some(ServiceEntry {
+        id: id.to_string(),
+        device,
+        inactive: service.is_some_and(inactive) || ipv4.is_some_and(inactive),
+        ipv4: parsed,
+    })
+}
+
+/// BSD name -> the configured IPv4 of its service: inactive services are
+/// ignored; of several services for one device the first in `order`
+/// (`Setup:/Network/Global/IPv4` `ServiceOrder`) wins, services missing
+/// from the order come after it.
+pub fn select_services(
+    services: Vec<ServiceEntry>,
+    order: &[String],
+) -> BTreeMap<String, ConfiguredIpv4> {
+    let rank = |id: &str| order.iter().position(|o| o == id).unwrap_or(usize::MAX);
+    let mut active: Vec<ServiceEntry> = services.into_iter().filter(|s| !s.inactive).collect();
+    active.sort_by_key(|s| rank(&s.id));
+    let mut out = BTreeMap::new();
+    for s in active {
+        out.entry(s.device).or_insert(s.ipv4);
+    }
+    out
+}
+
+/// BSD name -> configured IPv4 of every active network service (see
+/// [`select_services`]). Empty if the dynamic store cannot be read.
 pub fn configured_ipv4_all() -> BTreeMap<String, ConfiguredIpv4> {
-    let mut by_device: BTreeMap<String, Vec<ConfiguredIpv4>> = BTreeMap::new();
     let Some(store) = SCDynamicStoreBuilder::new("mac-netinstall").build() else {
         return BTreeMap::new();
     };
     let Some(keys) = store.get_keys("Setup:/Network/Service/[^/]+/Interface") else {
         return BTreeMap::new();
     };
-    for key in keys.iter() {
-        let key = key.to_string();
-        let Some(iface) = dict(store.get(CFString::new(&key))) else {
-            continue;
-        };
-        let Some(device) = string(&iface, "DeviceName") else {
-            continue;
-        };
-        let base = key.trim_end_matches("/Interface");
-        let ipv4 = dict(store.get(CFString::new(&format!("{base}/IPv4"))));
-        let parsed = match ipv4 {
-            Some(d) => parse_configured_ipv4(
-                string(&d, "ConfigMethod").as_deref(),
-                &strings(&d, "Addresses"),
-                &strings(&d, "SubnetMasks"),
-            ),
-            None => parse_configured_ipv4(None, &[], &[]),
-        };
-        by_device.entry(device).or_default().push(parsed);
-    }
-    by_device
-        .into_iter()
-        .filter_map(|(d, c)| Some((d, pick_service(c)?)))
-        .collect()
+    let get = |key: &str| dict(store.get(CFString::new(key)));
+    let order = get("Setup:/Network/Global/IPv4")
+        .map(|d| strings(&d, "ServiceOrder"))
+        .unwrap_or_default();
+    let services = keys
+        .iter()
+        .filter_map(|key| {
+            let key = key.to_string();
+            let base = key.trim_end_matches("/Interface");
+            let id = base.rsplit('/').next().unwrap_or(base);
+            service_entry(
+                id,
+                get(base).as_ref(),
+                &get(&key)?,
+                get(&format!("{base}/IPv4")).as_ref(),
+            )
+        })
+        .collect();
+    select_services(services, &order)
 }
 
 /// The configured IPv4 of `ifname`'s network service, if it has one.
@@ -167,6 +210,7 @@ pub fn configured_ipv4(ifname: &str) -> Option<ConfiguredIpv4> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_foundation::boolean::CFBoolean;
 
     fn s(list: &[&str]) -> Vec<String> {
         list.iter().map(|x| x.to_string()).collect()
@@ -174,6 +218,12 @@ mod tests {
 
     #[test]
     fn manual_dhcp_and_other_methods() {
+        let inform = parse_configured_ipv4(Some("INFORM"), &s(&["10.0.0.1"]), &s(&["255.0.0.0"]));
+        assert_eq!(
+            inform.method,
+            Ipv4Method::Manual,
+            "DHCP with a manual address"
+        );
         let m = parse_configured_ipv4(
             Some("Manual"),
             &s(&["192.168.88.1"]),
@@ -205,16 +255,77 @@ mod tests {
         assert_eq!(m.manual(), None);
     }
 
+    type Dict = CFDictionary<CFString, CFType>;
+
+    fn cfdict(pairs: &[(&str, CFType)]) -> Dict {
+        let pairs: Vec<(CFString, CFType)> = pairs
+            .iter()
+            .map(|(k, v)| (CFString::new(k), v.clone()))
+            .collect();
+        CFDictionary::from_CFType_pairs(&pairs)
+    }
+
+    fn text(v: &str) -> CFType {
+        CFString::new(v).as_CFType()
+    }
+
+    fn list(vs: &[&str]) -> CFType {
+        let items: Vec<CFString> = vs.iter().map(|v| CFString::new(v)).collect();
+        CFArray::from_CFTypes(&items).as_CFType()
+    }
+
+    fn manual_ipv4(addr: &str) -> Dict {
+        cfdict(&[
+            ("ConfigMethod", text("Manual")),
+            ("Addresses", list(&[addr])),
+            ("SubnetMasks", list(&["255.255.255.0"])),
+        ])
+    }
+
     #[test]
-    fn a_manual_service_wins() {
-        let dhcp = parse_configured_ipv4(Some("DHCP"), &[], &[]);
-        let manual = parse_configured_ipv4(Some("Manual"), &s(&["10.1.1.1"]), &s(&["255.0.0.0"]));
+    fn services_are_read_from_their_dictionaries() {
+        let iface = cfdict(&[("DeviceName", text("en6"))]);
+        let e = service_entry("A", None, &iface, Some(&manual_ipv4("192.168.88.1"))).unwrap();
         assert_eq!(
-            pick_service(vec![dhcp.clone(), manual.clone()]),
-            Some(manual)
+            (e.id.as_str(), e.device.as_str(), e.inactive),
+            ("A", "en6", false)
         );
-        assert_eq!(pick_service(vec![dhcp.clone()]), Some(dhcp));
-        assert_eq!(pick_service(vec![]), None);
+        assert_eq!(
+            e.ipv4.manual(),
+            Some((
+                Ipv4Addr::new(192, 168, 88, 1),
+                Ipv4Addr::new(255, 255, 255, 0)
+            ))
+        );
+        // Disabled in System Settings: `__INACTIVE__` on the service.
+        let off = cfdict(&[("__INACTIVE__", CFBoolean::true_value().as_CFType())]);
+        let e = service_entry("B", Some(&off), &iface, None).unwrap();
+        assert!(e.inactive);
+        assert_eq!(e.ipv4.method.as_str(), "none");
+        // No device: not an interface's service.
+        assert!(service_entry("C", None, &cfdict(&[]), None).is_none());
+    }
+
+    #[test]
+    fn inactive_services_are_ignored_and_the_service_order_wins() {
+        let entry =
+            |id: &str, device: &str, inactive: bool, method: &str, addr: &str| ServiceEntry {
+                id: id.into(),
+                device: device.into(),
+                inactive,
+                ipv4: parse_configured_ipv4(Some(method), &s(&[addr]), &s(&["255.255.255.0"])),
+            };
+        let services = vec![
+            entry("late", "en6", false, "Manual", "10.0.0.1"),
+            entry("early", "en6", false, "DHCP", ""),
+            entry("off", "en7", true, "Manual", "10.0.0.2"),
+            entry("unordered", "en8", false, "Manual", "10.0.0.3"),
+        ];
+        let order = s(&["early", "late"]);
+        let picked = select_services(services, &order);
+        assert_eq!(picked["en6"].method, Ipv4Method::Dhcp, "first in the order");
+        assert!(!picked.contains_key("en7"), "inactive");
+        assert_eq!(picked["en8"].address, Some(Ipv4Addr::new(10, 0, 0, 3)));
     }
 
     #[test]
