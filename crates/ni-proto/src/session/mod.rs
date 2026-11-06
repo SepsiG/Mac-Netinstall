@@ -21,12 +21,15 @@
 //! Sequence numbers: the k-th server frame has `seq = k, ack = k - 1`;
 //! the device answers with `seq = k, ack = k`.
 
+mod steps;
+
 use crate::device_info::DeviceInfo;
-use crate::frame::{Frame, Mac, MAX_CHUNK};
+use crate::frame::{Frame, Mac};
 use crate::message;
 use bytes::Bytes;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+use steps::{build_steps, Expect, Step, TimeoutKind};
 use thiserror::Error;
 
 /// A file to upload.
@@ -138,55 +141,6 @@ pub enum Event {
     },
     Done,
     Failed(FailReason),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Expect {
-    /// Do not wait for a reply.
-    None,
-    /// Any reply with matching sequence numbers.
-    Any,
-    /// Like `Any`, but once retransmits are exhausted the session moves on.
-    Optional,
-    /// Only a reply with exactly this payload.
-    Payload(&'static [u8]),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TimeoutKind {
-    Reply,
-    Format,
-    Optional,
-}
-
-#[derive(Debug, Clone)]
-struct ChunkInfo {
-    file: String,
-    file_sent: u64,
-    file_total: u64,
-}
-
-#[derive(Debug, Clone)]
-struct Step {
-    phase: Phase,
-    payload: Bytes,
-    expect: Expect,
-    timeout: TimeoutKind,
-    chunk: Option<ChunkInfo>,
-    delay_after: bool,
-}
-
-impl Step {
-    fn control(phase: Phase, payload: &'static [u8], expect: Expect, timeout: TimeoutKind) -> Self {
-        Self {
-            phase,
-            payload: Bytes::from_static(payload),
-            expect,
-            timeout,
-            chunk: None,
-            delay_after: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -409,86 +363,6 @@ impl ServerSession {
         self.wait = Wait::Finished;
         self.set_phase(Phase::Failed);
         self.events.push_back(Event::Failed(reason));
-    }
-}
-
-fn build_steps(plan: &InstallPlan) -> Vec<Step> {
-    use Expect::Any;
-    use TimeoutKind::{Format, Reply};
-
-    let mut steps = vec![
-        Step::control(Phase::Offering, message::OFFR, Any, Reply),
-        Step::control(Phase::Formatting, b"", Any, Format),
-        Step::control(Phase::Preparing, b"", Any, Reply),
-    ];
-    for pkg in &plan.packages {
-        push_file(&mut steps, &pkg.name, &pkg.data);
-        let phase = Phase::Uploading {
-            file: pkg.name.clone(),
-        };
-        steps.push(Step::control(phase, b"", Any, Reply));
-    }
-    if let Some(script) = &plan.config_script {
-        push_file(&mut steps, message::CONFIG_SCRIPT_NAME, script);
-    }
-    steps.push(Step::control(Phase::Finishing, b"", Any, Reply));
-    steps.push(Step::control(
-        Phase::Finishing,
-        message::FILE_END,
-        Any,
-        Reply,
-    ));
-    steps.push(Step::control(
-        Phase::Rebooting,
-        message::TERM,
-        Expect::None,
-        Reply,
-    ));
-    steps
-}
-
-fn push_file(steps: &mut Vec<Step>, name: &str, data: &Bytes) {
-    let phase = Phase::Uploading {
-        file: name.to_string(),
-    };
-    let total = data.len() as u64;
-    steps.push(Step {
-        phase: phase.clone(),
-        payload: Bytes::from(message::file_header(name, total)),
-        expect: Expect::Optional,
-        timeout: TimeoutKind::Optional,
-        chunk: None,
-        delay_after: false,
-    });
-    let chunks: Vec<Bytes> = if data.is_empty() {
-        vec![Bytes::new()]
-    } else {
-        (0..data.len())
-            .step_by(MAX_CHUNK)
-            .map(|o| data.slice(o..(o + MAX_CHUNK).min(data.len())))
-            .collect()
-    };
-    let last = chunks.len() - 1;
-    let mut sent = 0u64;
-    for (i, chunk) in chunks.into_iter().enumerate() {
-        sent += chunk.len() as u64;
-        let is_last = i == last;
-        steps.push(Step {
-            phase: phase.clone(),
-            payload: chunk,
-            expect: if is_last {
-                Expect::Payload(message::RETR)
-            } else {
-                Expect::Any
-            },
-            timeout: TimeoutKind::Reply,
-            chunk: Some(ChunkInfo {
-                file: name.to_string(),
-                file_sent: sent,
-                file_total: total,
-            }),
-            delay_after: !is_last,
-        });
     }
 }
 
