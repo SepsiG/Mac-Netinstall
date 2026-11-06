@@ -3,7 +3,7 @@
 
 use crate::event::Failure;
 use crate::profile::{ConfigMode, Profile};
-use ni_assets::{kernel_file_name, AssetError, Assets, KernelSet, PkgArch, Version, VersionSpec};
+use ni_assets::{AssetError, Assets, KernelSet, PkgArch, Version, VersionSpec};
 use ni_bootp::BootArch;
 use ni_proto::InstallPlan;
 use ni_tftp::FileMap;
@@ -93,16 +93,26 @@ pub fn version_mismatch(version: &Version, kernel_version: &Version) -> Failure 
         .with("kernel_version", kernel_version)
 }
 
-/// Kernels for `spec`. If the version cannot be resolved (offline), the
-/// version the channel was last resolved to is used if its complete
-/// kernel set is cached, and the third value is `true`. Otherwise
-/// `kernels_unavailable` (`cause`).
+/// Kernels for `spec`: [`resolve_kernels`], then [`ensure_kernels`].
 pub async fn kernels(
     assets: &Assets,
     spec: &VersionSpec,
 ) -> Result<(Version, KernelSet, bool), Failure> {
+    let (version, fallback) = resolve_kernels(assets, spec).await?;
+    let set = ensure_kernels(assets, &version).await?;
+    Ok((version, set, fallback))
+}
+
+/// The version to fetch kernels of for `spec`. If it cannot be resolved
+/// (offline), the version the channel was last resolved to is used if its
+/// complete kernel set is cached, and the second value is `true`.
+/// Otherwise `kernels_unavailable` (`cause`).
+pub async fn resolve_kernels(
+    assets: &Assets,
+    spec: &VersionSpec,
+) -> Result<(Version, bool), Failure> {
     let unavailable = |e: &AssetError| asset_failure("kernels_unavailable", e);
-    let (version, fallback) = match assets.resolve(spec).await {
+    Ok(match assets.resolve(spec).await {
         Ok(v) => (v, false),
         Err(e) => {
             let remembered = match spec {
@@ -115,20 +125,44 @@ pub async fn kernels(
                 None => return Err(unavailable(&e)),
             }
         }
-    };
-    let set = assets
-        .ensure_kernels(&version)
-        .await
-        .map_err(|e| unavailable(&e))?;
-    Ok((version, set, fallback))
+    })
 }
 
-/// The BOOTP boot file map and the TFTP file map for a kernel set.
-pub fn boot_maps(set: &KernelSet) -> (HashMap<BootArch, String>, FileMap) {
+/// The kernel set of `version` (downloaded if needed). Error:
+/// `kernels_unavailable` (`cause`).
+pub async fn ensure_kernels(assets: &Assets, version: &Version) -> Result<KernelSet, Failure> {
+    assets
+        .ensure_kernels(version)
+        .await
+        .map_err(|e| asset_failure("kernels_unavailable", &e))
+}
+
+/// The name a boot kernel is served under: `kernel-<version>-<arch>.elf`.
+/// The version is part of the name so a device can only fetch the kernel
+/// its BOOTP reply named: after the kernels are swapped (another active
+/// version), the old name is no longer served, and the engine knows from
+/// the name alone which version a device booted.
+pub fn served_kernel_name(version: &Version, arch: BootArch) -> String {
+    format!("kernel-{version}-{arch}.elf")
+}
+
+/// The version in a [`served_kernel_name`] (`None` for other names).
+pub fn served_kernel_version(name: &str) -> Option<Version> {
+    let rest = name.strip_prefix("kernel-")?.strip_suffix(".elf")?;
+    let (version, arch) = rest.rsplit_once('-')?;
+    if arch.is_empty() {
+        return None;
+    }
+    Version::parse(version).ok()
+}
+
+/// The BOOTP boot file map and the TFTP file map for the kernel set of
+/// `version` (see [`served_kernel_name`]).
+pub fn boot_maps(version: &Version, set: &KernelSet) -> (HashMap<BootArch, String>, FileMap) {
     let mut boot = HashMap::new();
     let mut files = FileMap::new();
     for (&arch, data) in set {
-        let name = kernel_file_name(arch);
+        let name = served_kernel_name(version, arch);
         boot.insert(arch, name.clone());
         files.insert(name, data.clone());
     }
@@ -261,9 +295,13 @@ mod tests {
         let spec = VersionSpec::Channel(Channel::Stable);
         let (version, set, fallback) = kernels(&a, &spec).await.unwrap();
         assert_eq!((version.as_str(), fallback), ("7.25.1", false));
-        let (boot, files) = boot_maps(&set);
-        assert_eq!(boot[&BootArch::Arm64], "kernel-arm64.elf");
-        assert_eq!(files["kernel-arm64.elf"], set[&BootArch::Arm64]);
+        let (boot, files) = boot_maps(&version, &set);
+        assert_eq!(boot[&BootArch::Arm64], "kernel-7.25.1-arm64.elf");
+        assert_eq!(files["kernel-7.25.1-arm64.elf"], set[&BootArch::Arm64]);
+        assert_eq!(
+            served_kernel_version("kernel-7.25.1-arm64.elf"),
+            Some(version.clone())
+        );
         assert_eq!(files.len(), 8);
         // `testing` cannot be resolved and was never resolved here: no
         // fallback, although 7.25.1 kernels are cached.
@@ -285,5 +323,23 @@ mod tests {
         let empty = tempdir("prepare-kernels-empty");
         let err = kernels(&offline(&empty), &testing).await.unwrap_err();
         assert_eq!(err.code, "kernels_unavailable");
+    }
+
+    #[test]
+    fn served_kernel_names_carry_their_version() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        assert_eq!(
+            served_kernel_version("kernel-7.16rc2-mmips.elf"),
+            Some(v("7.16rc2"))
+        );
+        for bad in [
+            "kernel-arm64.elf",
+            "kernel-7.25.1-arm64.bin",
+            "other-7.25.1-arm64.elf",
+            "kernel-x-arm64.elf",
+            "",
+        ] {
+            assert_eq!(served_kernel_version(bad), None, "{bad}");
+        }
     }
 }

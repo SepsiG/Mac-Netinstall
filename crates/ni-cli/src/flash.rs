@@ -337,7 +337,7 @@ fn signal_failure(e: std::io::Error) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ni_engine::{DeviceInfoView, DeviceView};
+    use ni_engine::{DeviceInfoView, DeviceView, KernelState};
 
     const A: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 1]);
     const B: Mac = Mac([0x48, 0xa9, 0x8a, 0, 0, 2]);
@@ -384,6 +384,9 @@ mod tests {
             }),
             profile: None,
             version: None,
+            attempt: 1,
+            first_seen_ms: 0,
+            updated_ms: 0,
             state,
         }
     }
@@ -394,8 +397,13 @@ mod tests {
             started: None,
             network: None,
             kernel_version: None,
+            kernels: KernelState::Idle,
             auto_repeat: false,
             profile: None,
+            only_mac: None,
+            max_parallel: 4,
+            cooldown_secs: 300,
+            link_down: None,
             devices,
         }
     }

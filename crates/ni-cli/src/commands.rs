@@ -6,7 +6,7 @@ use ni_assets::{default_cache_root, AssetEvent, Assets, HttpConfig, PkgArch, Ver
 use ni_engine::preflight::{self, PreflightReport};
 use ni_engine::profile::spec_to_string;
 use ni_engine::{default_profiles_root, ConfigMode, EngineConfig, Failure, Profile, ProfileStore};
-use ni_net::{list_interfaces, Interface, InterfaceKind};
+use ni_net::{list_interfaces, Interface};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -89,6 +89,7 @@ pub async fn run(cli: Cli) -> Outcome {
 pub fn engine_config(net: &NetArgs) -> EngineConfig {
     let mut cfg = EngineConfig::new(&net.iface);
     cfg.server_ip = net.server_ip;
+    cfg.allow_non_ethernet = net.allow_any_interface;
     cfg.netmask = net.netmask;
     cfg.pool = net.pool;
     cfg.server_mac = net.server_mac;
@@ -125,10 +126,7 @@ fn interfaces(ctx: &Ctx, all: bool) -> Outcome {
         list_interfaces().map_err(|e| Failure::new("interface_list_failed").with("detail", e))?;
     let shown: Vec<&Interface> = list
         .iter()
-        .filter(|i| {
-            all || (!i.ipv4.is_empty()
-                && matches!(i.kind, InterfaceKind::Ethernet | InterfaceKind::WiFi))
-        })
+        .filter(|i| all || i.is_netinstall_capable())
         .collect();
     let addrs = |i: &Interface| -> Vec<String> {
         i.ipv4
@@ -148,6 +146,7 @@ fn interfaces(ctx: &Ctx, all: bool) -> Outcome {
                     "ipv4": addrs(i),
                     "up": i.is_up,
                     "running": i.is_running,
+                    "netinstall_capable": i.is_netinstall_capable(),
                 })
             })
             .collect();
@@ -403,6 +402,7 @@ mod tests {
         assert_eq!(cfg.ports.bind_ip.to_string(), "127.0.0.1");
         let defaults = engine_config(&NetArgs {
             iface: "en7".into(),
+            allow_any_interface: false,
             server_ip: None,
             netmask: None,
             pool: None,

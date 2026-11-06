@@ -74,6 +74,28 @@ pub(crate) fn try_lock_file(path: &Path) -> Result<Option<FileLock>, AssetError>
     }
 }
 
+/// Take a *shared* lock on `path`, blocking the thread while someone holds
+/// it exclusively (only briefly: deleting a version directory).
+pub(crate) fn lock_shared_blocking(path: &Path) -> Result<FileLock, AssetError> {
+    let file = open_lock_file(path)?;
+    Flock::lock(file, FlockArg::LockShared).map_err(|(_, e)| lock_error(path, e))
+}
+
+/// Take a shared lock on `path`, polling while it is held exclusively.
+pub(crate) async fn lock_shared(path: PathBuf) -> Result<FileLock, AssetError> {
+    let mut wait = Duration::from_millis(10);
+    loop {
+        let file = open_lock_file(&path)?;
+        match Flock::lock(file, FlockArg::LockSharedNonblock) {
+            Ok(lock) => return Ok(lock),
+            Err((_, Errno::EWOULDBLOCK)) => {}
+            Err((_, e)) => return Err(lock_error(&path, e)),
+        }
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(Duration::from_millis(200));
+    }
+}
+
 /// Take the file lock, blocking the thread until it is free. Only for
 /// short critical sections inside blocking work (index updates).
 pub(crate) fn lock_file_blocking(path: &Path) -> Result<FileLock, AssetError> {

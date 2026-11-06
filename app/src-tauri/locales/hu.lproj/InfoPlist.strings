@@ -1,0 +1,1 @@
+"NSLocalNetworkUsageDescription" = "A Mac Netinstall a helyi hálózaton kommunikál a MikroTik eszközökkel (BOOTP, TFTP és Netinstall), hogy RouterOS-t telepítsen rájuk.";

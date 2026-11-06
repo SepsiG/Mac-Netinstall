@@ -3,12 +3,19 @@
 use super::device::{self, Device, MAX_DEVICES};
 use super::start::start;
 use super::{Command, Snapshot};
-use crate::config::{link_status, EngineConfig, LinkStatus, NetPlan};
-use crate::event::{DeviceInfoView, DeviceState, EngineEvent, Failure, StartInfo, WaitReason};
+use crate::config::{
+    check_cooldown, check_max_parallel, link_status, EngineConfig, LinkStatus, NetPlan,
+};
+use crate::event::{
+    DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo, WaitReason,
+};
 use crate::gate::{Gate, Verdict};
-use crate::prepare::{boot_maps, prepare, version_mismatch};
+use crate::prepare::{
+    boot_maps, ensure_kernels, prepare, resolve_kernels, served_kernel_version, version_mismatch,
+};
+use crate::profile::spec_to_string;
 use crate::profile::Profile;
-use ni_assets::{Assets, KernelSet, Version, VersionSpec};
+use ni_assets::{Assets, Channel, KernelSet, Version, VersionSpec};
 use ni_bootp::{BootpEvent, BootpHandle, IgnoreReason};
 use ni_net::{RecvErrorAction, RecvErrorGuard};
 use ni_proto::{DeviceInfo, FailReason, Frame, InstallPlan, Mac, ServerSession};
@@ -18,7 +25,7 @@ use std::future::pending;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -42,9 +49,25 @@ const REAP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Messages from tasks the engine spawned.
 pub(crate) enum Internal {
+    /// A kernel fetch knows its version (its download progress is
+    /// reported from now on).
+    KernelResolved {
+        epoch: u64,
+        generation: u64,
+        version: Version,
+    },
     Kernels {
         epoch: u64,
+        /// Which kernel fetch of this start (see `Running::kernel_gen`).
+        generation: u64,
         result: Result<(Version, KernelSet, bool), Failure>,
+    },
+    /// Download progress from the asset manager (only the `netinstall`
+    /// tarball, which carries the boot kernels).
+    Download {
+        file: String,
+        done: u64,
+        total: Option<u64>,
     },
     Prepared {
         epoch: u64,
@@ -96,6 +119,15 @@ pub(crate) struct Running {
     pub gate: Gate,
     pub devices: BTreeMap<Mac, Device>,
     pub kernel_version: Option<Version>,
+    /// What the kernels were (or are being) fetched for.
+    pub kernel_spec: Option<VersionSpec>,
+    /// Incremented per kernel fetch, so a superseded fetch is dropped.
+    pub kernel_gen: u64,
+    /// The version the current fetch resolved to: only the download of
+    /// its `netinstall` tarball is reported as kernel progress (a
+    /// superseded fetch may still be downloading another one).
+    pub kernel_resolved: Option<Version>,
+    pub kernels: KernelState,
     pub queue_seq: u64,
     pub ignored: HashMap<(Mac, &'static str), Instant>,
     pub next_link_check: Option<Instant>,
@@ -132,6 +164,13 @@ struct Core {
     aborted: Vec<JoinHandle<()>>,
 }
 
+/// `kernel_version_unknown` (`mac`): neither the boot kernel the device
+/// netbooted nor a served one is known, so a profile cannot be checked
+/// against it.
+fn kernel_unknown(mac: Mac) -> Failure {
+    Failure::new("kernel_version_unknown").with("mac", mac)
+}
+
 async fn recv_opt<T>(rx: Option<&mut mpsc::Receiver<T>>) -> Option<T> {
     match rx {
         Some(rx) => rx.recv().await,
@@ -166,8 +205,8 @@ pub(crate) async fn run(
     assets: Arc<Assets>,
     events: broadcast::Sender<EngineEvent>,
     mut cmds: mpsc::Receiver<Command>,
+    (internal, mut internal_rx): (mpsc::Sender<Internal>, mpsc::Receiver<Internal>),
 ) {
-    let (internal, mut internal_rx) = mpsc::channel(64);
     let mut core = Core {
         assets,
         events,
@@ -245,11 +284,32 @@ impl Core {
             Command::Retry(mac, reply) => {
                 let _ = reply.send(self.retry(mac));
             }
+            Command::Cancel(mac, reply) => {
+                let _ = reply.send(self.cancel(mac));
+            }
+            Command::Forget(mac, reply) => {
+                let _ = reply.send(self.forget(mac));
+            }
             Command::AutoRepeat(on, reply) => {
                 let _ = reply.send(self.set_auto_repeat(on));
             }
+            Command::ActiveProfile(profile, reply) => {
+                let _ = reply.send(self.set_active_profile(profile.map(|p| *p)));
+            }
+            Command::OnlyMac(mac, reply) => {
+                let _ = reply.send(self.set_only_mac(mac));
+            }
+            Command::MaxParallel(n, reply) => {
+                let _ = reply.send(self.set_max_parallel(n));
+            }
+            Command::Cooldown(d, reply) => {
+                let _ = reply.send(self.set_cooldown(d));
+            }
             Command::Snapshot(reply) => {
                 let _ = reply.send(self.snapshot());
+            }
+            Command::InUse(reply) => {
+                let _ = reply.send(self.versions_in_use());
             }
             #[cfg(test)]
             Command::Panic => panic!("engine task panic requested by a test"),
@@ -275,7 +335,7 @@ impl Core {
             return Err(Failure::new("already_running"));
         }
         let epoch = self.epoch + 1;
-        let (running, new_io) = start(cfg, self.assets.clone(), self.internal.clone(), epoch)?;
+        let (running, new_io) = start(cfg, self.internal.clone(), epoch)?;
         self.epoch = epoch;
         let info = running.info.clone();
         info!(interface = %info.interface, server_ip = %info.server_ip, "engine started");
@@ -288,7 +348,77 @@ impl Core {
             Link::Down(reason) => self.link_down(reason),
             Link::Missing(_) => self.link_down("interface_missing"),
         }
+        self.fetch_kernels();
         Ok(info)
+    }
+
+    /// Fetch the boot kernels for the active profile's version (stable
+    /// without a profile) in the background. Nothing is served until they
+    /// are ready: the old ones (if any) are withdrawn first, so no device
+    /// boots a kernel of a version it will not get. A fetch still running
+    /// is superseded (its result is dropped).
+    fn fetch_kernels(&mut self) {
+        let epoch = self.epoch;
+        let assets = self.assets.clone();
+        let internal = self.internal.clone();
+        let Some(run) = self.run.as_mut() else { return };
+        let spec = run
+            .cfg
+            .profile
+            .as_ref()
+            .map(|p| p.version.clone())
+            .unwrap_or(VersionSpec::Channel(Channel::Stable));
+        run.kernel_gen += 1;
+        let generation = run.kernel_gen;
+        run.kernel_resolved = None;
+        run.kernel_spec = Some(spec.clone());
+        if run.kernel_version.take().is_some() {
+            if let Err(e) = run.bootp.set_boot_files(HashMap::new()) {
+                warn!("boot file names rejected: {e}");
+            }
+            run.tftp_files.send_replace(Arc::new(FileMap::new()));
+        }
+        run.tasks.retain(|t| !t.is_finished());
+        run.tasks.push(tokio::spawn(async move {
+            let result = match resolve_kernels(&assets, &spec).await {
+                Ok((version, fallback)) => {
+                    let _ = internal
+                        .send(Internal::KernelResolved {
+                            epoch,
+                            generation,
+                            version: version.clone(),
+                        })
+                        .await;
+                    ensure_kernels(&assets, &version)
+                        .await
+                        .map(|set| (version, set, fallback))
+                }
+                Err(f) => Err(f),
+            };
+            let _ = internal
+                .send(Internal::Kernels {
+                    epoch,
+                    generation,
+                    result,
+                })
+                .await;
+        }));
+        let state = KernelState::Downloading {
+            spec: spec_to_string(&run.kernel_spec.clone().expect("just set")),
+            done: 0,
+            total: None,
+        };
+        self.set_kernels(state);
+    }
+
+    /// Set the kernel state; report it if it changed.
+    fn set_kernels(&mut self, state: KernelState) {
+        let Some(run) = self.run.as_mut() else { return };
+        if run.kernels == state {
+            return;
+        }
+        run.kernels = state.clone();
+        self.emit(EngineEvent::Kernels { state });
     }
 
     fn stop(&mut self, io: &mut Option<Io>) {
@@ -332,9 +462,12 @@ impl Core {
         if dev.is("done") {
             return Err(Failure::new("device_done").with("mac", mac));
         }
-        if let (VersionSpec::Exact(v), Some(k)) = (&profile.version, &run.kernel_version) {
-            if v != k {
-                return Err(version_mismatch(v, k));
+        let Some(kernel) = dev.kernel.as_ref().or(run.kernel_version.as_ref()) else {
+            return Err(kernel_unknown(mac));
+        };
+        if let VersionSpec::Exact(v) = &profile.version {
+            if v != kernel {
+                return Err(version_mismatch(v, kernel));
             }
         }
         dev.assigned = Some(profile.clone());
@@ -361,6 +494,62 @@ impl Core {
             // next BOOTP request starts over.
             run.devices.remove(&mac);
         }
+        Ok(())
+    }
+
+    fn cancel(&mut self, mac: Mac) -> Result<(), Failure> {
+        let run = self.running()?;
+        let dev = run
+            .devices
+            .get_mut(&mac)
+            .ok_or_else(|| Failure::new("unknown_device").with("mac", mac))?;
+        if dev.is_active() {
+            // A preparation still running is dropped when it reports back
+            // (the device is no longer `preparing`).
+            if let Some(mut session) = dev.session.take() {
+                session.cancel();
+            }
+            warn!(%mac, "install cancelled");
+            self.set_state(mac, DeviceState::failed(Failure::new("cancelled")));
+            return Ok(());
+        }
+        if dev.queued.is_some() {
+            dev.queued = None;
+            dev.using = None;
+            dev.assigned = None;
+            self.set_state(
+                mac,
+                DeviceState::Waiting {
+                    reason: WaitReason::NoProfile,
+                },
+            );
+            return Ok(());
+        }
+        let state = dev.state.as_ref().map_or("unknown", DeviceState::name);
+        Err(Failure::new("not_cancellable")
+            .with("mac", mac)
+            .with("state", state))
+    }
+
+    fn forget(&mut self, mac: Mac) -> Result<(), Failure> {
+        let run = self.running()?;
+        let dev = run
+            .devices
+            .get(&mac)
+            .ok_or_else(|| Failure::new("unknown_device").with("mac", mac))?;
+        if dev.is_active() {
+            return Err(Failure::new("device_busy").with("mac", mac));
+        }
+        // Forgetting would end the cooldown, and a device that is rebooting
+        // into its new system could be served (and flashed) again.
+        if dev.is("done") && run.gate.in_cooldown(mac, Instant::now()) {
+            return Err(Failure::new("device_in_cooldown").with("mac", mac));
+        }
+        run.devices.remove(&mac);
+        run.gate.clear_cooldown(mac);
+        run.ignored.retain(|(m, _), _| *m != mac);
+        info!(%mac, "device forgotten");
+        self.emit(EngineEvent::Forgotten { mac });
         Ok(())
     }
 
@@ -410,6 +599,79 @@ impl Core {
         Ok(())
     }
 
+    fn set_active_profile(&mut self, profile: Option<Profile>) -> Result<(), Failure> {
+        if let Some(p) = &profile {
+            p.validate()?;
+        }
+        let run = self.running()?;
+        let Some(profile) = profile else {
+            if run.cfg.auto_repeat {
+                self.set_auto_repeat(false)?;
+            }
+            let run = self.running()?;
+            run.cfg.profile = None;
+            if matches!(run.kernels, KernelState::Unavailable { .. }) {
+                self.fetch_kernels(); // try again (stable, without a profile)
+            }
+            return Ok(());
+        };
+        // The same spec keeps the kernels, unless they could not be had:
+        // then this is how to try again without a restart.
+        let refetch = run.kernel_spec.as_ref() != Some(&profile.version)
+            || matches!(run.kernels, KernelState::Unavailable { .. });
+        run.cfg.profile = Some(profile.clone());
+        // Devices queued by auto-repeat take the new profile (and keep
+        // their place); ones given a profile with `flash` keep theirs.
+        for dev in run.devices.values_mut() {
+            if dev.queued.is_some() && dev.assigned.is_none() {
+                dev.using = Some(profile.clone());
+            }
+        }
+        if refetch {
+            self.fetch_kernels();
+        }
+        Ok(())
+    }
+
+    fn set_only_mac(&mut self, mac: Option<Mac>) -> Result<(), Failure> {
+        let run = self.running()?;
+        run.cfg.only_mac = mac;
+        run.gate.set_only(mac);
+        self.emit(EngineEvent::OnlyMacChanged { mac });
+        Ok(())
+    }
+
+    fn set_max_parallel(&mut self, n: usize) -> Result<(), Failure> {
+        check_max_parallel(n)?;
+        self.running()?.cfg.max_parallel = n;
+        self.admit();
+        Ok(())
+    }
+
+    fn set_cooldown(&mut self, cooldown: Duration) -> Result<(), Failure> {
+        let run = self.running()?;
+        check_cooldown(cooldown, run.cfg.min_cooldown)?;
+        run.cfg.cooldown = cooldown;
+        Ok(())
+    }
+
+    fn versions_in_use(&self) -> std::collections::BTreeSet<Version> {
+        let Some(run) = &self.run else {
+            return Default::default();
+        };
+        run.kernel_version
+            .iter()
+            .chain(&run.kernel_resolved)
+            .chain(
+                run.devices
+                    .values()
+                    .filter(|d| d.is_active())
+                    .flat_map(|d| d.version.iter().chain(&d.kernel)),
+            )
+            .cloned()
+            .collect()
+    }
+
     fn snapshot(&self) -> Snapshot {
         match &self.run {
             None => Snapshot {
@@ -417,8 +679,13 @@ impl Core {
                 started: None,
                 network: None,
                 kernel_version: None,
+                kernels: KernelState::Idle,
                 auto_repeat: false,
                 profile: None,
+                only_mac: None,
+                max_parallel: 0,
+                cooldown_secs: 0,
+                link_down: None,
                 devices: Vec::new(),
             },
             Some(run) => Snapshot {
@@ -426,8 +693,17 @@ impl Core {
                 started: Some(run.info.clone()),
                 network: Some(run.net.clone()),
                 kernel_version: run.kernel_version.as_ref().map(|v| v.to_string()),
+                kernels: run.kernels.clone(),
                 auto_repeat: run.cfg.auto_repeat,
                 profile: run.cfg.profile.as_ref().map(|p| p.name.clone()),
+                only_mac: run.cfg.only_mac,
+                max_parallel: run.cfg.max_parallel,
+                cooldown_secs: run.cfg.cooldown.as_secs(),
+                link_down: match run.link {
+                    Link::Up => None,
+                    Link::Down(reason) => Some(reason.to_string()),
+                    Link::Missing(_) => Some("interface_missing".to_string()),
+                },
                 devices: run.devices.values().filter_map(Device::view).collect(),
             },
         }
@@ -447,6 +723,7 @@ impl Core {
         debug!(%mac, state = state.name(), "device state");
         dev.state = Some(state.clone());
         dev.updated = Instant::now();
+        dev.changed = SystemTime::now();
         self.emit(EngineEvent::Device { mac, state });
     }
 
@@ -528,10 +805,12 @@ impl Core {
             if active >= run.cfg.max_parallel.max(1) {
                 return;
             }
+            // Devices "only this MAC" excludes stay queued until it is
+            // lifted.
             let next = run
                 .devices
                 .values()
-                .filter(|d| d.is("waiting"))
+                .filter(|d| d.is("waiting") && run.gate.selected(d.mac))
                 .filter_map(|d| Some((d.queued?, d.mac)))
                 .min();
             match next {
@@ -546,8 +825,8 @@ impl Core {
         let assets = self.assets.clone();
         let internal = self.internal.clone();
         let Some(run) = self.run.as_mut() else { return };
-        let active_spec = run.cfg.profile.as_ref().map(|p| p.version.clone());
-        let kernel_version = run.kernel_version.clone();
+        let kernel_spec = run.kernel_spec.clone();
+        let served = run.kernel_version.clone();
         let Some(dev) = run.devices.get_mut(&mac) else {
             return;
         };
@@ -555,11 +834,20 @@ impl Core {
             return;
         };
         dev.queued = None;
+        // The kernels it booted (those served now if it was not seen
+        // netbooting, e.g. it said hello right after a restart). Neither
+        // known: it cannot be checked against the profile, so no install.
+        let Some(kernel_version) = dev.kernel.clone().or_else(|| served.clone()) else {
+            warn!(%mac, "boot kernel version unknown");
+            self.set_state(mac, DeviceState::failed(kernel_unknown(mac)));
+            return;
+        };
         dev.attempt += 1;
         let attempt = dev.attempt;
-        let version = kernel_version
-            .clone()
-            .filter(|_| active_spec.as_ref() == Some(&profile.version));
+        // Known without resolving: the profile's spec is what the served
+        // kernels were resolved from, and the device runs those.
+        let version = served
+            .filter(|v| kernel_spec.as_ref() == Some(&profile.version) && kernel_version == *v);
         dev.version = version.clone();
         let shown = version.as_ref().map(|v| v.to_string());
         run.tasks.retain(|t| !t.is_finished());
@@ -568,7 +856,7 @@ impl Core {
                 &assets,
                 &profile,
                 version,
-                kernel_version.as_ref(),
+                Some(&kernel_version),
                 &info.arch,
             )
             .await;
@@ -715,7 +1003,13 @@ impl Core {
         let now = Instant::now();
         let Some(run) = self.run.as_mut() else { return };
         match ev {
-            BootpEvent::Replied { mac, arch, ip, .. } => {
+            BootpEvent::Replied {
+                mac,
+                arch,
+                ip,
+                file,
+                ..
+            } => {
                 let dev = device::entry(&mut run.devices, mac, MAX_DEVICES);
                 if dev.is_active() {
                     debug!(%mac, "BOOTP from a device being flashed");
@@ -731,6 +1025,10 @@ impl Core {
                 }
                 dev.boot_arch = Some(arch);
                 dev.ip = Some(ip);
+                // The version is in the file name it was given: that is the
+                // only kernel it can fetch (see `served_kernel_name`), even
+                // if the kernels were swapped since the reply was sent.
+                dev.kernel = served_kernel_version(&file);
                 dev.info = None;
                 dev.queued = None;
                 self.set_state(
@@ -781,8 +1079,14 @@ impl Core {
 
     fn on_tftp(&mut self, ev: TftpEvent) {
         match ev {
-            TftpEvent::Started { peer, size, .. } => {
+            TftpEvent::Started { peer, size, file } => {
                 if let Some(mac) = self.tftp_device(peer) {
+                    // What it really boots, by the file it asked for.
+                    if let Some(version) = served_kernel_version(&file) {
+                        if let Some(dev) = self.run.as_mut().and_then(|r| r.devices.get_mut(&mac)) {
+                            dev.kernel = Some(version);
+                        }
+                    }
                     self.set_state(
                         mac,
                         DeviceState::KernelServing {
@@ -835,11 +1139,18 @@ impl Core {
 
     fn internal(&mut self, msg: Internal, io: &mut Option<Io>) {
         match msg {
-            Internal::Kernels { epoch, result } if epoch == self.epoch => {
+            Internal::Kernels {
+                epoch,
+                generation,
+                result,
+            } if epoch == self.epoch => {
                 let Some(run) = self.run.as_mut() else { return };
+                if generation != run.kernel_gen {
+                    return; // superseded by `set_active_profile`
+                }
                 match result {
                     Ok((version, set, fallback)) => {
-                        let (boot, files) = boot_maps(&set);
+                        let (boot, files) = boot_maps(&version, &set);
                         if let Err(e) = run.bootp.set_boot_files(boot) {
                             warn!("boot file names rejected: {e}");
                         }
@@ -851,14 +1162,50 @@ impl Core {
                             );
                         }
                         info!(%version, "boot kernels ready");
+                        self.set_kernels(KernelState::Ready {
+                            version: version.to_string(),
+                            offline: fallback,
+                        });
                         self.emit(EngineEvent::KernelsReady {
                             version: version.to_string(),
                         });
                     }
                     Err(f) => {
                         warn!("boot kernels unavailable: {f}");
+                        self.set_kernels(KernelState::Unavailable {
+                            code: f.code.clone(),
+                            params: f.params.clone(),
+                        });
                         self.emit(EngineEvent::Error(f));
                     }
+                }
+            }
+            Internal::KernelResolved {
+                epoch,
+                generation,
+                version,
+            } if epoch == self.epoch => {
+                if let Some(run) = self.run.as_mut().filter(|r| r.kernel_gen == generation) {
+                    run.kernel_resolved = Some(version);
+                }
+            }
+            Internal::Download { file, done, total } => {
+                let Some(run) = self.run.as_ref() else { return };
+                let current = run
+                    .kernel_resolved
+                    .as_ref()
+                    .is_some_and(|v| file == format!("netinstall-{v}.tar.gz"));
+                if !current {
+                    return; // another (superseded) fetch's download
+                }
+                if let KernelState::Downloading { spec, .. } = &run.kernels {
+                    let state = KernelState::Downloading {
+                        spec: spec.clone(),
+                        done,
+                        total,
+                    };
+                    debug!(%file, done, "kernel download");
+                    self.set_kernels(state);
                 }
             }
             Internal::Prepared {
@@ -1003,7 +1350,12 @@ impl Core {
             }
             ni_proto::Event::Done => {
                 dev.session = None;
-                run.gate.start_cooldown(mac, now + cooldown);
+                // `cooldown` is at most `MAX_COOLDOWN`; never panic anyway.
+                let until = now
+                    .checked_add(cooldown)
+                    .or_else(|| now.checked_add(crate::config::MAX_COOLDOWN))
+                    .unwrap_or(now);
+                run.gate.start_cooldown(mac, until);
                 info!(%mac, "device flashed");
                 self.set_state(mac, DeviceState::Done);
             }
@@ -1051,7 +1403,7 @@ impl Core {
         if now < at {
             return;
         }
-        run.next_link_check = Some(now + every);
+        run.next_link_check = now.checked_add(every);
         let ifaces = match run.cfg.interfaces.list() {
             Ok(list) => list,
             Err(e) => {

@@ -4,6 +4,38 @@ Native macOS (Apple Silicon) Netinstall for MikroTik RouterBOARD devices.
 
 Status: early development. See `docs/superpowers/specs/` for the design.
 
+## Installing the app
+
+The app is ad-hoc signed, not notarized. On macOS 15 and later, the first
+launch is blocked: open **System Settings → Privacy & Security**, scroll to
+the message about "Mac Netinstall" and click **Open Anyway** (then confirm).
+On macOS 13–14, Control-click the app → **Open** works as well.
+
+Before starting, give the Ethernet adapter the router is connected to a
+manual IPv4 address in macOS (System Settings → Network → the adapter →
+Details → TCP/IP → Configure IPv4: Manually, e.g. 192.168.88.1 /
+255.255.255.0). The app lists only wired Ethernet adapters (built-in, USB,
+Thunderbolt or dock adapters) and flashes one device at a time unless
+Settings say otherwise.
+
+## Command line
+
+`ni-cli interfaces` lists the interfaces a RouterBOARD can be netinstalled
+through (`--all`: every interface). `ni-cli flash` flashes one device at a
+time; `--max-parallel N` allows more. `--server-ip`/`--netmask` override the
+adapter's manual IPv4 from macOS (advanced). `flash`/`preflight
+--allow-any-interface` (advanced) accepts an interface that is not a wired
+Ethernet adapter, with a warning; the app never offers one.
+
+## Release notes
+
+- **One device at a time by default.** `max_parallel` now defaults to 1 (it
+  was 4) in the app, the engine and `ni-cli flash`. Settings saved by an
+  older app with the old default 4 are changed to 1 the first time the new
+  app starts (written back as settings version 2); any other value you chose
+  is kept. To flash several devices at once, raise "Devices at once" in
+  Settings (or pass `--max-parallel`).
+
 ## Development
 
 Requires Rust via rustup (`rust-toolchain.toml` pins the channel).

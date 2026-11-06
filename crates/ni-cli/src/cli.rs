@@ -100,9 +100,12 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List network interfaces with their kind and IPv4 addresses.
+    /// List the interfaces a RouterBOARD can be netinstalled through (real
+    /// wired Ethernet NICs: built-in, USB, Thunderbolt or dock adapters),
+    /// with their kind and IPv4 addresses.
     Interfaces {
-        /// Also list loopback, tunnel and interfaces without IPv4.
+        /// List every interface (Wi-Fi, Thunderbolt IP ports, bridges,
+        /// tunnels, virtual and loopback ones too).
         #[arg(long)]
         all: bool,
     },
@@ -184,9 +187,14 @@ pub struct NetArgs {
     /// Interface the routers are connected to, e.g. en7.
     #[arg(long)]
     pub iface: String,
-    /// Our IPv4 address on it [default: its first one]. Give it to start
-    /// before the cable is plugged in (macOS removes a manual address while
-    /// there is no link).
+    /// Advanced: allow an interface that is not a wired Ethernet adapter
+    /// (Wi-Fi, a Thunderbolt IP port, a bridge, a virtual one); it is then
+    /// only a warning. RouterBOARDs netinstall over wired Ethernet only.
+    #[arg(long)]
+    pub allow_any_interface: bool,
+    /// Advanced override of our IPv4 address on it. By default it is the
+    /// adapter's manual IPv4 from macOS (System Settings → Network → TCP/IP;
+    /// known even before the cable is plugged in), else its first address.
     #[arg(long)]
     pub server_ip: Option<Ipv4Addr>,
     /// Netmask for --server-ip while it is not on the interface [default: 255.255.255.0].
@@ -244,8 +252,8 @@ pub struct FlashArgs {
     /// Serve only this device (MAC address).
     #[arg(long)]
     pub only_mac: Option<Mac>,
-    /// Devices flashed at the same time.
-    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
+    /// Devices flashed at the same time (more than one only on request).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=64))]
     pub max_parallel: u16,
     /// Seconds a finished device is ignored (it reboots); at least 30.
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(30..))]
@@ -281,6 +289,38 @@ mod tests {
     #[test]
     fn definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn any_interface_only_on_request() {
+        let flash = |extra: &[&str]| {
+            let mut args = vec!["flash", "--iface", "en1", "--version", "stable"];
+            args.extend(extra);
+            let Command::Flash(f) = parse(&args).unwrap().command else {
+                panic!("flash expected")
+            };
+            f.net.allow_any_interface
+        };
+        assert!(!flash(&[]));
+        assert!(flash(&["--allow-any-interface"]));
+        let cli = parse(&["preflight", "--iface", "en1", "--allow-any-interface"]).unwrap();
+        let Command::Preflight { net, .. } = cli.command else {
+            panic!("preflight expected")
+        };
+        assert!(net.allow_any_interface);
+    }
+
+    #[test]
+    fn one_device_at_a_time_by_default() {
+        let cli = parse(&["flash", "--iface", "en7", "--version", "stable"]).unwrap();
+        let Command::Flash(f) = cli.command else {
+            panic!("flash expected")
+        };
+        assert_eq!(f.max_parallel, 1);
+        let mut cmd = Cli::command();
+        let flash = cmd.find_subcommand_mut("flash").unwrap();
+        let help = flash.render_long_help().to_string();
+        assert!(help.contains("[default: 1]"), "{help}");
     }
 
     #[test]

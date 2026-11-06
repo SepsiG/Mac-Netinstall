@@ -78,7 +78,24 @@ impl PreflightReport {
 /// (`reason`: `no_ip`, `no_carrier`; no cable yet? With a configured
 /// server IP a missing address is only this warning: macOS removes a
 /// manual address while there is no carrier), `unsuitable_interface`
-/// (`kind`: wifi, loopback, bridge, tunnel, apple_wireless, other).
+/// (`kind`: loopback; for tests). Error: `interface_not_ethernet`
+/// (`interface`, `kind`): see [`not_ethernet`]; `no_manual_ipv4` /
+/// `ipv4_dhcp` (`interface`, `service`: the adapter's name in System
+/// Settings) instead of `no_ipv4` when no address can be had: macOS is not
+/// configured with a manual IPv4 for the adapter (`ipv4_dhcp` is only a
+/// warning while it has a DHCP address).
+/// `interface_not_ethernet` (`interface`, `kind`) unless `iface` can
+/// netinstall a RouterBOARD ([`ni_net::Interface::is_netinstall_capable`]:
+/// a real wired Ethernet NIC). Loopback is let through: tests and the
+/// simulator run on `lo0`, and nothing real can boot from it anyway.
+pub fn not_ethernet(iface: &Interface) -> Option<Failure> {
+    (!iface.is_netinstall_capable() && iface.kind != InterfaceKind::Loopback).then(|| {
+        Failure::new("interface_not_ethernet")
+            .with("interface", &iface.name)
+            .with("kind", iface.kind.as_str())
+    })
+}
+
 pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>, Option<NetPlan>) {
     let mut out = Vec::new();
     let Some(iface) = ifaces.iter().find(|i| i.name == cfg.interface) else {
@@ -106,20 +123,54 @@ pub fn check_network(ifaces: &[Interface], cfg: &EngineConfig) -> (Vec<Finding>,
             ));
         }
     }
-    if iface.kind != InterfaceKind::Ethernet {
+    if let Some(f) = not_ethernet(iface) {
+        out.push(if cfg.allow_non_ethernet {
+            Finding::warning(f)
+        } else {
+            Finding::error(f)
+        });
+    } else if iface.kind != InterfaceKind::Ethernet {
+        // Loopback: tests and simulations only.
         out.push(Finding::warning(
             Failure::new("unsuitable_interface")
                 .with("interface", &iface.name)
                 .with("kind", iface.kind.as_str()),
         ));
     }
+    let method = iface.configured_ipv4.as_ref().map(|c| c.method.clone());
+    let dhcp = || {
+        Failure::new("ipv4_dhcp")
+            .with("interface", &iface.name)
+            .with(
+                "service",
+                iface.display_name.as_deref().unwrap_or(&iface.name),
+            )
+    };
     let plan = match resolved {
         Ok(plan) => plan,
+        // No address to serve with: say what to set up in macOS.
+        Err(f) if f.code == "no_ipv4" && cfg.server_ip.is_none() => {
+            out.push(Finding::error(match method {
+                Some(ni_net::Ipv4Method::Dhcp) => dhcp(),
+                _ => Failure::new("no_manual_ipv4")
+                    .with("interface", &iface.name)
+                    .with(
+                        "service",
+                        iface.display_name.as_deref().unwrap_or(&iface.name),
+                    ),
+            }));
+            return (out, None);
+        }
         Err(f) => {
             out.push(Finding::error(f));
             return (out, None);
         }
     };
+    if cfg.server_ip.is_none() && method == Some(ni_net::Ipv4Method::Dhcp) {
+        // An address from someone else's DHCP server: works, but the
+        // network is probably not a separate one for flashing.
+        out.push(Finding::warning(dhcp()));
+    }
     let mask = u32::from(plan.netmask);
     if mask.leading_ones() + mask.trailing_zeros() != 32 {
         out.push(Finding::error(
@@ -255,6 +306,19 @@ pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
 
 /// Everything: network (with `cfg.interfaces`), the default route, ports,
 /// and the assets of `profile` if given.
+/// The quick, local part of [`run`]: the interface, its link and
+/// addresses, and the default route. Binds no port and needs no network,
+/// so it can run every few seconds.
+pub fn run_local(cfg: &EngineConfig) -> PreflightReport {
+    let ifaces = cfg.interfaces.list().unwrap_or_default();
+    let (mut findings, network) = check_network(&ifaces, cfg);
+    if network.is_some() {
+        let routed = ni_net::default_route_interfaces().unwrap_or_default();
+        findings.extend(check_default_route(&routed, cfg));
+    }
+    PreflightReport { findings, network }
+}
+
 pub async fn run(
     cfg: &EngineConfig,
     assets: Option<&Assets>,
@@ -314,12 +378,37 @@ mod tests {
             codes(&findings),
             [
                 ("link_down", Severity::Warning),
-                ("unsuitable_interface", Severity::Warning)
+                ("interface_not_ethernet", Severity::Error)
             ]
         );
         assert_eq!(findings[0].failure.param("reason"), Some("no_carrier"));
         assert_eq!(findings[1].failure.param("kind"), Some("wifi"));
         assert!(plan.is_some());
+        // The advanced override makes it a warning.
+        let mut port = iface("en1", &[(ip(1), MASK24)], Some(MAC));
+        port.kind = InterfaceKind::Virtual;
+        let mut cfg = EngineConfig::new("en1");
+        cfg.allow_non_ethernet = true;
+        let (findings, plan) = check_network(&[port], &cfg);
+        assert_eq!(
+            codes(&findings),
+            [("interface_not_ethernet", Severity::Warning)]
+        );
+        assert!(plan.is_some());
+        for kind in [
+            InterfaceKind::ThunderboltIp,
+            InterfaceKind::Virtual,
+            InterfaceKind::Bridge,
+        ] {
+            let mut port = iface("en1", &[(ip(1), MASK24)], Some(MAC));
+            port.kind = kind;
+            let (findings, _) = check_network(&[port], &EngineConfig::new("en1"));
+            assert_eq!(
+                codes(&findings),
+                [("interface_not_ethernet", Severity::Error)],
+                "{kind:?}"
+            );
+        }
         en7.is_up = false;
         en7.ipv4.clear();
         let (findings, plan) = check_network(&[en7], &EngineConfig::new("en7"));
@@ -327,13 +416,54 @@ mod tests {
             codes(&findings),
             [
                 ("interface_down", Severity::Error),
-                ("unsuitable_interface", Severity::Warning),
-                ("no_ipv4", Severity::Error)
+                ("interface_not_ethernet", Severity::Error),
+                ("no_manual_ipv4", Severity::Error)
             ]
         );
         assert_eq!(plan, None);
         let (findings, _) = check_network(&[], &EngineConfig::new("en9"));
         assert_eq!(codes(&findings), [("unknown_interface", Severity::Error)]);
+    }
+
+    fn configured(method: ni_net::Ipv4Method) -> Option<ni_net::ConfiguredIpv4> {
+        let manual = method == ni_net::Ipv4Method::Manual;
+        Some(ni_net::ConfiguredIpv4 {
+            method,
+            address: manual.then_some(ip(1)),
+            netmask: manual.then_some(MASK24),
+        })
+    }
+
+    #[test]
+    fn missing_manual_ipv4_is_explained_by_how_macos_is_configured() {
+        let mut en7 = iface("en7", &[], Some(MAC));
+        en7.display_name = Some("USB 10/100/1000 LAN".into());
+        let cfg = EngineConfig::new("en7");
+        // Nothing configured.
+        let (findings, plan) = check_network(&[en7.clone()], &cfg);
+        assert_eq!(codes(&findings), [("no_manual_ipv4", Severity::Error)]);
+        assert_eq!(
+            findings[0].failure.param("service"),
+            Some("USB 10/100/1000 LAN")
+        );
+        assert_eq!(plan, None);
+        // DHCP.
+        en7.configured_ipv4 = configured(ni_net::Ipv4Method::Dhcp);
+        let (findings, _) = check_network(&[en7.clone()], &cfg);
+        assert_eq!(codes(&findings), [("ipv4_dhcp", Severity::Error)]);
+        // DHCP with an address (from someone's DHCP server): a warning.
+        en7.ipv4 = vec![(ip(50), MASK24)];
+        let (findings, plan) = check_network(&[en7.clone()], &cfg);
+        assert_eq!(codes(&findings), [("ipv4_dhcp", Severity::Warning)]);
+        assert!(plan.is_some());
+        // Manual, cable out: start is possible, the link is only awaited.
+        en7.ipv4.clear();
+        en7.is_running = false;
+        en7.configured_ipv4 = configured(ni_net::Ipv4Method::Manual);
+        let (findings, plan) = check_network(&[en7], &cfg);
+        assert_eq!(codes(&findings), [("link_down", Severity::Warning)]);
+        assert_eq!(findings[0].failure.param("reason"), Some("no_ip"));
+        assert_eq!(plan.unwrap().server_ip, ip(1));
     }
 
     #[test]
@@ -374,7 +504,7 @@ mod tests {
             codes(&findings),
             [
                 ("link_down", Severity::Warning),
-                ("no_ipv4", Severity::Error)
+                ("no_manual_ipv4", Severity::Error)
             ]
         );
         assert_eq!(plan, None);
@@ -442,6 +572,32 @@ mod tests {
             codes(&check_ports(&cfg)),
             [("unknown_interface", Severity::Error)]
         );
+    }
+
+    #[tokio::test]
+    async fn the_local_check_binds_no_port_and_needs_no_assets() {
+        let held = bind_udp(&BindOptions::new(0).addr(Ipv4Addr::LOCALHOST)).unwrap();
+        let mut cfg = EngineConfig::new("lo0");
+        cfg.server_mac = Some(MAC);
+        cfg.ports.bind_ip = Ipv4Addr::LOCALHOST;
+        cfg.ports.bootp = 0;
+        cfg.ports.tftp = held.local_addr().unwrap().port();
+        cfg.ports.netinstall = 0;
+        let full = run(&cfg, None, None).await;
+        assert!(full
+            .findings
+            .iter()
+            .any(|f| f.failure.code == "port_in_use"));
+        let local = run_local(&cfg);
+        assert!(local
+            .findings
+            .iter()
+            .all(|f| f.failure.code != "port_in_use"));
+        assert_eq!(
+            codes(&local.findings),
+            [("unsuitable_interface", Severity::Warning)]
+        );
+        assert_eq!(local.network, full.network);
     }
 
     #[tokio::test]

@@ -60,6 +60,19 @@ impl Gate {
         }
     }
 
+    /// Not excluded by "only this MAC" (cooldowns aside).
+    pub fn selected(&self, mac: Mac) -> bool {
+        self.lock().only.is_none_or(|only| only == mac)
+    }
+
+    /// In its post-flash cooldown at `now`.
+    pub fn in_cooldown(&self, mac: Mac, now: Instant) -> bool {
+        self.lock()
+            .cooldown_until
+            .get(&mac)
+            .is_some_and(|until| now < *until)
+    }
+
     pub fn start_cooldown(&self, mac: Mac, until: Instant) {
         self.lock().cooldown_until.insert(mac, until);
     }
@@ -112,6 +125,9 @@ mod tests {
             "expired entries are dropped"
         );
         gate.start_cooldown(A, t0 + Duration::from_secs(300));
+        assert!(gate.in_cooldown(A, t0));
+        assert!(!gate.in_cooldown(A, t0 + Duration::from_secs(300)));
+        assert!(!gate.in_cooldown(B, t0));
         gate.clear_cooldown(A);
         assert_eq!(gate.check(A, t0), Verdict::Allow);
     }
@@ -134,8 +150,10 @@ mod tests {
         let now = Instant::now();
         assert_eq!(gate.check(A, now), Verdict::Allow);
         assert_eq!(gate.check(B, now), Verdict::NotSelected);
+        assert!(gate.selected(A) && !gate.selected(B));
         gate.set_only(None);
         assert_eq!(gate.check(B, now), Verdict::Allow);
+        assert!(gate.selected(B));
         assert_eq!(Verdict::NotSelected.reason(), "not_selected");
     }
 

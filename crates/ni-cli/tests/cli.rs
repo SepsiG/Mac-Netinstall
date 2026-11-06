@@ -121,6 +121,12 @@ async fn interfaces_lists_lo0_with_all() {
         list.iter().all(|i| i["name"] != "lo0"),
         "hidden without --all"
     );
+    // By default only interfaces a RouterBOARD can be netinstalled through.
+    assert!(
+        list.iter()
+            .all(|i| i["kind"] == "ethernet" && i["netinstall_capable"] == true),
+        "{list:?}"
+    );
     assert!(env.logs().contains("ni-cli started"));
 }
 
@@ -502,6 +508,8 @@ async fn reaching_the_count_waits_for_devices_still_flashing() {
     let lan = SimLan::bind().await.unwrap();
     let mut args = flash_args(&srv, &lan);
     args.extend(["--auto-repeat".into(), "--count".into(), "1".into()]);
+    // Two at once (one at a time is the default).
+    args.extend(["--max-parallel".into(), "2".into()]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut child = env.cmd(&args).spawn().unwrap();
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();

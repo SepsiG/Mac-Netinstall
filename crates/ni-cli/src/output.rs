@@ -37,6 +37,8 @@ impl Printer {
                 s.interface, s.server_ip
             )),
             EngineEvent::Stopped => Some("stopped".into()),
+            // `kernels_ready` / the `kernels_unavailable` error say it.
+            EngineEvent::Kernels { .. } => None,
             EngineEvent::KernelsReady { version } => Some(format!(
                 "boot kernels {version} ready; waiting for devices (Etherboot)"
             )),
@@ -52,6 +54,9 @@ impl Printer {
                 info.model, info.arch, info.license_id
             )),
             EngineEvent::Ignored { mac, reason } => Some(format!("{mac}  ignored: {reason}")),
+            EngineEvent::Forgotten { mac } => Some(format!("{mac}  forgotten")),
+            EngineEvent::OnlyMacChanged { mac: Some(mac) } => Some(format!("serving only {mac}")),
+            EngineEvent::OnlyMacChanged { mac: None } => Some("serving every device".into()),
             EngineEvent::Device { mac, state } => self.device(*mac, state),
             EngineEvent::Error(f) => Some(format!("error: {}", failure(f))),
             EngineEvent::Warning(f) => Some(format!("warning: {}", failure(f))),
@@ -224,6 +229,19 @@ mod tests {
         assert_eq!(
             p.line(&found).unwrap(),
             "48:A9:8A:00:00:01  found hEX (mmips), license ABCD-1234"
+        );
+        assert_eq!(
+            p.line(&EngineEvent::Forgotten { mac: MAC }).unwrap(),
+            "48:A9:8A:00:00:01  forgotten"
+        );
+        assert_eq!(
+            p.line(&EngineEvent::OnlyMacChanged { mac: Some(MAC) })
+                .unwrap(),
+            "serving only 48:A9:8A:00:00:01"
+        );
+        assert_eq!(
+            p.line(&EngineEvent::OnlyMacChanged { mac: None }).unwrap(),
+            "serving every device"
         );
         let failed = EngineEvent::Device {
             mac: MAC,

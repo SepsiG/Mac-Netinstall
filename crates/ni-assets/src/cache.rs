@@ -88,6 +88,10 @@ const MAX_INDEX_SIZE: u64 = 16 << 20;
 const MAX_CACHED_FILE: u64 = 1 << 30;
 /// Directory under the cache root that holds lock files.
 pub const LOCK_DIR: &str = ".locks";
+/// Lock name (see [`CacheDir::lock_path`]) of a whole cache directory:
+/// everything that writes into it holds it shared; deleting the directory
+/// takes it exclusively.
+pub const DIR_LOCK: &str = "_dir";
 /// Suffix of temporary files.
 pub const PART_SUFFIX: &str = ".part";
 
@@ -164,6 +168,7 @@ impl CacheDir {
     /// the short critical section), so concurrent writers in this and
     /// other processes never drop each other's entries.
     pub fn update(&self, change: impl FnOnce(&mut Index)) -> Result<(), AssetError> {
+        let _dir = lock::lock_shared_blocking(&self.lock_path(DIR_LOCK))?;
         let _lock = lock::lock_file_blocking(&self.lock_path(INDEX_FILE))?;
         let mut index = self.load();
         change(&mut index);

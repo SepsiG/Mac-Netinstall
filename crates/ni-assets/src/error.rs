@@ -55,6 +55,12 @@ pub enum AssetError {
     /// The bytes read back from disk differ from the bytes received.
     #[error("{file} changed on disk while it was being verified")]
     DiskMismatch { file: String },
+    /// [`crate::Assets::delete_cached`]: not an item of this cache.
+    #[error("{id} is not a cached item")]
+    InvalidItem { id: String },
+    /// [`crate::Assets::delete_cached`]: it is being downloaded right now.
+    #[error("{id} is being written right now")]
+    Busy { id: String },
     /// The runtime shut down while file work was pending.
     #[error("the operation was cancelled")]
     Cancelled,
@@ -87,6 +93,44 @@ pub enum AssetError {
 }
 
 impl AssetError {
+    /// Every code [`AssetError::code`] can return, so a UI can check that
+    /// each one has a translation.
+    pub const CODES: &'static [&'static str] = &[
+        "invalid_version",
+        "version_too_old",
+        "unknown_arch",
+        "unsupported_arch",
+        "invalid_package_name",
+        "unknown_package",
+        "http_client",
+        "not_found",
+        "http_status",
+        "network",
+        "timeout",
+        "redirect_refused",
+        "truncated",
+        "too_large",
+        "bad_response",
+        "checksum_mismatch",
+        "checksum_missing",
+        "disk_mismatch",
+        "cancelled",
+        "not_npk",
+        "npk_length",
+        "archive_missing_cli",
+        "archive",
+        "kernel_missing",
+        "kernel_duplicate",
+        "io",
+        "unsupported_local_file",
+        "local_too_large",
+        "local_not_file",
+        "local_missing",
+        "local_corrupt",
+        "invalid_item",
+        "busy",
+    ];
+
     /// Stable machine-readable code (i18n key).
     pub fn code(&self) -> &'static str {
         match self {
@@ -121,6 +165,8 @@ impl AssetError {
             AssetError::LocalNotAFile { .. } => "local_not_file",
             AssetError::LocalMissing { .. } => "local_missing",
             AssetError::LocalCorrupt { .. } => "local_corrupt",
+            AssetError::InvalidItem { .. } => "invalid_item",
+            AssetError::Busy { .. } => "busy",
         }
     }
 
@@ -200,6 +246,8 @@ mod tests {
             AssetError::LocalNotAFile { name: "a".into() },
             AssetError::LocalMissing { name: "a".into() },
             AssetError::LocalCorrupt { name: "a".into() },
+            AssetError::InvalidItem { id: "x".into() },
+            AssetError::Busy { id: "x".into() },
         ];
         let codes: Vec<&str> = errors.iter().map(AssetError::code).collect();
         assert_eq!(
@@ -234,12 +282,33 @@ mod tests {
                 "local_not_file",
                 "local_missing",
                 "local_corrupt",
+                "invalid_item",
+                "busy",
             ]
         );
         let mut unique = codes.clone();
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), codes.len());
+        for code in &codes {
+            assert!(
+                AssetError::CODES.contains(code),
+                "{code} missing from CODES"
+            );
+        }
+    }
+
+    #[test]
+    fn codes_list_is_unique_and_complete() {
+        let mut all = AssetError::CODES.to_vec();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), AssetError::CODES.len());
+        // The two codes the test above cannot construct (they wrap
+        // `reqwest::Error`), plus the 31 it checks.
+        assert!(AssetError::CODES.contains(&"http_client"));
+        assert!(AssetError::CODES.contains(&"network"));
+        assert_eq!(AssetError::CODES.len(), 33);
     }
 
     #[test]

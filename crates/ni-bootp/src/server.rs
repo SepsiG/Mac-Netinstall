@@ -86,6 +86,8 @@ pub enum BootpEvent {
         arch: BootArch,
         ip: Ipv4Addr,
         kind: ReplyKind,
+        /// The boot file the reply named.
+        file: String,
     },
     Ignored {
         mac: Mac,
@@ -192,6 +194,7 @@ async fn run(
                     arch: reply.arch,
                     ip: reply.assigned_ip,
                     kind: reply.kind,
+                    file: reply.file,
                 },
                 Err(e) => BootpEvent::SendFailed {
                     mac: reply.client_mac,

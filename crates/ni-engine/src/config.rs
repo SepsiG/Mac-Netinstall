@@ -16,6 +16,37 @@ use std::time::Duration;
 /// while it reboots (RouterBOOT may netboot once more).
 pub const MIN_COOLDOWN: Duration = Duration::from_secs(30);
 
+/// Longest allowed cooldown (a day): longer ones are mistakes, and
+/// `Instant + cooldown` must not overflow.
+pub const MAX_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Most devices prepared or flashed at the same time.
+pub const MAX_PARALLEL: usize = 64;
+
+/// `invalid_cooldown` (`min_secs`, `max_secs`, `secs`) if `cooldown` is
+/// below `min` or above [`MAX_COOLDOWN`].
+pub fn check_cooldown(cooldown: Duration, min: Duration) -> Result<(), Failure> {
+    if cooldown < min || cooldown > MAX_COOLDOWN {
+        return Err(Failure::new("invalid_cooldown")
+            .with("min_secs", min.as_secs())
+            .with("max_secs", MAX_COOLDOWN.as_secs())
+            .with("secs", cooldown.as_secs()));
+    }
+    Ok(())
+}
+
+/// `invalid_max_parallel` (`min`, `max`, `value`) unless `1 ..=`
+/// [`MAX_PARALLEL`].
+pub fn check_max_parallel(n: usize) -> Result<(), Failure> {
+    if !(1..=MAX_PARALLEL).contains(&n) {
+        return Err(Failure::new("invalid_max_parallel")
+            .with("min", 1)
+            .with("max", MAX_PARALLEL)
+            .with("value", n));
+    }
+    Ok(())
+}
+
 /// Netmask used with a configured server IP that is not on the interface
 /// (yet): `/24`.
 pub const DEFAULT_NETMASK: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
@@ -102,7 +133,7 @@ pub struct EngineConfig {
     /// [`DEFAULT_NETMASK`]. Ignored when the interface carries the address
     /// (its own netmask is used).
     pub netmask: Option<Ipv4Addr>,
-    /// First and last address handed out; default: see [`default_pool`].
+    /// First and last address handed out; default: see [`auto_pool`].
     pub pool: Option<(Ipv4Addr, Ipv4Addr)>,
     /// Source MAC of our Netinstall frames; default: the interface's MAC.
     pub server_mac: Option<Mac>,
@@ -112,7 +143,8 @@ pub struct EngineConfig {
     pub auto_repeat: bool,
     /// Serve only this device (BOOTP and Netinstall).
     pub only_mac: Option<Mac>,
-    /// Devices preparing or flashing at the same time (at least 1).
+    /// Devices preparing or flashing at the same time (1 ..=
+    /// [`MAX_PARALLEL`]).
     pub max_parallel: usize,
     /// How long a finished device is ignored (it reboots, and must not be
     /// flashed again); at least `min_cooldown`. After the cooldown a done
@@ -135,10 +167,14 @@ pub struct EngineConfig {
     pub interface_grace: Duration,
     /// Where the interface list comes from (default: the OS).
     pub interfaces: InterfaceSource,
+    /// Advanced override (CLI `--allow-any-interface`): serve on an
+    /// interface that is not a real wired Ethernet adapter;
+    /// `interface_not_ethernet` is then only a preflight warning.
+    pub allow_non_ethernet: bool,
 }
 
 impl EngineConfig {
-    /// Defaults for `interface`: 4 in parallel, 5 min cooldown, no
+    /// Defaults for `interface`: one device at a time, 5 min cooldown, no
     /// profile, auto-repeat off.
     pub fn new(interface: &str) -> Self {
         EngineConfig {
@@ -150,7 +186,7 @@ impl EngineConfig {
             profile: None,
             auto_repeat: false,
             only_mac: None,
-            max_parallel: 4,
+            max_parallel: 1,
             cooldown: Duration::from_secs(5 * 60),
             min_cooldown: MIN_COOLDOWN,
             session: SessionConfig::default(),
@@ -160,17 +196,16 @@ impl EngineConfig {
             link_check: Some(Duration::from_secs(2)),
             interface_grace: Duration::from_secs(10),
             interfaces: InterfaceSource::system(),
+            allow_non_ethernet: false,
         }
     }
 
     /// Settings `start` refuses. Codes: `invalid_cooldown` (`min_secs`,
-    /// `secs`), profile validation codes.
+    /// `max_secs`, `secs`), `invalid_max_parallel` (`min`, `max`, `value`), profile
+    /// validation codes.
     pub fn validate(&self) -> Result<(), Failure> {
-        if self.cooldown < self.min_cooldown {
-            return Err(Failure::new("invalid_cooldown")
-                .with("min_secs", self.min_cooldown.as_secs())
-                .with("secs", self.cooldown.as_secs()));
-        }
+        check_cooldown(self.cooldown, self.min_cooldown)?;
+        check_max_parallel(self.max_parallel)?;
         if let Some(p) = &self.profile {
             p.validate()?;
         }
@@ -195,18 +230,31 @@ pub fn subnet(ip: Ipv4Addr, mask: Ipv4Addr) -> (Ipv4Addr, Ipv4Addr) {
     ((ip & mask).into(), (ip | !mask).into())
 }
 
-/// Default pool: the subnet's first 254 host addresses (the whole subnet
-/// of a /24). The server IP inside it is skipped by the BOOTP pool.
-/// For /31 and /32 the pool is the subnet itself.
-pub fn default_pool(server_ip: Ipv4Addr, netmask: Ipv4Addr) -> (Ipv4Addr, Ipv4Addr) {
-    let (net, bcast) = subnet(server_ip, netmask);
-    let (net, bcast) = (u32::from(net), u32::from(bcast));
-    if bcast - net < 2 {
-        return (net.into(), bcast.into());
+/// The automatic DHCP pool: the larger run of host addresses beside the
+/// server's own one (never the network, broadcast or server address). For
+/// 172.30.0.2/22 that is 172.30.0.3 – 172.30.3.254. Error:
+/// `subnet_too_small` (`prefix`) for /31 and /32 (no address to hand out).
+pub fn auto_pool(server_ip: Ipv4Addr, netmask: Ipv4Addr) -> Result<(Ipv4Addr, Ipv4Addr), Failure> {
+    let prefix = u32::from(netmask).leading_ones();
+    if prefix > 30 {
+        return Err(Failure::new("subnet_too_small").with("prefix", prefix));
     }
-    let first = net + 1;
-    let last = (bcast - 1).min(net + 254);
-    (first.into(), last.into())
+    let (net, bcast) = subnet(server_ip, netmask);
+    let (first, last, server) = (
+        u32::from(net) + 1,
+        u32::from(bcast) - 1,
+        u32::from(server_ip),
+    );
+    let below = (server > first).then(|| (first, server - 1));
+    let above = (server < last).then(|| (server + 1, last));
+    let size = |r: Option<(u32, u32)>| r.map_or(0, |(a, b)| b - a + 1);
+    let (a, b) = if size(above) >= size(below) {
+        above
+    } else {
+        below
+    }
+    .ok_or_else(|| Failure::new("subnet_too_small").with("prefix", prefix))?;
+    Ok((a.into(), b.into()))
 }
 
 /// Resolve `cfg` against the interface list. Codes: `unknown_interface`,
@@ -237,10 +285,28 @@ pub(crate) fn resolve_addresses(
         .find(|i| i.name == cfg.interface)
         .ok_or_else(|| Failure::new("unknown_interface").with("interface", &cfg.interface))?;
     let (server_ip, netmask) = match cfg.server_ip {
-        None => *iface
-            .ipv4
-            .first()
-            .ok_or_else(|| Failure::new("no_ipv4").with("interface", &iface.name))?,
+        // The address macOS is configured with (System Settings → TCP/IP →
+        // Manually); there without link, when macOS has removed it from
+        // the interface. Else the live address.
+        None => match iface.configured_ipv4.as_ref().and_then(|c| c.manual()) {
+            Some((ip, mask))
+                if iface.ipv4.is_empty()
+                    || !iface.is_up
+                    || !iface.is_running
+                    || iface.ipv4.iter().any(|(a, _)| *a == ip) =>
+            {
+                iface
+                    .ipv4
+                    .iter()
+                    .copied()
+                    .find(|(a, _)| *a == ip)
+                    .unwrap_or((ip, mask))
+            }
+            _ => *iface
+                .ipv4
+                .first()
+                .ok_or_else(|| Failure::new("no_ipv4").with("interface", &iface.name))?,
+        },
         Some(ip) => match iface.ipv4.iter().find(|(a, _)| *a == ip) {
             Some(found) => *found,
             None if iface.ipv4.is_empty() || !iface.is_up || !iface.is_running => {
@@ -253,7 +319,10 @@ pub(crate) fn resolve_addresses(
             }
         },
     };
-    let (pool_start, pool_end) = cfg.pool.unwrap_or_else(|| default_pool(server_ip, netmask));
+    let (pool_start, pool_end) = match cfg.pool {
+        Some(pool) => pool,
+        None => auto_pool(server_ip, netmask)?,
+    };
     // Never fall back to a placeholder: macOS may mask link addresses as
     // 02:00:00:00:00:00, and frames from it would collide between Macs.
     let server_mac = cfg
@@ -338,6 +407,7 @@ pub(crate) fn test_iface(name: &str, ipv4: &[(Ipv4Addr, Ipv4Addr)], mac: Option<
         is_loopback: false,
         kind: ni_net::InterfaceKind::Ethernet,
         display_name: None,
+        configured_ipv4: None,
     }
 }
 
@@ -355,20 +425,31 @@ mod tests {
     }
 
     #[test]
-    fn default_pool_sizes() {
-        assert_eq!(default_pool(ip(1), MASK24), (ip(1), ip(254)));
+    fn the_automatic_pool_is_the_subnet_beside_the_server() {
+        let a = |ip: [u8; 4], prefix: u32| {
+            auto_pool(
+                Ipv4Addr::from(ip),
+                Ipv4Addr::from(u32::MAX << (32 - prefix)),
+            )
+        };
+        // The example from the UI: a /22 with the server near its start.
         assert_eq!(
-            default_pool(Ipv4Addr::new(10, 1, 2, 3), Ipv4Addr::new(255, 255, 0, 0)),
-            (Ipv4Addr::new(10, 1, 0, 1), Ipv4Addr::new(10, 1, 0, 254))
+            a([172, 30, 0, 2], 22).unwrap(),
+            (Ipv4Addr::new(172, 30, 0, 3), Ipv4Addr::new(172, 30, 3, 254))
         );
-        assert_eq!(
-            default_pool(ip(9), Ipv4Addr::new(255, 255, 255, 248)),
-            (ip(9), ip(14))
-        );
-        assert_eq!(
-            default_pool(ip(10), Ipv4Addr::new(255, 255, 255, 254)),
-            (ip(10), ip(11))
-        );
+        assert_eq!(a([192, 168, 88, 1], 24).unwrap(), (ip(2), ip(254)));
+        // Server in the upper half: the part below it.
+        assert_eq!(a([192, 168, 88, 200], 24).unwrap(), (ip(1), ip(199)));
+        assert_eq!(a([192, 168, 88, 254], 24).unwrap(), (ip(1), ip(253)));
+        // /30: two hosts, one is the server.
+        assert_eq!(a([192, 168, 88, 1], 30).unwrap(), (ip(2), ip(2)));
+        assert_eq!(a([192, 168, 88, 2], 30).unwrap(), (ip(1), ip(1)));
+        // /31 and /32 leave nothing to hand out.
+        for prefix in [31, 32] {
+            let err = a([192, 168, 88, 1], prefix).unwrap_err();
+            assert_eq!(err.code, "subnet_too_small", "/{prefix}");
+            assert_eq!(err.param("prefix"), Some(prefix.to_string().as_str()));
+        }
         assert_eq!(subnet(ip(77), MASK24), (ip(0), ip(255)));
     }
 
@@ -381,7 +462,7 @@ mod tests {
             NetPlan {
                 server_ip: ip(1),
                 netmask: MASK24,
-                pool_start: ip(1),
+                pool_start: ip(2),
                 pool_end: ip(254),
                 server_mac: MAC,
             }
@@ -450,7 +531,7 @@ mod tests {
         let plan = resolve_network(&[en7.clone()], &cfg).unwrap();
         assert_eq!(
             (plan.server_ip, plan.netmask, plan.pool_start, plan.pool_end),
-            (ip(1), MASK24, ip(1), ip(254))
+            (ip(1), MASK24, ip(2), ip(254))
         );
         cfg.netmask = Some(Ipv4Addr::new(255, 255, 255, 240));
         let plan = resolve_network(&[en7.clone()], &cfg).unwrap();
@@ -515,6 +596,41 @@ mod tests {
         );
     }
 
+    fn manual(addr: Ipv4Addr, mask: Ipv4Addr) -> Option<ni_net::ConfiguredIpv4> {
+        Some(ni_net::ConfiguredIpv4 {
+            method: ni_net::Ipv4Method::Manual,
+            address: Some(addr),
+            netmask: Some(mask),
+        })
+    }
+
+    #[test]
+    fn the_configured_manual_address_serves_without_link() {
+        // No cable: macOS removed the manual address from the interface,
+        // but the service still has it.
+        let mut en7 = iface("en7", &[], Some(MAC));
+        en7.is_running = false;
+        en7.configured_ipv4 = manual(ip(1), MASK24);
+        let plan = resolve_network(&[en7.clone()], &EngineConfig::new("en7")).unwrap();
+        assert_eq!((plan.server_ip, plan.netmask), (ip(1), MASK24));
+        // The subnet beside the server's own address.
+        assert_eq!((plan.pool_start, plan.pool_end), (ip(2), ip(254)));
+        // With link, the live address is the same one.
+        en7.is_running = true;
+        en7.ipv4 = vec![(ip(1), MASK24)];
+        let plan = resolve_network(&[en7.clone()], &EngineConfig::new("en7")).unwrap();
+        assert_eq!(plan.server_ip, ip(1));
+        // DHCP-configured, no address: nothing to serve with.
+        en7.ipv4.clear();
+        en7.configured_ipv4 = Some(ni_net::ConfiguredIpv4 {
+            method: ni_net::Ipv4Method::Dhcp,
+            address: None,
+            netmask: None,
+        });
+        let err = resolve_network(&[en7], &EngineConfig::new("en7")).unwrap_err();
+        assert_eq!(err.code, "no_ipv4");
+    }
+
     #[test]
     fn cooldown_has_a_lower_bound() {
         let mut cfg = EngineConfig::new("en7");
@@ -524,10 +640,48 @@ mod tests {
             err,
             Failure::new("invalid_cooldown")
                 .with("min_secs", 30)
+                .with("max_secs", 86400)
                 .with("secs", 29)
         );
         cfg.cooldown = MIN_COOLDOWN;
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn cooldown_has_an_upper_bound_of_a_day() {
+        let mut cfg = EngineConfig::new("en7");
+        cfg.cooldown = MAX_COOLDOWN;
+        assert!(cfg.validate().is_ok());
+        for secs in [MAX_COOLDOWN.as_secs() + 1, u64::MAX] {
+            cfg.cooldown = Duration::from_secs(secs);
+            let err = cfg.validate().unwrap_err();
+            assert_eq!(err.code, "invalid_cooldown");
+            assert_eq!(err.param("max_secs"), Some("86400"));
+            assert_eq!(err.param("min_secs"), Some("30"));
+        }
+        // Not even a test's lower minimum lifts the upper bound.
+        let err = check_cooldown(Duration::MAX, Duration::ZERO).unwrap_err();
+        assert_eq!(err.code, "invalid_cooldown");
+    }
+
+    #[test]
+    fn max_parallel_is_bounded() {
+        let mut cfg = EngineConfig::new("en7");
+        for (n, ok) in [
+            (0, false),
+            (1, true),
+            (MAX_PARALLEL, true),
+            (MAX_PARALLEL + 1, false),
+        ] {
+            cfg.max_parallel = n;
+            assert_eq!(cfg.validate().is_ok(), ok, "{n}");
+        }
+        let err = check_max_parallel(0).unwrap_err();
+        assert_eq!(err.code, "invalid_max_parallel");
+        assert_eq!(
+            (err.param("min"), err.param("max"), err.param("value")),
+            (Some("1"), Some("64"), Some("0"))
+        );
     }
 
     #[test]
@@ -543,7 +697,7 @@ mod tests {
     #[test]
     fn defaults() {
         let cfg = EngineConfig::new("en7");
-        assert_eq!(cfg.max_parallel, 4);
+        assert_eq!(cfg.max_parallel, 1, "one at a time unless chosen");
         assert_eq!(cfg.cooldown, Duration::from_secs(300));
         assert!(!cfg.auto_repeat);
         assert_eq!(cfg.ports.bootp_reply_to.to_string(), "255.255.255.255:68");

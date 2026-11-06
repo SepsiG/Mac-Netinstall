@@ -59,6 +59,8 @@ pub struct Reply {
     /// Address leased to the client. For [`ReplyKind::Nak`] this is the
     /// address we hold for it, which the NAK itself does not carry.
     pub assigned_ip: Ipv4Addr,
+    /// The boot file named in the reply (the one configured for `arch`).
+    pub file: String,
 }
 
 /// Why a well-formed request got no reply.
@@ -292,6 +294,7 @@ impl BootpResponder {
             client_mac: mac,
             arch,
             assigned_ip: ip,
+            file: file.clone(),
         }))
     }
 }

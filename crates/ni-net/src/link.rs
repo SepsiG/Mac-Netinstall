@@ -10,7 +10,9 @@
 //! is not the address in use.
 //!
 //! [`known_mac`] turns placeholders into "unknown"; [`hardware_addresses`]
-//! reads IOKit.
+//! reads IOKit. [`controller_classes`] (also IOKit) gives the classes of
+//! each interface's controller and its providers, to tell real Ethernet
+//! NICs from look-alikes.
 
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::data::CFData;
@@ -51,6 +53,12 @@ extern "C" {
         existing: *mut IoObject,
     ) -> KernReturn;
     fn IOIteratorNext(iterator: IoObject) -> IoObject;
+    fn IORegistryEntryGetParentEntry(
+        entry: IoObject,
+        plane: *const c_char,
+        parent: *mut IoObject,
+    ) -> KernReturn;
+    fn IOObjectGetClass(object: IoObject, class_name: *mut c_char) -> KernReturn;
     fn IOObjectRelease(object: IoObject) -> KernReturn;
     fn IORegistryEntryCreateCFProperty(
         entry: IoObject,
@@ -87,8 +95,67 @@ fn owned_cf(r: CFTypeRef) -> Option<CFType> {
 /// Wi-Fi, USB/Thunderbolt adapters), from its controller's `IOMACAddress`.
 /// Empty if IOKit cannot be queried. Placeholders are left out.
 pub fn hardware_addresses() -> HashMap<String, Mac> {
+    ethernet_interfaces()
+        .into_iter()
+        .filter_map(|(name, i)| Some((name, i.mac?)))
+        .collect()
+}
+
+/// BSD name -> IOKit class names of the providers of every
+/// `IOEthernetInterface`, nearest first (the controller, then its
+/// providers; up to [`PROVIDER_DEPTH`]). They tell a real Ethernet NIC
+/// (whatever the bus: PCIe, USB, Thunderbolt) from a Thunderbolt IP port
+/// (`AppleThunderboltIPPort`), Wi-Fi (`IOUserNetworkWLAN`, ...) or the
+/// Mac's own USB-C ports in device mode (`IOUSBDeviceInterface`). Empty if
+/// IOKit cannot be queried.
+pub fn controller_classes() -> HashMap<String, Vec<String>> {
+    ethernet_interfaces()
+        .into_iter()
+        .map(|(name, i)| (name, i.providers))
+        .collect()
+}
+
+/// What IOKit says about one `IOEthernetInterface`.
+struct IoInterface {
+    mac: Option<Mac>,
+    providers: Vec<String>,
+}
+
+const PLANE: &CStr = c"IOService";
+/// How many providers [`controller_classes`] lists per interface.
+pub const PROVIDER_DEPTH: usize = 5;
+
+/// The class names of `entry`'s providers in the service plane, nearest
+/// first.
+fn provider_classes(entry: &Object) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current: IoObject = entry.0;
+    let mut owned: Option<Object> = None;
+    for _ in 0..PROVIDER_DEPTH {
+        let mut parent: IoObject = 0;
+        // SAFETY: valid entry and plane name; on success `parent` is +1.
+        let kr = unsafe { IORegistryEntryGetParentEntry(current, PLANE.as_ptr(), &mut parent) };
+        if kr != 0 || parent == 0 {
+            break;
+        }
+        let parent = Object(parent);
+        let mut name = [0 as c_char; 128];
+        // SAFETY: valid object; `io_name_t` is 128 bytes.
+        if unsafe { IOObjectGetClass(parent.0, name.as_mut_ptr()) } == 0 {
+            // SAFETY: IOKit wrote a NUL-terminated name.
+            let class = unsafe { CStr::from_ptr(name.as_ptr()) };
+            out.push(class.to_string_lossy().into_owned());
+        }
+        current = parent.0;
+        owned = Some(parent); // keeps `current` alive; the previous one is released
+    }
+    drop(owned);
+    out
+}
+
+/// Every `IOEthernetInterface` by BSD name.
+fn ethernet_interfaces() -> HashMap<String, IoInterface> {
     const CLASS: &CStr = c"IOEthernetInterface";
-    const PLANE: &CStr = c"IOService";
     let mut out = HashMap::new();
     let bsd_key = CFString::from_static_string("BSD Name");
     let mac_key = CFString::from_static_string("IOMACAddress");
@@ -132,13 +199,14 @@ pub fn hardware_addresses() -> HashMap<String, Mac> {
                 )),
             )
         };
-        let name = name.and_then(|n| n.downcast_into::<CFString>());
-        let mac = mac.and_then(|m| m.downcast_into::<CFData>());
-        if let (Some(name), Some(mac)) = (name, mac) {
-            if let Some(mac) = mac_from_bytes(mac.bytes()) {
-                out.insert(name.to_string(), mac);
-            }
-        }
+        let Some(name) = name.and_then(|n| n.downcast_into::<CFString>()) else {
+            continue;
+        };
+        let mac = mac
+            .and_then(|m| m.downcast_into::<CFData>())
+            .and_then(|m| mac_from_bytes(m.bytes()));
+        let providers = provider_classes(&entry);
+        out.insert(name.to_string(), IoInterface { mac, providers });
     }
     out
 }
@@ -165,6 +233,13 @@ mod tests {
         assert_eq!(mac_from_bytes(&EN7[..5]), None);
         assert_eq!(mac_from_bytes(&[1, 2, 3, 4, 5, 6, 7, 8]), None);
         assert_eq!(mac_from_bytes(&[]), None);
+    }
+
+    #[test]
+    fn iokit_names_the_controllers() {
+        let all = controller_classes();
+        assert!(!all.is_empty(), "IOKit listed no IOEthernetInterface");
+        assert!(all.values().all(|chain| !chain.is_empty()));
     }
 
     #[test]

@@ -93,15 +93,18 @@ mac-netinstall/
   mipsbe, mmips, smips, tile, ppc, x86. ni-assets picks NPKs matching the device's arch for the
   profile's version.
 - **Multi-device:** one session per MAC, independent state machines. Configurable IP pool (default
-  `192.168.88.0/24`, excluding host IP). Configurable concurrency limit (default 4) since TFTP and
+  `192.168.88.0/24`, excluding host IP). Configurable concurrency limit (default 1: one device at a time unless chosen in Settings or with `--max-parallel`) since TFTP and
   uploads share bandwidth.
 - **Auto-repeat:** each newly discovered MAC gets the active profile automatically. Finished MACs are
   ignored for a configurable cooldown (default 5 min) to avoid re-flashing after reboot.
 
 ### Preflight checks (app validates before Start)
 
-- Selected interface is up and has a static IPv4 in the pool's subnet. If not, the app shows
-  instructions (the app does not change network config; no admin rights needed).
+- Selected interface is a real wired Ethernet NIC (built-in, USB, Thunderbolt or dock adapter;
+  never Wi-Fi, Thunderbolt IP ports, bridges or virtual interfaces) with a **manual IPv4
+  configured in macOS** (read from its network service, so it is known without a cable); the
+  server address is that one. If not, the app shows exact steps (the app does not change network
+  config; no admin rights needed). Without a link, Start is still allowed; serving waits for it.
 - macOS Local Network permission (`NSLocalNetworkUsageDescription` in Info.plist).
 - No other process bound to the BOOTP/TFTP/Netinstall ports (e.g. Internet Sharing's `bootpd`);
   detected and reported.
@@ -130,7 +133,10 @@ Views:
 
 - **Main:** interface picker, profile picker, device table (per-row Flash / Retry), log panel.
 - **Profile editor:** version, package checkboxes, config mode, `.rsc` file picker.
-- **Settings:** language, IP pool, concurrency limit, cache location + clear cache, auto-repeat cooldown.
+- **Settings:** language, concurrency limit (default 1), auto-repeat cooldown; "Downloaded RouterOS
+  files" (size, location, per-version list with integrity state, per-file / per-version / damaged
+  / all deletion, each confirmed; a version in use by the engine cannot be deleted); "Advanced":
+  DHCP pool override, download timeout.
 
 ### i18n
 
@@ -166,8 +172,12 @@ Views:
 ## 8. Build & Distribution
 
 - Target `aarch64-apple-darwin` only, minimum macOS 13.
-- `cargo tauri build` → `.app` + `.dmg`. Code signing / notarization optional (requires Apple
-  Developer ID); unsigned builds open via right-click → Open.
+- `cargo tauri build` → `.app` + `.dmg`, ad-hoc signed with the bundle identifier. Code signing /
+  notarization optional (requires Apple Developer ID). Unsigned / ad-hoc builds on macOS 15+ open
+  via System Settings → Privacy & Security → **Open Anyway** after the first blocked launch
+  (Control-click → Open no longer bypasses Gatekeeper there); on macOS 13–14 Control-click → Open
+  also works. `NSLocalNetworkUsageDescription` is localized (`en.lproj`, `hu.lproj`
+  `InfoPlist.strings`).
 - GitHub Actions on `macos-14` (arm64) runner: `cargo fmt --check`, `clippy -D warnings`, tests,
   frontend tests, build artifact.
 - `LICENSE` (GPL-3.0) and `NOTICE` crediting pyNetinstall and merlinthemagic's reverse-engineering

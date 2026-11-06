@@ -1,5 +1,5 @@
-//! `start`: bind the three listeners, spawn the runners and the kernel
-//! download.
+//! `start`: bind the three listeners and spawn the runners (the engine
+//! loop starts the kernel download).
 //!
 //! # Starting without link
 //!
@@ -22,11 +22,9 @@
 
 use super::core::{Internal, Io, Link, Running};
 use crate::config::{link_status, resolve_network, EngineConfig, LinkStatus};
-use crate::event::{Failure, StartInfo};
+use crate::event::{Failure, KernelState, StartInfo};
 use crate::gate::Gate;
-use crate::preflight::bind_failure;
-use crate::prepare::kernels;
-use ni_assets::{Assets, Channel, VersionSpec};
+use crate::preflight::{bind_failure, not_ethernet};
 use ni_bootp::{serve_shared, BootpConfig, BootpHandle, BootpResponder};
 use ni_net::{bind_udp, BindOptions};
 use ni_tftp::{serve_watched, FileMap, TftpConfig};
@@ -69,7 +67,6 @@ fn spawn_runner(
 
 pub(crate) fn start(
     cfg: EngineConfig,
-    assets: Arc<Assets>,
     internal: mpsc::Sender<Internal>,
     epoch: u64,
 ) -> Result<(Running, Io), Failure> {
@@ -78,6 +75,15 @@ pub(crate) fn start(
         .interfaces
         .list()
         .map_err(|e| Failure::new("interface_list_failed").with("detail", e))?;
+    // Defense in depth: the UI lists only capable interfaces.
+    if let Some(f) = ifaces
+        .iter()
+        .find(|i| i.name == cfg.interface)
+        .and_then(not_ethernet)
+        .filter(|_| !cfg.allow_non_ethernet)
+    {
+        return Err(f);
+    }
     let net = resolve_network(&ifaces, &cfg)?;
     let link = match link_status(&ifaces, &cfg.interface, net.server_ip) {
         LinkStatus::Up => Link::Up,
@@ -107,10 +113,12 @@ pub(crate) fn start(
     let bootp_sock = bind("bootp", cfg.ports.bootp, true)?;
     let tftp_sock = bind("tftp", cfg.ports.tftp, false)?;
     let socket = bind("netinstall", cfg.ports.netinstall, true)?;
-    let public = |s: &UdpSocket| -> Result<SocketAddr, Failure> {
-        let a = s
-            .local_addr()
-            .map_err(|e| Failure::new("bind_failed").with("detail", e))?;
+    let public = |service: &str, s: &UdpSocket| -> Result<SocketAddr, Failure> {
+        let a = s.local_addr().map_err(|e| {
+            Failure::new("bind_failed")
+                .with("service", service)
+                .with("detail", e)
+        })?;
         Ok(if a.ip().is_unspecified() {
             SocketAddr::from((net.server_ip, a.port()))
         } else {
@@ -120,9 +128,9 @@ pub(crate) fn start(
     let info = StartInfo {
         interface: cfg.interface.clone(),
         server_ip: net.server_ip,
-        bootp: public(&bootp_sock)?,
-        tftp: public(&tftp_sock)?,
-        netinstall: public(&socket)?,
+        bootp: public("bootp", &bootp_sock)?,
+        tftp: public("tftp", &tftp_sock)?,
+        netinstall: public("netinstall", &socket)?,
     };
 
     let gate = Gate::default();
@@ -137,7 +145,7 @@ pub(crate) fn start(
         server_ip: net.server_ip,
         interface: Some(cfg.interface.clone()),
     };
-    let mut tasks = vec![
+    let tasks = vec![
         spawn_runner(
             "bootp",
             serve_shared(
@@ -156,18 +164,7 @@ pub(crate) fn start(
             epoch,
         ),
     ];
-    let spec = cfg
-        .profile
-        .as_ref()
-        .map(|p| p.version.clone())
-        .unwrap_or(VersionSpec::Channel(Channel::Stable));
-    let kernel_assets = assets.clone();
-    let kernel_tx = internal.clone();
-    tasks.push(tokio::spawn(async move {
-        let result = kernels(&kernel_assets, &spec).await;
-        let _ = kernel_tx.send(Internal::Kernels { epoch, result }).await;
-    }));
-    let next_link_check = cfg.link_check.map(|d| Instant::now() + d);
+    let next_link_check = cfg.link_check.and_then(|d| Instant::now().checked_add(d));
     let running = Running {
         cfg,
         net,
@@ -178,6 +175,10 @@ pub(crate) fn start(
         gate,
         devices: BTreeMap::new(),
         kernel_version: None,
+        kernel_spec: None,
+        kernel_gen: 0,
+        kernel_resolved: None,
+        kernels: KernelState::Idle,
         queue_seq: 0,
         ignored: HashMap::new(),
         next_link_check,

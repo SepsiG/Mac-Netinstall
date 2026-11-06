@@ -1,0 +1,112 @@
+// The only module that talks to Tauri. Components get a `Backend` (from
+// context), so tests can pass a mock instead.
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  CacheView,
+  DeleteScope,
+  EngineEvent,
+  Failure,
+  InterfaceView,
+  PackagesView,
+  PreflightReport,
+  Profile,
+  ProfilesView,
+  ScriptView,
+  Settings,
+  Snapshot,
+  StartInfo,
+  StartRequest,
+} from "./types";
+
+export type Unlisten = () => void;
+
+export interface Backend {
+  listInterfaces(): Promise<InterfaceView[]>;
+  /** Full preflight: interface, ports, the profile's downloads. */
+  preflight(req: StartRequest): Promise<PreflightReport>;
+  /** Quick local check (interface, link, address): no ports, no network. */
+  checkInterface(req: StartRequest): Promise<PreflightReport>;
+  start(req: StartRequest): Promise<StartInfo>;
+  stop(): Promise<void>;
+  flash(mac: string, profile: string): Promise<void>;
+  retry(mac: string): Promise<void>;
+  cancel(mac: string): Promise<void>;
+  forget(mac: string): Promise<void>;
+  setAutoRepeat(on: boolean): Promise<void>;
+  setActiveProfile(name: string | null): Promise<void>;
+  setOnlyMac(mac: string | null): Promise<void>;
+  setMaxParallel(n: number): Promise<void>;
+  setCooldown(secs: number): Promise<void>;
+  snapshot(): Promise<Snapshot>;
+  listProfiles(): Promise<ProfilesView>;
+  saveProfile(profile: Profile, previous: string | null): Promise<void>;
+  deleteProfile(name: string): Promise<void>;
+  availablePackages(version: string, arch: string): Promise<PackagesView>;
+  /** Opens a file dialog (in Rust); `null` if cancelled. */
+  pickScript(): Promise<ScriptView | null>;
+  getSettings(): Promise<Settings>;
+  setSettings(settings: Settings): Promise<Settings>;
+  /** `verify`: check every file's SHA-256 (slow); else a quick listing. */
+  cacheInventory(verify: boolean): Promise<CacheView>;
+  /** Bytes freed. */
+  deleteCached(scope: DeleteScope): Promise<number>;
+  /** Opens a save dialog (in Rust); `false` if cancelled. */
+  exportLog(text: string): Promise<boolean>;
+  preferredLanguages(): Promise<string[]>;
+  quit(): Promise<void>;
+  onEvent(cb: (e: EngineEvent) => void): Promise<Unlisten>;
+  /** Events were missed (or the engine restarted): reload the snapshot. */
+  onLagged(cb: () => void): Promise<Unlisten>;
+  /** Quitting while devices are busy: payload is how many. */
+  onCloseRequested(cb: (busy: number) => void): Promise<Unlisten>;
+}
+
+/** Errors from commands are `Failure`s; anything else becomes `internal`. */
+export function toFailure(e: unknown): Failure {
+  if (typeof e === "object" && e !== null && typeof (e as Failure).code === "string") {
+    return e as Failure;
+  }
+  return { code: "internal", params: { detail: String(e) } };
+}
+
+async function on<T>(name: string, cb: (payload: T) => void): Promise<Unlisten> {
+  const un: UnlistenFn = await listen<T>(name, (e) => cb(e.payload));
+  return un;
+}
+
+/** The real backend: Tauri commands and events. */
+export function tauriBackend(): Backend {
+  return {
+    listInterfaces: () => invoke("list_interfaces"),
+    preflight: (req) => invoke("preflight", { req }),
+    checkInterface: (req) => invoke("check_interface", { req }),
+    start: (req) => invoke("start", { req }),
+    stop: () => invoke("stop"),
+    flash: (mac, profile) => invoke("flash", { mac, profile }),
+    retry: (mac) => invoke("retry", { mac }),
+    cancel: (mac) => invoke("cancel", { mac }),
+    forget: (mac) => invoke("forget", { mac }),
+    setAutoRepeat: (on) => invoke("set_auto_repeat", { on }),
+    setActiveProfile: (name) => invoke("set_active_profile", { name }),
+    setOnlyMac: (mac) => invoke("set_only_mac", { mac }),
+    setMaxParallel: (n) => invoke("set_max_parallel", { n }),
+    setCooldown: (secs) => invoke("set_cooldown", { secs }),
+    snapshot: () => invoke("snapshot"),
+    listProfiles: () => invoke("list_profiles"),
+    saveProfile: (profile, previous) => invoke("save_profile", { profile, previous }),
+    deleteProfile: (name) => invoke("delete_profile", { name }),
+    availablePackages: (version, arch) => invoke("available_packages", { version, arch }),
+    pickScript: () => invoke("pick_script"),
+    getSettings: () => invoke("get_settings"),
+    setSettings: (settings) => invoke("set_settings", { settings }),
+    cacheInventory: (verify) => invoke("cache_inventory", { verify }),
+    deleteCached: (scope) => invoke("delete_cached", { scope }),
+    exportLog: (text) => invoke("export_log", { text }),
+    preferredLanguages: () => invoke("preferred_languages"),
+    quit: () => invoke("quit"),
+    onEvent: (cb) => on<EngineEvent>("engine-event", cb),
+    onLagged: (cb) => on<number>("engine-lagged", () => cb()),
+    onCloseRequested: (cb) => on<number>("close-requested", cb),
+  };
+}
