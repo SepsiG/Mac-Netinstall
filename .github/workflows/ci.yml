@@ -28,14 +28,14 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # rust-toolchain.toml pins the channel, components and target; this
       # installs them before the cache key is computed.
       - name: Rust toolchain
         run: rustup toolchain install --no-self-update && rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo fmt
         run: cargo fmt --all --check
       - name: cargo clippy
@@ -52,18 +52,21 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Rust 1.88 and 1.90
         run: |
-          rustup toolchain install --no-self-update 1.88 --profile minimal --target aarch64-apple-darwin
-          rustup toolchain install --no-self-update 1.90 --profile minimal --target aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+          rustup toolchain install --no-self-update 1.88 --profile minimal
+          rustup toolchain install --no-self-update 1.90 --profile minimal
+          rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: msrv
       # The workspace's rust-version is 1.88; the app crate (Tauri 2.12)
-      # declares 1.90.
+      # declares 1.90. `cargo check` covers the libraries and binaries
+      # only (not tests, examples or benches, whose dev-dependencies may
+      # need a newer Rust).
       - name: cargo +1.88 check (workspace without the app)
         run: cargo +1.88 check --workspace --exclude mac-netinstall --locked
       - name: cargo +1.90 check (app)
@@ -77,10 +80,10 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -98,15 +101,15 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Rust toolchain
         run: rustup toolchain install --no-self-update && rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -119,9 +122,10 @@ jobs:
         run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
         env:
           CI: "true"
-      - name: Check the bundle
+      - name: Check the bundle; DMG name without spaces
         working-directory: target/aarch64-apple-darwin/release/bundle
         run: |
+          version=$(node -p "require('$GITHUB_WORKSPACE/app/package.json').version")
           app="macos/Mac Netinstall.app"
           ls -l "$app/Contents/Resources/Mac Netinstall.icns"
           codesign -dv "$app" 2>&1 | grep -F "Identifier=io.github.sepsig.mac-netinstall"
@@ -129,10 +133,12 @@ jobs:
             echo "LSUIElement must not be set" >&2
             exit 1
           fi
-          ls -l dmg/*.dmg
-      - uses: actions/upload-artifact@v7
+          mkdir -p "$RUNNER_TEMP/dist"
+          cp "dmg/Mac Netinstall_${version}_aarch64.dmg" "$RUNNER_TEMP/dist/Mac-Netinstall_${version}_aarch64.dmg"
+          ls -l "$RUNNER_TEMP/dist"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mac-netinstall-dmg
-          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          path: ${{ runner.temp }}/dist/*.dmg
           if-no-files-found: error
           retention-days: 14

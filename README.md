@@ -12,10 +12,14 @@ Status: early development, not yet validated on real hardware (see
 
 Requires an Apple Silicon Mac with macOS 13 or later.
 
-1. Download `Mac Netinstall_<version>_aarch64.dmg` from the
-   [Releases](https://github.com/SepsiG/Mac-Netinstall/releases) page (the
-   `.sha256` file next to it holds its checksum: `shasum -a 256 -c
-   "Mac Netinstall_<version>_aarch64.dmg.sha256"` in the download folder).
+1. Download `Mac-Netinstall_<version>_aarch64.dmg` and
+   `Mac-Netinstall_<version>_aarch64.dmg.sha256` from the
+   [Releases](https://github.com/SepsiG/Mac-Netinstall/releases) page.
+   Optionally check the download, in the folder that holds both:
+
+       shasum -a 256 -c Mac-Netinstall_0.1.0_aarch64.dmg.sha256
+
+   It prints `Mac-Netinstall_0.1.0_aarch64.dmg: OK`.
 2. Open the `.dmg` and drag **Mac Netinstall** onto **Applications**.
 3. First launch: the app is ad-hoc signed, not notarized. On macOS 15 and
    later the first launch is blocked: open **System Settings → Privacy &
@@ -89,7 +93,9 @@ the bundler builds the `.icns` from them).
     CI=true npx tauri build --target aarch64-apple-darwin --bundles app,dmg
 
 writes `target/aarch64-apple-darwin/release/bundle/macos/Mac Netinstall.app`
-and `…/bundle/dmg/Mac Netinstall_<version>_aarch64.dmg`. `CI=true` skips the
+and `…/bundle/dmg/Mac Netinstall_<version>_aarch64.dmg` (CI and the release
+workflow publish it as `Mac-Netinstall_<version>_aarch64.dmg`, without
+spaces). `CI=true` skips the
 bundler's Finder AppleScript (it needs Automation permission for Finder),
 so the DMG has the app and the Applications link in Finder's default
 layout; without it, the window layout from `tauri.conf.json`
@@ -108,9 +114,11 @@ test fails if they differ, or if `CHANGELOG.md` has no section for it.
    `## [x.y.z] - YYYY-MM-DD` section and update the links at the bottom.
 3. Commit, merge to `main`, then tag and push the tag:
    `git tag -a vx.y.z -m "Mac Netinstall x.y.z" && git push origin vx.y.z`.
-4. The Release workflow checks that the tag matches the versions, builds the
-   `.dmg`, and creates a **draft** GitHub Release with the `.dmg`, its
-   `.sha256` and the changelog section as notes. Review it and publish.
+4. The Release workflow checks that the tag matches the versions, runs the
+   tests, builds `Mac-Netinstall_<version>_aarch64.dmg`, and creates a
+   **draft** GitHub Release with the `.dmg`, its `.sha256` and the changelog
+   section as notes (a version with `-`, e.g. `0.2.0-rc.1`, is marked as a
+   pre-release). Review it and publish.
 
 Signing is ad-hoc; `.github/workflows/release.yml` has commented-out hooks
 for Developer ID signing and notarization secrets.
