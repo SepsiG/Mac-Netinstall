@@ -28,6 +28,7 @@
     "allow-delete-profile",
     "allow-available-packages",
     "allow-pick-script",
+    "allow-pick-license-key",
     "allow-get-settings",
     "allow-set-settings",
     "allow-cache-inventory",

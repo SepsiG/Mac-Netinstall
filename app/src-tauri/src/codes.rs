@@ -10,6 +10,7 @@ pub const APP_FAILURES: &[&str] = &[
     "dialog_failed",
     "invalid_mac",
     "invalid_setting",
+    "key_file_failed",
     "log_io",
     "no_home",
     "not_a_script",

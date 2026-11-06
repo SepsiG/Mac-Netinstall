@@ -332,6 +332,7 @@
   "code.dialog_failed": "Nem sikerült megnyitni a fájlválasztót.",
   "code.invalid_mac": "„{mac}” nem MAC-cím.",
   "code.invalid_setting": "Érvénytelen beállítás: {field}.",
+  "code.key_file_failed": "A kulcsfájl nem használható ({reason, select, too_large {túl nagy} other {nem olvasható}}).",
   "code.log_io": "Nem sikerült menteni a naplót.",
   "code.no_home": "Nem található a felhasználói mappád.",
   "code.not_a_script": "{name}: nem .rsc szkript.",

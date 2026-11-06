@@ -5,22 +5,25 @@
 
 use crate::settings::{Settings, SettingsStore};
 use crate::views::{
-    without_paths, BrokenProfile, CacheView, InterfaceView, PackagesView, ProfilesView, ScriptView,
-    StartRequest,
+    without_paths, BrokenProfile, CacheView, InterfaceView, LicenseKeyView, PackagesView,
+    ProfilesView, ScriptView, StartRequest,
 };
 use ni_assets::{
     default_cache_root, item_version, AssetError, DeleteScope, HttpConfig, LocalKind, PkgArch,
     Version, VersionSpec,
 };
 use ni_engine::{
-    default_profiles_root, preflight, EngineConfig, EngineHandle, Failure, PreflightReport,
-    Profile, ProfileStore, Snapshot, StartInfo,
+    default_profiles_root, license_key_from_file, preflight, EngineConfig, EngineHandle, Failure,
+    PreflightReport, Profile, ProfileStore, Snapshot, StartInfo,
 };
 use ni_proto::Mac;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::sync::watch;
+
+/// Largest key file read (MikroTik key files are a few hundred bytes).
+pub const MAX_KEY_FILE: u64 = 64 * 1024;
 
 /// Where the app keeps its files.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,6 +457,23 @@ impl AppCore {
             name: file.name,
             size: file.size,
         })
+    }
+
+    /// The license key in the key file at `path` (the official tool's
+    /// `-k`). Errors: `key_file_failed` (`reason`: `unreadable`, or
+    /// `too_large` past [`MAX_KEY_FILE`] bytes), `invalid_license_key`
+    /// (`max`).
+    pub fn read_license_key(&self, path: &Path) -> Result<LicenseKeyView, Failure> {
+        let failed = |reason: &str| Failure::new("key_file_failed").with("reason", reason);
+        let len = std::fs::metadata(path)
+            .map_err(|_| failed("unreadable"))?
+            .len();
+        if len > MAX_KEY_FILE {
+            return Err(failed("too_large"));
+        }
+        let data = std::fs::read(path).map_err(|_| failed("unreadable"))?;
+        let key = license_key_from_file(&data)?;
+        Ok(LicenseKeyView { key })
     }
 
     // ------------------------------------------------------------ cache, log

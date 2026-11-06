@@ -261,6 +261,7 @@ pub fn run() {
             commands::delete_profile,
             commands::available_packages,
             commands::pick_script,
+            commands::pick_license_key,
             commands::get_settings,
             commands::set_settings,
             commands::cache_inventory,

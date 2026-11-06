@@ -7,7 +7,7 @@
 use crate::core::{self, AppCore};
 use crate::settings::Settings;
 use crate::views::{
-    CacheView, InterfaceView, PackagesView, ProfilesView, ScriptView, StartRequest,
+    CacheView, InterfaceView, LicenseKeyView, PackagesView, ProfilesView, ScriptView, StartRequest,
 };
 use ni_assets::DeleteScope;
 use ni_engine::{Failure, PreflightReport, Profile, Snapshot, StartInfo};
@@ -133,6 +133,27 @@ pub async fn pick_script(app: AppHandle, core: State<'_, AppCore>) -> R<Option<S
         .into_path()
         .map_err(|e| Failure::new("dialog_failed").with("detail", e))?;
     core.register_script(&path).await.map(Some)
+}
+
+/// Let the user pick a MikroTik key file and read the license key from it
+/// (`None`: cancelled). The path stays here; the key goes to the window,
+/// which puts it in the profile.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn pick_license_key(
+    app: AppHandle,
+    core: State<'_, AppCore>,
+) -> R<Option<LicenseKeyView>> {
+    let (tx, rx) = oneshot::channel();
+    app.dialog().file().pick_file(move |file| {
+        let _ = tx.send(file);
+    });
+    let Some(file) = rx.await.map_err(|_| Failure::new("dialog_failed"))? else {
+        return Ok(None);
+    };
+    let path = file
+        .into_path()
+        .map_err(|e| Failure::new("dialog_failed").with("detail", e))?;
+    core.read_license_key(&path).map(Some)
 }
 
 #[tauri::command(rename_all = "snake_case")]

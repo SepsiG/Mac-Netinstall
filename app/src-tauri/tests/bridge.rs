@@ -439,6 +439,26 @@ async fn packages_scripts_cache_and_log() {
         "not_a_script"
     );
 
+    let key = rig.dir.join("device.key");
+    std::fs::write(
+        &key,
+        b"-----BEGIN KEY-----\r\nAAAA\nBBBB==\n-----END KEY-----\n",
+    )
+    .unwrap();
+    let view = rig.core.read_license_key(&key).unwrap();
+    assert_eq!(view.key, "-----BEGIN KEY-----AAAABBBB==-----END KEY-----");
+    let code = |p: &std::path::Path| rig.core.read_license_key(p).unwrap_err();
+    let err = code(&rig.dir.join("missing.key"));
+    assert_eq!(
+        (err.code.as_str(), err.param("reason")),
+        ("key_file_failed", Some("unreadable"))
+    );
+    assert!(err.param("path").is_none(), "no path for the window");
+    std::fs::write(&key, vec![b'k'; 64 * 1024 + 1]).unwrap();
+    assert_eq!(code(&key).param("reason"), Some("too_large"));
+    std::fs::write(&key, b"\n\n").unwrap();
+    assert_eq!(code(&key).code, "invalid_license_key");
+
     let view = rig.core.cache_inventory(true).await.unwrap();
     assert!(view.inventory.total > 0, "packages were cached");
     assert!(view

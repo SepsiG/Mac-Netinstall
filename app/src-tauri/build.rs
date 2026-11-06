@@ -25,6 +25,7 @@ const COMMANDS: &[&str] = &[
     "delete_profile",
     "available_packages",
     "pick_script",
+    "pick_license_key",
     "get_settings",
     "set_settings",
     "cache_inventory",

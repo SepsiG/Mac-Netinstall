@@ -332,6 +332,7 @@
   "code.dialog_failed": "The file dialog could not be opened.",
   "code.invalid_mac": "“{mac}” is not a MAC address.",
   "code.invalid_setting": "Invalid setting: {field}.",
+  "code.key_file_failed": "The key file could not be used ({reason, select, too_large {it is too large} other {it cannot be read}}).",
   "code.log_io": "Could not write the log file.",
   "code.no_home": "Your home folder could not be found.",
   "code.not_a_script": "{name} is not a .rsc script.",
