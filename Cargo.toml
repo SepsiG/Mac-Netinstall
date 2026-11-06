@@ -7,6 +7,7 @@ members = [
     "crates/ni-bootp",
     "crates/ni-tftp",
     "crates/ni-assets",
+    "crates/ni-engine",
 ]
 
 [workspace.package]
@@ -29,7 +30,11 @@ tar = "0.4.46"
 sha2 = "0.11.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tracing = "0.1.44"
 ni-proto = { path = "crates/ni-proto" }
 ni-net = { path = "crates/ni-net" }
 ni-bootp = { path = "crates/ni-bootp" }
 ni-tftp = { path = "crates/ni-tftp" }
+ni-sim = { path = "crates/ni-sim" }
+ni-assets = { path = "crates/ni-assets" }
+ni-engine = { path = "crates/ni-engine" }
