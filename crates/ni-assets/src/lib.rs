@@ -5,7 +5,9 @@
 
 pub mod arch;
 pub mod archive;
+pub mod error;
 pub mod events;
+pub mod http;
 pub mod kernel;
 pub mod npk;
 pub mod urls;
@@ -16,7 +18,9 @@ mod testutil;
 
 pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;
+pub use error::AssetError;
 pub use events::{AssetEvent, EventSink, PROGRESS_STEP};
+pub use http::{HttpConfig, USER_AGENT};
 pub use kernel::{extract_kernels, KernelError, KernelSet};
 pub use npk::NpkError;
 pub use version::{Channel, Release, Version, VersionError, VersionSpec};
