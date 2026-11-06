@@ -26,6 +26,7 @@ use crate::npk::{parse_sha256_file, sha256_hex};
 use crate::urls;
 use crate::version::{parse_newest, Channel, Release, Version, VersionSpec};
 use ni_bootp::BootArch;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -34,6 +35,13 @@ mod local;
 mod packages;
 
 pub use local::{LocalFile, LocalKind, MAX_LOCAL_NAME, MAX_SCRIPT_SIZE};
+
+/// `<root>/channels.json`: the last successful resolution of each channel
+/// (`{"stable": "7.25.1"}`), so an offline run can stay on the version
+/// the channel meant when it was last online ([`Assets::remembered`]).
+pub const CHANNELS_FILE: &str = "channels.json";
+/// Larger channel files are ignored.
+const MAX_CHANNELS_SIZE: u64 = 64 << 10;
 
 /// Cache directory name under `~/Library/Caches`.
 pub const BUNDLE_ID: &str = "io.github.sepsig.mac-netinstall";
@@ -249,11 +257,29 @@ impl Assets {
     }
 
     /// The version a profile asks for; exact versions need no network.
+    /// A channel's answer is remembered in [`CHANNELS_FILE`]
+    /// (best-effort: failing to write it does not fail the resolution).
     pub async fn resolve(&self, spec: &VersionSpec) -> Result<Version, AssetError> {
         match spec {
             VersionSpec::Exact(v) => Ok(v.clone()),
-            VersionSpec::Channel(c) => Ok(self.latest(*c).await?.version),
+            VersionSpec::Channel(c) => {
+                let version = self.latest(*c).await?.version;
+                let (root, channel, v) = (self.root.clone(), *c, version.clone());
+                let _ = blocking(move || remember_channel(&root, channel, &v)).await;
+                Ok(version)
+            }
         }
+    }
+
+    /// The version `channel` last resolved to (by any `Assets` on this
+    /// cache root), if known. Needs no network.
+    pub async fn remembered(&self, channel: Channel) -> Option<Version> {
+        let root = self.root.clone();
+        blocking(move || read_channels(&root).remove(channel.as_str()))
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| Version::parse(&v).ok())
     }
 
     /// The published SHA-256 of `file` at `url`. From 7.15 on a checksum
@@ -373,6 +399,28 @@ impl Assets {
     }
 }
 
+/// The channel file, or an empty map if it is missing or damaged.
+fn read_channels(root: &Path) -> BTreeMap<String, String> {
+    crate::cache::read_capped(&root.join(CHANNELS_FILE), MAX_CHANNELS_SIZE)
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Record `channel` → `version`: read-merge-write under the file's lock,
+/// written atomically (part file + rename).
+fn remember_channel(root: &Path, channel: Channel, version: &Version) -> Result<(), AssetError> {
+    let dir = CacheDir::new(root.to_path_buf());
+    dir.create()?;
+    let _lock = lock::lock_file_blocking(&root.join(LOCK_DIR).join("channels.json.lock"))?;
+    let mut map = read_channels(root);
+    if map.get(channel.as_str()).map(String::as_str) == Some(version.as_str()) {
+        return Ok(());
+    }
+    map.insert(channel.as_str().to_string(), version.as_str().to_string());
+    let json = serde_json::to_vec_pretty(&map).expect("map serializes");
+    dir.write_atomic(CHANNELS_FILE, &json)
+}
+
 /// All kernels of a version from the cache, or `None` if any is missing or
 /// damaged.
 fn load_kernels(dir: &CacheDir) -> Option<KernelSet> {
@@ -398,6 +446,23 @@ mod tests {
         assert!(root.ends_with("Library/Caches/io.github.sepsig.mac-netinstall"));
     }
 
+    /// The engine runs these in spawned tasks, so they must be `Send`.
+    #[test]
+    fn futures_are_send() {
+        fn send<T: Send>(_: T) {}
+        let root = tempdir("send");
+        let a = Assets::new(&*root, HttpConfig::default()).unwrap();
+        let spec = VersionSpec::Channel(Channel::Stable);
+        send(a.resolve(&spec));
+        send(a.ensure_kernels(&v()));
+        send(a.cached_versions());
+        send(a.available_packages(&v(), crate::PkgArch::Arm64));
+        send(a.ensure_packages(&v(), crate::PkgArch::Arm64, &[]));
+        send(a.register_local_file(Path::new("setup.rsc")));
+        send(a.local_file("setup.rsc"));
+        send(a.clear_downloads());
+    }
+
     #[tokio::test]
     async fn resolves_channels_and_exact_versions() {
         let srv = TestServer::start().await;
@@ -417,6 +482,39 @@ mod tests {
         assert_eq!(err.code(), "bad_response");
         let err = a.latest(Channel::LongTerm).await.unwrap_err();
         assert_eq!(err.code(), "not_found");
+    }
+
+    #[tokio::test]
+    async fn channel_resolutions_are_remembered() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let root = tempdir("remember");
+        let a = assets(&srv, &root);
+        assert_eq!(a.remembered(Channel::Stable).await, None);
+        let stable = VersionSpec::Channel(Channel::Stable);
+        assert_eq!(a.resolve(&stable).await.unwrap(), v());
+        assert_eq!(a.remembered(Channel::Stable).await, Some(v()));
+        assert_eq!(a.remembered(Channel::Testing).await, None);
+        // Exact versions and failed resolutions record nothing.
+        let exact = VersionSpec::Exact(Version::parse("7.24.6").unwrap());
+        a.resolve(&exact).await.unwrap();
+        a.resolve(&VersionSpec::Channel(Channel::Testing))
+            .await
+            .unwrap_err();
+        assert_eq!(a.remembered(Channel::Testing).await, None);
+        // Another instance on the same root (e.g. offline) sees it.
+        let offline = Assets::new(&*root, HttpConfig::default()).unwrap();
+        assert_eq!(offline.remembered(Channel::Stable).await, Some(v()));
+        let text = std::fs::read_to_string(root.join(CHANNELS_FILE)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            serde_json::json!({"stable": V})
+        );
+        // A damaged file is ignored, and replaced by the next resolution.
+        std::fs::write(root.join(CHANNELS_FILE), b"{oops").unwrap();
+        assert_eq!(a.remembered(Channel::Stable).await, None);
+        a.resolve(&stable).await.unwrap();
+        assert_eq!(a.remembered(Channel::Stable).await, Some(v()));
     }
 
     #[tokio::test]

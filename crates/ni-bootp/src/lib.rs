@@ -8,7 +8,9 @@
 //! or `hops` set) are ignored. A DHCPREQUEST for an address we did not
 //! lease to that MAC gets a DHCPNAK; a DHCPDECLINE quarantines the address.
 //!
-//! [`BootpResponder`] is sans-IO; [`serve`] runs it on a tokio socket.
+//! [`BootpResponder`] is sans-IO; [`serve`] runs it on a tokio socket, and
+//! [`serve_shared`] runs it behind a [`BootpHandle`] that the engine uses to
+//! update boot files, apply a [`MacPolicy`] and map leases while it runs.
 
 pub mod arch;
 pub mod packet;
@@ -20,4 +22,4 @@ pub use arch::{BootArch, VendorClass};
 pub use packet::{MessageType, PacketError, ReplyKind, Request, CLIENT_PORT, SERVER_PORT};
 pub use pool::{LeasePool, PoolError};
 pub use responder::{BootpConfig, BootpResponder, ConfigError, IgnoreReason, Outcome, Reply};
-pub use server::{serve, BootpEvent};
+pub use server::{serve, serve_shared, BootpEvent, BootpHandle, MacPolicy};

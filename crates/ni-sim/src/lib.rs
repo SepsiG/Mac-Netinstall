@@ -25,6 +25,8 @@
 //! ([`message::CONFIG_SCRIPT_NAME`]).
 
 pub mod harness;
+#[cfg(feature = "lan")]
+pub mod lan;
 
 use bytes::Bytes;
 use ni_proto::{message, DeviceInfo, Frame, Mac, MAX_CHUNK};
@@ -48,6 +50,9 @@ pub struct SimConfig {
     /// How long formatting takes before the device answers `STRT`. Until
     /// then it only re-sends its previous reply. Default zero.
     pub format_delay: Duration,
+    /// Refuse the install: answer `OFFR` with `NACK` (as a device short of
+    /// space would) and keep saying hello. Default `false`.
+    pub reject_offer: bool,
 }
 
 impl SimConfig {
@@ -67,6 +72,7 @@ impl SimConfig {
             dedup: true,
             double_final_retr: true,
             format_delay: Duration::ZERO,
+            reject_offer: false,
         }
     }
 }
@@ -144,6 +150,10 @@ impl DeviceSim {
 
     pub fn info(&self) -> &DeviceInfo {
         &self.cfg.info
+    }
+
+    pub fn config(&self) -> &SimConfig {
+        &self.cfg
     }
 
     pub fn received_files(&self) -> &[ReceivedFile] {
@@ -264,6 +274,9 @@ impl DeviceSim {
         use message::{RETR, STRT, WTRM, YACK};
         let what = describe(payload);
         match state {
+            State::Discovering if payload == message::OFFR && self.cfg.reject_offer => {
+                Ok((State::Discovering, vec![message::NACK]))
+            }
             State::Discovering if payload == message::OFFR => Ok((State::Offered, vec![YACK])),
             State::Offered if payload.is_empty() => {
                 if self.cfg.format_delay.is_zero() {
@@ -509,6 +522,17 @@ mod tests {
         assert!(sim.is_terminated());
         assert!(sim.violations().is_empty(), "{:?}", sim.violations());
         assert_eq!(sim.received_files().len(), 2);
+    }
+
+    #[test]
+    fn reject_offer_answers_the_offer_with_nack() {
+        let (mut sim, now) = sim_with(|c| c.reject_offer = true);
+        let mut seq = 0;
+        let r = feed(&mut sim, &mut seq, &[message::OFFR], now);
+        assert_eq!(r, [message::NACK.to_vec()]);
+        assert!(sim.violations().is_empty(), "a refusal is not a violation");
+        assert!(!sim.is_terminated());
+        assert!(sim.received_files().is_empty());
     }
 
     #[test]

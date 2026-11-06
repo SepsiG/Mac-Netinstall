@@ -25,14 +25,19 @@ pub mod npk;
 pub mod urls;
 pub mod version;
 
-#[cfg(test)]
-mod testutil;
+/// Test fixtures (synthetic kernels, NPKs, a fake MikroTik mirror over a
+/// local HTTP server, self-cleaning temp dirs). Not a stable API: enabled
+/// for this crate's tests and, through the `testing` feature, for the
+/// engine's end-to-end tests.
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+pub mod testutil;
 
 pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;
 pub use assets::{
-    default_cache_root, kernel_file_name, Assets, LocalFile, LocalKind, BUNDLE_ID, MAX_LOCAL_NAME,
-    MAX_SCRIPT_SIZE, STALE_PART_AGE,
+    default_cache_root, kernel_file_name, Assets, LocalFile, LocalKind, BUNDLE_ID, CHANNELS_FILE,
+    MAX_LOCAL_NAME, MAX_SCRIPT_SIZE, STALE_PART_AGE,
 };
 pub use cache::{Entry, Index};
 pub use error::AssetError;

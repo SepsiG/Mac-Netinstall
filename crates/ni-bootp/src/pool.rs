@@ -82,6 +82,15 @@ impl LeasePool {
         self.leases.get(mac).copied()
     }
 
+    /// The MAC holding the lease for `ip`, if any (TFTP peers are known by
+    /// address only). Linear in the number of leases.
+    pub fn mac_of(&self, ip: Ipv4Addr) -> Option<Mac> {
+        self.leases
+            .iter()
+            .find(|(_, &leased)| leased == ip)
+            .map(|(&mac, _)| mac)
+    }
+
     /// Never hand out `ip` (again) for this pool's lifetime. Addresses
     /// outside the pool are ignored (nothing to protect, and the blocked
     /// set must not grow from arbitrary input).
@@ -120,6 +129,17 @@ mod tests {
         assert_eq!(pool.lease(mac(1)), Some(a));
         assert_eq!(pool.get(&mac(1)), Some(a));
         assert_eq!(pool.lease(mac(2)), Some(ip(11)));
+    }
+
+    #[test]
+    fn mac_of_finds_the_lease_holder() {
+        let mut pool = LeasePool::new(ip(10), ip(20), &[]).unwrap();
+        pool.lease(mac(1));
+        pool.lease(mac(2));
+        assert_eq!(pool.mac_of(ip(11)), Some(mac(2)));
+        assert_eq!(pool.mac_of(ip(12)), None);
+        pool.decline(&mac(2));
+        assert_eq!(pool.mac_of(ip(11)), None);
     }
 
     #[test]

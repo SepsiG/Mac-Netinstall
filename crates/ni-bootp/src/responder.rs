@@ -86,6 +86,10 @@ pub enum IgnoreReason {
     /// attached clients are served: replies go out as link broadcasts on
     /// the boot interface, never back through a relay agent.
     Relayed,
+    /// A RouterBOOT client the MAC policy passed to
+    /// [`BootpResponder::handle_with`] refused (e.g. a device that was just
+    /// flashed, or not the one selected).
+    Denied(BootArch),
 }
 
 /// Result of [`BootpResponder::handle`].
@@ -112,19 +116,25 @@ pub struct BootpResponder {
     pool: LeasePool,
 }
 
+/// Every boot file name must be non-empty and fit the BOOTP `file` field.
+fn check_boot_files(files: &HashMap<BootArch, String>) -> Result<(), ConfigError> {
+    for (&arch, name) in files {
+        if name.is_empty() {
+            return Err(ConfigError::EmptyFileName { arch });
+        }
+        if name.len() > MAX_FILE_LEN {
+            return Err(ConfigError::FileNameTooLong {
+                arch,
+                len: name.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl BootpResponder {
     pub fn new(cfg: BootpConfig) -> Result<Self, ConfigError> {
-        for (&arch, name) in &cfg.boot_files {
-            if name.is_empty() {
-                return Err(ConfigError::EmptyFileName { arch });
-            }
-            if name.len() > MAX_FILE_LEN {
-                return Err(ConfigError::FileNameTooLong {
-                    arch,
-                    len: name.len(),
-                });
-            }
-        }
+        check_boot_files(&cfg.boot_files)?;
         let mask = u32::from(cfg.netmask);
         if mask.leading_ones() + mask.trailing_zeros() != 32 {
             return Err(ConfigError::InvalidNetmask(cfg.netmask));
@@ -167,6 +177,19 @@ impl BootpResponder {
         self.pool.get(mac)
     }
 
+    /// The MAC holding the lease for `ip`, if any.
+    pub fn mac_of(&self, ip: Ipv4Addr) -> Option<Mac> {
+        self.pool.mac_of(ip)
+    }
+
+    /// Replace the boot file map (e.g. once the kernels are downloaded).
+    /// Validated like [`BootpConfig::boot_files`]; on error nothing changes.
+    pub fn set_boot_files(&mut self, files: HashMap<BootArch, String>) -> Result<(), ConfigError> {
+        check_boot_files(&files)?;
+        self.cfg.boot_files = files;
+        Ok(())
+    }
+
     /// DHCPDECLINE (option 54 already checked to be us): drop
     /// `req.chaddr`'s lease and quarantine that address. Option 50 is not
     /// trusted beyond that: only the MAC's own lease is ever quarantined
@@ -186,6 +209,18 @@ impl BootpResponder {
 
     /// Process one datagram received on port 67.
     pub fn handle(&mut self, datagram: &[u8]) -> Result<Outcome, PacketError> {
+        self.handle_with(datagram, &|_| true)
+    }
+
+    /// Like [`Self::handle`], but a RouterBOOT client whose MAC `allow`
+    /// refuses is ignored with [`IgnoreReason::Denied`] before it gets a
+    /// lease. `allow` is consulted only for supported RouterBOOT vendor
+    /// classes, so other DHCP clients on the wire never reach it.
+    pub fn handle_with(
+        &mut self,
+        datagram: &[u8],
+        allow: &dyn Fn(Mac) -> bool,
+    ) -> Result<Outcome, PacketError> {
         let req = Request::parse(datagram)?;
         let mac = req.chaddr;
         let ignore = |reason| Ok(Outcome::Ignored { mac, reason });
@@ -221,6 +256,9 @@ impl BootpResponder {
                 return ignore(IgnoreReason::UnknownVendorClass(class))
             }
         };
+        if !allow(mac) {
+            return ignore(IgnoreReason::Denied(arch));
+        }
         let Some(file) = self.cfg.boot_files.get(&arch) else {
             return ignore(IgnoreReason::NoBootFile(arch));
         };
@@ -733,6 +771,61 @@ mod tests {
             BootpResponder::new(cfg).unwrap_err(),
             ConfigError::InvalidNetmask(Ipv4Addr::new(255, 0, 255, 0))
         );
+    }
+
+    #[test]
+    fn denied_mac_is_ignored_before_leasing() {
+        let mut r = responder();
+        let req = sample_request(MAC, Some(1), Some("ARM64__boot"));
+        let deny = |m: Mac| m != MAC;
+        assert_eq!(
+            ignored(r.handle_with(&req, &deny).unwrap()),
+            IgnoreReason::Denied(BootArch::Arm64)
+        );
+        assert_eq!(r.lease_of(&MAC), None, "no lease for a denied MAC");
+        let rep = reply(r.handle_with(&req, &|_| true).unwrap());
+        assert_eq!(rep.kind, ReplyKind::Offer);
+    }
+
+    #[test]
+    fn policy_is_not_asked_about_other_dhcp_clients() {
+        let mut r = responder();
+        let asked = std::cell::Cell::new(0);
+        let policy = |_: Mac| {
+            asked.set(asked.get() + 1);
+            false
+        };
+        let other = sample_request(MAC, Some(1), Some("android-dhcp-14"));
+        assert!(matches!(
+            ignored(r.handle_with(&other, &policy).unwrap()),
+            IgnoreReason::UnknownVendorClass(_)
+        ));
+        assert_eq!(asked.get(), 0);
+    }
+
+    #[test]
+    fn boot_files_can_be_replaced() {
+        let mut cfg = config();
+        cfg.boot_files.clear();
+        let mut r = BootpResponder::new(cfg).unwrap();
+        let req = sample_request(MAC, Some(1), Some("ARM64__boot"));
+        assert_eq!(
+            ignored(r.handle(&req).unwrap()),
+            IgnoreReason::NoBootFile(BootArch::Arm64)
+        );
+        let files = HashMap::from([(BootArch::Arm64, "kernel-arm64.elf".to_string())]);
+        r.set_boot_files(files.clone()).unwrap();
+        assert_eq!(r.config().boot_files, files);
+        let rep = reply(r.handle(&req).unwrap());
+        assert_eq!(r.mac_of(rep.assigned_ip), Some(MAC));
+        let bad = HashMap::from([(BootArch::Arm, String::new())]);
+        assert_eq!(
+            r.set_boot_files(bad).unwrap_err(),
+            ConfigError::EmptyFileName {
+                arch: BootArch::Arm
+            }
+        );
+        assert_eq!(r.config().boot_files, files, "unchanged after an error");
     }
 
     #[test]

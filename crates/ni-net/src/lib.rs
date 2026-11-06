@@ -1,15 +1,21 @@
 //! macOS networking helpers for mac-netinstall.
 //!
-//! - [`list_interfaces`]: network interfaces with MAC, IPv4 addresses and flags.
+//! - [`list_interfaces`]: network interfaces with MAC, IPv4 addresses, flags
+//!   and [`InterfaceKind`] (Ethernet, Wi-Fi, loopback, bridge, tunnel, ...).
 //! - [`bind_udp`]: UDP sockets bound to one interface with `IP_BOUND_IF`,
 //!   so broadcasts go out (and are received) on the selected Ethernet port only.
+//! - [`default_route_interfaces`]: interfaces with an IPv4 default route.
 //!
 //! No root and no BPF: everything here uses ordinary sockets.
 
 pub mod error;
 pub mod iface;
+pub mod link;
+pub mod route;
 pub mod udp;
 
 pub use error::NetError;
-pub use iface::{interface_index, list_interfaces, Interface};
+pub use iface::{classify, interface_index, list_interfaces, Interface, InterfaceKind};
+pub use link::{hardware_addresses, known_mac, mac_from_bytes, MASKED_MAC};
+pub use route::{default_route_interfaces, parse_default_routes};
 pub use udp::{bind_udp, is_transient_recv_error, BindOptions, RecvErrorAction, RecvErrorGuard};

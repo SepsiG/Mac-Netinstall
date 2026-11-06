@@ -9,3 +9,9 @@ rust-version.workspace = true
 [dependencies]
 bytes.workspace = true
 ni-proto.workspace = true
+ni-tftp = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"], optional = true }
+
+[features]
+# Simulated RouterBOARDs on real UDP sockets (BOOTP, TFTP, Netinstall).
+lan = ["dep:ni-tftp", "dep:tokio"]
