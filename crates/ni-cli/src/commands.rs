@@ -1,12 +1,15 @@
 //! Everything but `flash`: interfaces, preflight, assets, profiles.
 
-use crate::cli::{exit, AssetsCommand, Cli, Command, NetArgs, ProfilesCommand, RecipeArgs};
+use crate::cli::{
+    exit, AfterArg, AssetsCommand, Cli, Command, ConfigArg, NetArgs, ProfilesCommand, RecipeArgs,
+};
 use crate::output::finding;
 use ni_assets::{default_cache_root, AssetEvent, Assets, HttpConfig, PkgArch, VersionSpec};
 use ni_engine::preflight::{self, PreflightReport};
 use ni_engine::profile::spec_to_string;
 use ni_engine::{
-    default_profiles_root, AfterInstall, ConfigMode, EngineConfig, Failure, Profile, ProfileStore,
+    default_profiles_root, license_key_from_file, AfterInstall, ConfigMode, EngineConfig, Failure,
+    Profile, ProfileStore,
 };
 use ni_net::{list_interfaces, Interface};
 use serde_json::json;
@@ -271,8 +274,12 @@ async fn fetch(ctx: &Ctx, spec: &VersionSpec, archs: &[String], extras: &[String
 
 // ------------------------------------------------------------ profiles
 
-/// A profile from command-line arguments. A script is registered in the
-/// cache (as its lowercase file name) first.
+/// A profile from command-line arguments. Scripts are registered in the
+/// cache (as their lowercase file names) first. Errors besides the profile
+/// validation codes: `script_with_config` (`config`: `--script` with
+/// `--config keep` or `empty`, which the official tool refuses too),
+/// `mode_script_with_keep`, `script_failed`, `license_key_failed` (`path`,
+/// `detail`: unreadable key file), `invalid_license_key`.
 pub async fn recipe_profile(
     assets: &Assets,
     name: &str,
@@ -280,10 +287,39 @@ pub async fn recipe_profile(
 ) -> Result<Profile, Failure> {
     let mut p = Profile::new(name, recipe.version.clone());
     p.extra_packages = recipe.packages.clone();
-    if let Some(script) = &recipe.script {
-        let local = register_script(assets, script).await?;
-        p.config = ConfigMode::Script { local_name: local };
+    let c = &recipe.config;
+    p.config = match (c.config, &c.script) {
+        (None | Some(ConfigArg::Default), None) => ConfigMode::Default,
+        (Some(ConfigArg::Keep), None) => ConfigMode::Keep,
+        (Some(ConfigArg::Empty), None) => ConfigMode::Empty,
+        (None | Some(ConfigArg::Default), Some(script)) => ConfigMode::Script {
+            local_name: register_script(assets, script).await?,
+        },
+        (Some(other), Some(_)) => {
+            let config = format!("{other:?}").to_lowercase();
+            return Err(Failure::new("script_with_config").with("config", config));
+        }
+    };
+    if let Some(mode) = &c.mode_script {
+        if p.config == ConfigMode::Keep {
+            return Err(Failure::new("mode_script_with_keep"));
+        }
+        p.mode_script = Some(register_script(assets, mode).await?);
     }
+    p.remove_branding = c.remove_branding;
+    if let Some(path) = &c.license_key {
+        let data = std::fs::read(path).map_err(|e| {
+            Failure::new("license_key_failed")
+                .with("path", path.display())
+                .with("detail", e)
+        })?;
+        p.license_key = Some(license_key_from_file(&data)?);
+    }
+    p.after_install = match c.after {
+        None | Some(AfterArg::Reboot) => AfterInstall::Reboot,
+        Some(AfterArg::RebootMessage) => AfterInstall::RebootMessage,
+        Some(AfterArg::Shutdown) => AfterInstall::Shutdown,
+    };
     p.validate()?;
     Ok(p)
 }

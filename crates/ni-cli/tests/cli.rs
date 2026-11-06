@@ -131,6 +131,81 @@ async fn interfaces_lists_lo0_with_all() {
 }
 
 #[tokio::test]
+async fn profiles_take_the_configuration_options() {
+    let env = Env::new("cli-profile-options");
+    let mode = env.dir.join("Mode.rsc");
+    std::fs::write(&mode, b":log info mode\n").unwrap();
+    let key = env.dir.join("device.key");
+    std::fs::write(
+        &key,
+        b"-----BEGIN KEY-----\nAAAA\r\nBBBB\n-----END KEY-----\n",
+    )
+    .unwrap();
+    let (mode, key) = (mode.display().to_string(), key.display().to_string());
+    let save = |extra: &[&str]| {
+        let mut args = vec![
+            "--json",
+            "profiles",
+            "save",
+            "--name",
+            "Opt",
+            "--version",
+            "7.25.1",
+        ];
+        args.extend_from_slice(extra);
+        args.into_iter().map(String::from).collect::<Vec<String>>()
+    };
+    let args = save(&[
+        "--config",
+        "empty",
+        "--mode-script",
+        &mode,
+        "--remove-branding",
+        "--license-key",
+        &key,
+        "--after",
+        "shutdown",
+    ]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, out, err) = env.run(&args).await;
+    assert_eq!(code, 0, "{err}");
+    let p: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(p["config"], serde_json::json!({"mode": "empty"}));
+    assert_eq!(p["mode_script"], "mode.rsc");
+    assert_eq!(p["remove_branding"], true);
+    assert_eq!(
+        p["license_key"],
+        "-----BEGIN KEY-----AAAABBBB-----END KEY-----"
+    );
+    assert_eq!(p["after_install"], "shutdown");
+    let (_, out, _) = env.run(&["profiles", "list"]).await;
+    assert!(
+        out.contains("empty config, mode script mode.rsc, remove branding, license key, shutdown"),
+        "{out}"
+    );
+    for (extra, code_name) in [
+        (
+            vec!["--config", "keep", "--mode-script", mode.as_str()],
+            "mode_script_with_keep",
+        ),
+        (
+            vec!["--config", "empty", "--script", mode.as_str()],
+            "script_with_config",
+        ),
+        (
+            vec!["--license-key", "/nonexistent/k.key"],
+            "license_key_failed",
+        ),
+    ] {
+        let args = save(&extra);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (code, _, err) = env.run(&args).await;
+        assert_eq!(code, 1, "{extra:?}");
+        assert!(err.contains(code_name), "{extra:?}: {err}");
+    }
+}
+
+#[tokio::test]
 async fn profiles_can_be_saved_listed_shown_and_deleted() {
     let env = Env::new("cli-profiles");
     let script = env.dir.join("Lab.rsc");

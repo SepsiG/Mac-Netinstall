@@ -198,7 +198,7 @@ pub async fn flash(ctx: &Ctx, args: FlashArgs) -> Outcome {
             let recipe = RecipeArgs {
                 version: version.clone(),
                 packages: args.packages.clone(),
-                script: args.script.clone(),
+                config: args.config.clone(),
             };
             recipe_profile(engine.assets(), "command-line", &recipe).await?
         }
