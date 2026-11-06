@@ -1,6 +1,6 @@
 //! Command-line arguments.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use ni_assets::VersionSpec;
 use ni_proto::Mac;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -35,10 +35,9 @@ count is reached are waited for. With --json, errors are also printed to stdout 
 pub const TESTING_ENV: &str = "NI_CLI_TESTING";
 
 /// Hidden testing flags that redirect downloads or frames
-/// (`--download-base`, `--upgrade-base`, `--netinstall-dest`,
-/// `--server-mac`) are refused unless [`TESTING_ENV`] is `1`: pointed at
-/// the wrong place they would install foreign files or impersonate
-/// another machine. Error: `testing_flag_not_allowed` (`flag`, `env`).
+/// (`--download-base`, `--upgrade-base`, `--netinstall-dest`) are refused
+/// unless [`TESTING_ENV`] is `1`: pointed at the wrong place they would
+/// install foreign files or send frames elsewhere. Error: `testing_flag_not_allowed` (`flag`, `env`).
 pub fn check_testing_flags(cli: &Cli, allowed: bool) -> Result<(), ni_engine::Failure> {
     if allowed {
         return Ok(());
@@ -55,7 +54,6 @@ pub fn check_testing_flags(cli: &Cli, allowed: bool) -> Result<(), ni_engine::Fa
             "--netinstall-dest",
             net.is_some_and(|n| n.netinstall_dest.is_some()),
         ),
-        ("--server-mac", net.is_some_and(|n| n.server_mac.is_some())),
     ];
     match used.iter().find(|(_, on)| *on) {
         Some((flag, _)) => Err(ni_engine::Failure::new("testing_flag_not_allowed")
@@ -177,9 +175,51 @@ pub struct RecipeArgs {
     /// Extra package(s) besides routeros, e.g. wifi-qcom.
     #[arg(long = "package")]
     pub packages: Vec<String>,
-    /// RouterOS script (.rsc) to run on first boot.
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+/// The device configuration options; the official netinstall-cli's
+/// `-r` / `-e` / `-s` / `-sm` / `-b` / `-k` / `--reboot` / `--shutdown`.
+#[derive(Debug, Clone, Default, Args)]
+pub struct ConfigArgs {
+    /// The device's configuration after the install: keep the existing
+    /// one, RouterOS's default configuration, or none at all [default:
+    /// default; with --script: the script].
+    #[arg(long, value_enum)]
+    pub config: Option<ConfigArg>,
+    /// RouterOS script (.rsc) to run on first boot (not with --config keep
+    /// or empty).
     #[arg(long)]
     pub script: Option<PathBuf>,
+    /// Advanced: the official tool's mode script (.rsc, sent as mode.scr;
+    /// not with --config keep).
+    #[arg(long, value_name = "FILE")]
+    pub mode_script: Option<PathBuf>,
+    /// Remove branding (the official tool's -b).
+    #[arg(long)]
+    pub remove_branding: bool,
+    /// Software license key file (the official tool's -k).
+    #[arg(long, value_name = "FILE")]
+    pub license_key: Option<PathBuf>,
+    /// When the install is done: reboot, reboot with the message
+    /// "Installation successful", or shut down [default: reboot].
+    #[arg(long, value_enum)]
+    pub after: Option<AfterArg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ConfigArg {
+    Keep,
+    Default,
+    Empty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AfterArg {
+    Reboot,
+    RebootMessage,
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -203,9 +243,6 @@ pub struct NetArgs {
     /// Address range handed out, as FIRST-LAST [default: the subnet's hosts].
     #[arg(long, value_parser = parse_pool)]
     pub pool: Option<(Ipv4Addr, Ipv4Addr)>,
-    /// Testing: our Netinstall source MAC (for interfaces without one).
-    #[arg(long, hide = true)]
-    pub server_mac: Option<Mac>,
     /// Testing: listener address [default: 0.0.0.0].
     #[arg(long, hide = true)]
     pub bind_ip: Option<Ipv4Addr>,
@@ -231,7 +268,10 @@ pub struct FlashArgs {
     #[command(flatten)]
     pub net: NetArgs,
     /// Use this stored profile.
-    #[arg(long, conflicts_with_all = ["version", "packages", "script"], required_unless_present = "version")]
+    #[arg(long, required_unless_present = "version", conflicts_with_all = [
+        "version", "packages", "config", "script", "mode_script", "remove_branding",
+        "license_key", "after",
+    ])]
     pub profile: Option<String>,
     /// Channel or version to install (instead of --profile).
     #[arg(long)]
@@ -239,9 +279,9 @@ pub struct FlashArgs {
     /// Extra package(s) besides routeros (with --version).
     #[arg(long = "package")]
     pub packages: Vec<String>,
-    /// RouterOS script (.rsc) to run on first boot (with --version).
-    #[arg(long)]
-    pub script: Option<PathBuf>,
+    /// Configuration options (with --version).
+    #[command(flatten)]
+    pub config: ConfigArgs,
     /// Keep going: flash every device that appears, until Ctrl-C.
     #[arg(long)]
     pub auto_repeat: bool,
@@ -358,7 +398,7 @@ mod tests {
         assert_eq!(f.net.iface, "en7");
         assert_eq!(f.version, Some("stable".parse().unwrap()));
         assert_eq!(f.packages, ["wifi-qcom", "container"]);
-        assert_eq!(f.script, Some(PathBuf::from("setup.rsc")));
+        assert_eq!(f.config.script, Some(PathBuf::from("setup.rsc")));
         assert!(f.auto_repeat);
         assert_eq!(f.count, Some(3));
         assert_eq!(f.only_mac, Some(Mac([0x48, 0xa9, 0x8a, 0, 0, 1])));
@@ -369,6 +409,64 @@ mod tests {
                 Ipv4Addr::new(192, 168, 88, 10),
                 Ipv4Addr::new(192, 168, 88, 20)
             ))
+        );
+    }
+
+    #[test]
+    fn configuration_options_parse_and_conflict_with_a_profile() {
+        let cli = parse(&[
+            "flash",
+            "--iface",
+            "en7",
+            "--version",
+            "stable",
+            "--config",
+            "empty",
+            "--mode-script",
+            "m.rsc",
+            "--remove-branding",
+            "--license-key",
+            "k.key",
+            "--after",
+            "reboot-message",
+        ])
+        .unwrap();
+        let Command::Flash(f) = cli.command else {
+            panic!("flash expected")
+        };
+        assert_eq!(f.config.config, Some(ConfigArg::Empty));
+        assert_eq!(f.config.mode_script, Some(PathBuf::from("m.rsc")));
+        assert!(f.config.remove_branding);
+        assert_eq!(f.config.license_key, Some(PathBuf::from("k.key")));
+        assert_eq!(f.config.after, Some(AfterArg::RebootMessage));
+        for extra in [
+            &["--config", "keep"][..],
+            &["--remove-branding"],
+            &["--after", "shutdown"],
+            &["--license-key", "k.key"],
+        ] {
+            let mut args = vec!["flash", "--iface", "en7", "--profile", "p"];
+            args.extend_from_slice(extra);
+            assert_eq!(
+                parse(&args).unwrap_err().kind(),
+                ErrorKind::ArgumentConflict,
+                "{extra:?}"
+            );
+        }
+        assert_eq!(
+            parse(&[
+                "profiles",
+                "save",
+                "--name",
+                "x",
+                "--version",
+                "7.25.1",
+                "--config",
+                "maybe"
+            ])
+            .unwrap_err()
+            .kind(),
+            ErrorKind::InvalidValue
         );
     }
 
@@ -446,8 +544,6 @@ mod tests {
             "lo0",
             "--version",
             "7.25.1",
-            "--server-mac",
-            "02:00:00:00:00:01",
             "--bootp-port",
             "0",
             "--tftp-port",
@@ -505,15 +601,6 @@ mod tests {
         for args in [
             &["--download-base", "http://x/", "interfaces"][..],
             &["--upgrade-base", "http://x/", "interfaces"],
-            &[
-                "flash",
-                "--iface",
-                "en7",
-                "--version",
-                "stable",
-                "--server-mac",
-                "02:00:00:00:00:01",
-            ],
             &[
                 "preflight",
                 "--iface",

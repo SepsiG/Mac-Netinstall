@@ -47,7 +47,6 @@ async fn rig(name: &str) -> Rig {
     let core = AppCore::new(Paths::under(&dir), http(&srv))
         .unwrap()
         .with_config_hook(Arc::new(move |cfg| {
-            cfg.server_mac = Some(Mac([2, 0, 0, 0, 0, 1]));
             cfg.ports = Ports {
                 bootp: 0,
                 tftp: 0,
@@ -62,6 +61,10 @@ async fn rig(name: &str) -> Rig {
                 optional_timeout: Duration::from_millis(150),
                 max_retransmits: 2,
                 chunk_delay: Duration::from_millis(1),
+                offer_retry: Duration::from_millis(50),
+                finish_timeout: Duration::from_millis(50),
+                poll_interval: Duration::from_millis(10),
+                finish_reply_timeout: Duration::from_millis(150),
             };
         }));
     let mut p = Profile::new("test", VersionSpec::Channel(Channel::Stable));
@@ -331,6 +334,50 @@ async fn a_new_download_timeout_replaces_the_idle_engine() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn window_and_dialog_sizes_are_remembered() {
+    use mac_netinstall_app::settings::WindowGeometry;
+    let rig = rig("bridge-sizes").await;
+    rig.core.set_dialog_size("profile", 700, 520).unwrap();
+    rig.core.set_dialog_size("confirm", 420, 200).unwrap();
+    for (id, w, h) in [
+        ("profile", 50, 520),
+        ("Bad Id", 700, 520),
+        ("x", 700, 100_000),
+    ] {
+        let err = rig.core.set_dialog_size(id, w, h).unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("field")),
+            ("invalid_setting", Some("dialog_sizes")),
+            "{id} {w}x{h}"
+        );
+    }
+    let g = WindowGeometry {
+        x: 30,
+        y: 40,
+        width: 1200,
+        height: 800,
+    };
+    rig.core.remember_window(g);
+    rig.core.remember_window(WindowGeometry { width: 10, ..g }); // ignored
+    let s = rig.core.settings();
+    assert_eq!(s.window, Some(g));
+    assert_eq!(s.dialog_sizes["profile"].width, 700);
+    assert_eq!(s.dialog_sizes.len(), 2);
+    // Stored: a new core reads them back; the settings dialog keeps them.
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(rig.dir.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(stored["dialog_sizes"]["confirm"]["height"], 200);
+    assert_eq!(stored["window"]["width"], 1200);
+    let saved = rig
+        .core
+        .set_settings(mac_netinstall_app::settings::Settings::default())
+        .await
+        .unwrap();
+    assert_eq!(saved.window, Some(g));
+    assert_eq!(saved.dialog_sizes.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn profiles_are_created_renamed_and_deleted() {
     let rig = rig("bridge-profiles").await;
     let mut p = Profile::new("Lab", VersionSpec::Channel(Channel::Testing));
@@ -435,6 +482,52 @@ async fn packages_scripts_cache_and_log() {
     assert_eq!(
         rig.core.register_script(&txt).await.unwrap_err().code,
         "not_a_script"
+    );
+
+    let key = rig.dir.join("device.key");
+    std::fs::write(
+        &key,
+        b"-----BEGIN KEY-----\r\nAAAA\nBBBB==\n-----END KEY-----\n",
+    )
+    .unwrap();
+    let view = rig.core.read_license_key(&key).unwrap();
+    assert_eq!(view.key, "-----BEGIN KEY-----AAAABBBB==-----END KEY-----");
+    let code = |p: &std::path::Path| rig.core.read_license_key(p).unwrap_err();
+    let err = code(&rig.dir.join("missing.key"));
+    assert_eq!(
+        (err.code.as_str(), err.param("reason")),
+        ("key_file_failed", Some("unreadable"))
+    );
+    assert!(err.param("path").is_none(), "no path for the window");
+    std::fs::write(&key, vec![b'k'; 64 * 1024 + 1]).unwrap();
+    assert_eq!(code(&key).param("reason"), Some("too_large"));
+    std::fs::write(&key, b"\n\n").unwrap();
+    assert_eq!(code(&key).code, "invalid_license_key");
+    // A FIFO (or any non-regular file) is refused without blocking on it.
+    let fifo = rig.dir.join("pipe.key");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let core = rig.core.clone();
+    let path = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(core.read_license_key(&path));
+    });
+    let err = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a FIFO must not block the read")
+        .unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("reason")),
+        ("key_file_failed", Some("not_a_file"))
+    );
+    std::fs::create_dir(rig.dir.join("dir.key")).unwrap();
+    assert_eq!(
+        code(&rig.dir.join("dir.key")).param("reason"),
+        Some("not_a_file")
     );
 
     let view = rig.core.cache_inventory(true).await.unwrap();

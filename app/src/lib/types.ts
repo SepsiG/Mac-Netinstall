@@ -16,7 +16,7 @@ export type DeviceState =
   | { state: "kernel_serving"; sent: number; total: number }
   | { state: "discovered" }
   | { state: "waiting"; reason: WaitReason }
-  | { state: "preparing"; version?: string }
+  | { state: "preparing"; version?: string; config?: string }
   | { state: "flashing"; version: string; phase: string; sent: number; total: number }
   | { state: "done" }
   | { state: "failed"; code: string; params?: Params };
@@ -47,7 +47,6 @@ export interface NetPlan {
   netmask: string;
   pool_start: string;
   pool_end: string;
-  server_mac: string;
 }
 
 export interface DeviceView {
@@ -56,6 +55,8 @@ export interface DeviceView {
   boot_arch: string | null;
   info: DeviceInfoView | null;
   profile: string | null;
+  /** The profile's configuration mode: keep, default, empty or script. */
+  config: string | null;
   version: string | null;
   attempt: number;
   first_seen_ms: number;
@@ -123,7 +124,15 @@ export interface InterfaceView {
   auto_pool: { start: string; end: string } | null;
 }
 
-export type ConfigMode = { mode: "default" } | { mode: "custom_script"; local_name: string };
+/** The device's configuration after the install (`ni_engine::ConfigMode`). */
+export type ConfigMode =
+  | { mode: "keep" }
+  | { mode: "default" }
+  | { mode: "empty" }
+  | { mode: "script"; local_name: string };
+
+export const AFTER_INSTALL = ["reboot", "reboot_message", "shutdown"] as const;
+export type AfterInstall = (typeof AFTER_INSTALL)[number];
 
 export interface Profile {
   name: string;
@@ -131,6 +140,12 @@ export interface Profile {
   version: string;
   extra_packages: string[];
   config: ConfigMode;
+  /** Registered `.rsc` sent as `mode.scr` (not with `keep`). */
+  mode_script: string | null;
+  remove_branding: boolean;
+  /** Key file contents without line breaks. */
+  license_key: string | null;
+  after_install: AfterInstall;
 }
 
 export interface ProfilesView {
@@ -147,6 +162,10 @@ export interface PackagesView {
 export interface ScriptView {
   name: string;
   size: number;
+}
+
+export interface LicenseKeyView {
+  key: string;
 }
 
 export type Integrity = "verified" | "unpublished" | "unchecked" | "corrupt" | "missing" | "partial";
@@ -207,6 +226,22 @@ export interface Settings {
   auto_repeat: boolean;
   last_profile: string | null;
   download_timeout_secs: number;
+  /** The main window as it was left (Rust restores it). */
+  window: WindowGeometry | null;
+  /** Each dialog's size as the user left it, by dialog id. */
+  dialog_sizes: Record<string, DialogSize>;
+}
+
+export interface WindowGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DialogSize {
+  width: number;
+  height: number;
 }
 
 export const CHANNELS = ["stable", "long-term", "testing", "development"] as const;

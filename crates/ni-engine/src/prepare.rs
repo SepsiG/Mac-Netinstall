@@ -5,7 +5,7 @@ use crate::event::Failure;
 use crate::profile::{ConfigMode, Profile};
 use ni_assets::{AssetError, Assets, KernelSet, PkgArch, Version, VersionSpec};
 use ni_bootp::BootArch;
-use ni_proto::InstallPlan;
+use ni_proto::{DeviceConfig, InstallPlan};
 use ni_tftp::FileMap;
 use std::collections::HashMap;
 
@@ -39,9 +39,11 @@ pub async fn resolve_or_remembered(
 /// Resolve the profile's version (or use `version` if the caller resolved
 /// it already; see [`resolve_or_remembered`] for offline), check it against
 /// `kernel_version` (the boot kernels the device runs), then fetch packages
-/// and the script. Returns the version installed and the plan. Errors:
+/// and the scripts. The plan carries the profile's configuration options
+/// and sends the system package first. Returns the version installed and
+/// the plan. Errors:
 /// `assets_failed` (`cause`), `profile_version_mismatch` (`version`,
-/// `kernel_version`), `invalid_plan` (`detail`).
+/// `kernel_version`), `empty_script` (`name`), `invalid_plan` (`detail`).
 ///
 /// Why the mismatch is an error: the device already booted the kernel it
 /// was served over TFTP, so the kernel cannot be switched for this install.
@@ -70,19 +72,41 @@ pub async fn prepare(
         .ensure_packages(&version, arch, &profile.extra_packages)
         .await
         .map_err(fail)?;
-    let config_script = match &profile.config {
-        ConfigMode::Default => None,
-        ConfigMode::CustomScript { local_name } => {
-            Some(assets.local_file(local_name).await.map_err(fail)?)
+    let config = match &profile.config {
+        ConfigMode::Keep => DeviceConfig::Keep,
+        ConfigMode::Default => DeviceConfig::Default,
+        ConfigMode::Empty => DeviceConfig::Empty,
+        ConfigMode::Script { local_name } => {
+            let script = assets.local_file(local_name).await.map_err(fail)?;
+            if script.is_empty() {
+                return Err(empty_script(local_name));
+            }
+            DeviceConfig::Script(script)
         }
     };
-    let plan = InstallPlan {
-        packages,
-        config_script,
+    let mode_script = match &profile.mode_script {
+        Some(name) => Some(assets.local_file(name).await.map_err(fail)?),
+        None => None,
     };
+    let mut plan = InstallPlan {
+        packages,
+        config,
+        mode_script,
+        remove_branding: profile.remove_branding,
+        license_key: profile.license_key.clone().unwrap_or_default(),
+        after_install: profile.after_install.into(),
+    };
+    plan.system_package_first();
     plan.validate()
         .map_err(|e| Failure::new("invalid_plan").with("detail", e))?;
     Ok((version, plan))
+}
+
+/// `empty_script` (`name`): the configuration script is empty. An empty
+/// `autorun.scr` is what "empty configuration" sends, so that is the choice
+/// to make instead (the UI says so).
+pub fn empty_script(name: &str) -> Failure {
+    Failure::new("empty_script").with("name", name)
 }
 
 /// `profile_version_mismatch`: installing `version` on a device that runs
@@ -172,6 +196,7 @@ pub fn boot_maps(version: &Version, set: &KernelSet) -> (HashMap<BootArch, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     use ni_assets::testutil::{assets, mirror, tempdir, v, TestServer};
     use ni_assets::Channel;
 
@@ -205,7 +230,7 @@ mod tests {
         std::fs::write(&script, b"/system identity set name=x\n").unwrap();
         let local = a.register_local_file(&script).await.unwrap();
         let mut p = profile();
-        p.config = ConfigMode::CustomScript {
+        p.config = ConfigMode::Script {
             local_name: local.name,
         };
         let (version, plan) = prepare(&a, &p, None, None, "arm64").await.unwrap();
@@ -218,9 +243,66 @@ mod tests {
         assert_eq!(plan.packages[0].data.as_ref(), main.as_slice());
         assert_eq!(plan.packages[1].data.as_ref(), wireless.as_slice());
         assert_eq!(
-            plan.config_script.as_deref(),
-            Some(&b"/system identity set name=x\n"[..])
+            plan.config,
+            DeviceConfig::Script(Bytes::from_static(b"/system identity set name=x\n"))
         );
+    }
+
+    #[tokio::test]
+    async fn an_empty_custom_script_is_refused() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let dir = tempdir("prepare-empty-script");
+        let a = assets(&srv, &dir);
+        let script = dir.join("empty.rsc");
+        std::fs::write(&script, b"").unwrap();
+        let mut p = profile();
+        p.config = ConfigMode::Script {
+            local_name: a.register_local_file(&script).await.unwrap().name,
+        };
+        let err = prepare(&a, &p, None, None, "arm64").await.unwrap_err();
+        assert_eq!(err.code, "empty_script");
+        assert_eq!(err.param("name"), Some("empty.rsc"));
+    }
+
+    #[tokio::test]
+    async fn plan_carries_the_configuration_options() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let dir = tempdir("prepare-options");
+        let a = assets(&srv, &dir);
+        let mode = dir.join("mode.rsc");
+        std::fs::write(&mode, b":log info mode\n").unwrap();
+        let mut p = profile();
+        p.config = ConfigMode::Empty;
+        p.mode_script = Some(a.register_local_file(&mode).await.unwrap().name);
+        p.remove_branding = true;
+        p.license_key = Some("KEY-1".into());
+        p.after_install = crate::profile::AfterInstall::Shutdown;
+        let (_, plan) = prepare(&a, &p, None, None, "arm64").await.unwrap();
+        assert_eq!(plan.config, DeviceConfig::Empty);
+        assert_eq!(plan.mode_script.as_deref(), Some(&b":log info mode\n"[..]));
+        assert!(plan.remove_branding);
+        assert_eq!(plan.license_key, "KEY-1");
+        assert_eq!(plan.after_install, ni_proto::AfterInstall::Shutdown);
+        let files: Vec<String> = plan.files().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(
+            files,
+            [
+                "routeros-7.25.1-arm64.npk",
+                "wireless-7.25.1-arm64.npk",
+                "mode.scr",
+                "autorun.scr"
+            ]
+        );
+        p.config = ConfigMode::Keep;
+        p.mode_script = None;
+        let (_, plan) = prepare(&a, &p, None, None, "arm64").await.unwrap();
+        assert!(plan.offer().keep_config);
+        p.mode_script = Some("missing.rsc".into());
+        p.config = ConfigMode::Default;
+        let err = prepare(&a, &p, None, None, "arm64").await.unwrap_err();
+        assert_eq!(err.code, "assets_failed");
     }
 
     #[tokio::test]

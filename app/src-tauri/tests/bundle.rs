@@ -29,6 +29,23 @@ fn bundle_identity_and_platform() {
 }
 
 #[test]
+fn the_main_window_is_resizable_down_to_a_usable_size() {
+    let conf = json("tauri.conf.json");
+    let windows = conf["app"]["windows"].as_array().unwrap();
+    assert_eq!(windows.len(), 1);
+    let w = &windows[0];
+    assert_eq!(w["label"], "main");
+    assert_eq!(w["resizable"], true);
+    // The minimum is what the settings accept for a remembered window.
+    use mac_netinstall_app::settings::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+    assert_eq!(w["minWidth"], MIN_WINDOW_WIDTH);
+    assert_eq!(w["minHeight"], MIN_WINDOW_HEIGHT);
+    assert!(w["width"].as_u64().unwrap() >= u64::from(MIN_WINDOW_WIDTH));
+    assert!(w["height"].as_u64().unwrap() >= u64::from(MIN_WINDOW_HEIGHT));
+    assert!(w.get("maxWidth").is_none() && w.get("maxHeight").is_none());
+}
+
+#[test]
 fn info_plist_explains_local_network_use() {
     let plist = read("Info.plist");
     let key = plist

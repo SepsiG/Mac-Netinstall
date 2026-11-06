@@ -90,10 +90,9 @@ pub(crate) fn start(
         LinkStatus::Down(reason) => Link::Down(reason),
         LinkStatus::Missing => Link::Missing(Instant::now()),
     };
-    let link_index = ifaces
-        .iter()
-        .find(|i| i.name == cfg.interface)
-        .map_or(0, |i| i.index);
+    let iface = ifaces.iter().find(|i| i.name == cfg.interface);
+    let link_index = iface.map_or(0, |i| i.index);
+    let local_ips = iface.map_or_else(Vec::new, |i| i.ipv4.iter().map(|(a, _)| *a).collect());
     let responder = BootpResponder::new(BootpConfig {
         server_ip: net.server_ip,
         netmask: net.netmask,
@@ -184,6 +183,7 @@ pub(crate) fn start(
         next_link_check,
         link,
         link_index,
+        local_ips,
         foreign_ip_checks: 0,
         send_errors: Default::default(),
         next_prune: Instant::now(),

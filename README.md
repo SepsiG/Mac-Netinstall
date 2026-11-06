@@ -27,6 +27,11 @@ adapter's manual IPv4 from macOS (advanced). `flash`/`preflight
 --allow-any-interface` (advanced) accepts an interface that is not a wired
 Ethernet adapter, with a warning; the app never offers one.
 
+Profiles (`ni-cli profiles …`, and the app's) are JSON files readable by
+their owner only (mode 0600), since they may hold a software license key.
+`ni-cli` never prints the key: `profiles list/show/save` (also with
+`--json`) show it masked as `****<last 4 characters> (<length> chars)`.
+
 ## Release notes
 
 - **One device at a time by default.** `max_parallel` now defaults to 1 (it
@@ -35,6 +40,11 @@ Ethernet adapter, with a warning; the app never offers one.
   app starts (written back as settings version 2); any other value you chose
   is kept. To flash several devices at once, raise "Devices at once" in
   Settings (or pass `--max-parallel`).
+
+- **Window and dialogs remember their size.** The main window comes back
+  where and as large as you left it (on a display that is still connected),
+  and every dialog can be resized with the grip in its bottom-right corner;
+  its size is kept for next time (settings version 4).
 
 ## Development
 

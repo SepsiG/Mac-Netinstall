@@ -131,6 +131,164 @@ async fn interfaces_lists_lo0_with_all() {
 }
 
 #[tokio::test]
+async fn profiles_take_the_configuration_options() {
+    let env = Env::new("cli-profile-options");
+    let mode = env.dir.join("Mode.rsc");
+    std::fs::write(&mode, b":log info mode\n").unwrap();
+    let key = env.dir.join("device.key");
+    std::fs::write(
+        &key,
+        b"-----BEGIN KEY-----\nAAAA\r\nBBBB\n-----END KEY-----\n",
+    )
+    .unwrap();
+    let (mode, key) = (mode.display().to_string(), key.display().to_string());
+    let save = |extra: &[&str]| {
+        let mut args = vec![
+            "--json",
+            "profiles",
+            "save",
+            "--name",
+            "Opt",
+            "--version",
+            "7.25.1",
+        ];
+        args.extend_from_slice(extra);
+        args.into_iter().map(String::from).collect::<Vec<String>>()
+    };
+    let args = save(&[
+        "--config",
+        "empty",
+        "--mode-script",
+        &mode,
+        "--remove-branding",
+        "--license-key",
+        &key,
+        "--after",
+        "shutdown",
+    ]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, out, err) = env.run(&args).await;
+    assert_eq!(code, 0, "{err}");
+    let p: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(p["config"], serde_json::json!({"mode": "empty"}));
+    assert_eq!(p["mode_script"], "mode.rsc");
+    assert_eq!(p["remove_branding"], true);
+    // The key is never printed: masked (last 4 characters and length).
+    let key_text = "-----BEGIN KEY-----AAAABBBB-----END KEY-----";
+    let masked = format!("****---- ({} chars)", key_text.len());
+    assert_eq!(p["license_key"], masked.as_str());
+    assert_eq!(p["after_install"], "shutdown");
+    let (_, out, _) = env.run(&["profiles", "list"]).await;
+    assert!(
+        out.contains(&format!(
+            "empty config, mode script mode.rsc, remove branding, license key {masked}, shutdown"
+        )),
+        "{out}"
+    );
+    for args in [
+        &["--json", "profiles", "list"][..],
+        &["--json", "profiles", "show", "opt"],
+        &["profiles", "show", "opt"],
+    ] {
+        let (code, out, _) = env.run(args).await;
+        assert_eq!(code, 0);
+        assert!(!out.contains("AAAABBBB"), "{args:?}: {out}");
+        assert!(out.contains(&masked), "{args:?}: {out}");
+    }
+    // At rest: the profile file is readable by its owner only.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let file = env.dir.join("profiles/opt.json");
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{}", file.display());
+        let stored = std::fs::read_to_string(&file).unwrap();
+        assert!(stored.contains(key_text), "the file keeps the key itself");
+    }
+    for (extra, code_name) in [
+        (
+            vec!["--config", "keep", "--mode-script", mode.as_str()],
+            "mode_script_with_keep",
+        ),
+        (
+            vec!["--config", "empty", "--script", mode.as_str()],
+            "script_with_config",
+        ),
+        (
+            vec!["--license-key", "/nonexistent/k.key"],
+            "license_key_failed",
+        ),
+    ] {
+        let args = save(&extra);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (code, _, err) = env.run(&args).await;
+        assert_eq!(code, 1, "{extra:?}");
+        assert!(err.contains(code_name), "{extra:?}: {err}");
+    }
+}
+
+#[tokio::test]
+async fn a_refused_profile_registers_no_script() {
+    let env = Env::new("cli-profile-refused");
+    let script = env.dir.join("Good.rsc");
+    std::fs::write(&script, b"/system identity set name=good\n").unwrap();
+    let mode = env.dir.join("Mode.rsc");
+    std::fs::write(&mode, b":log info mode\n").unwrap();
+    let empty = env.dir.join("Empty.rsc");
+    std::fs::write(&empty, b"").unwrap();
+    let (script, mode, empty) = (
+        script.display().to_string(),
+        mode.display().to_string(),
+        empty.display().to_string(),
+    );
+    for (extra, code_name) in [
+        (
+            vec![
+                "--name",
+                "ok",
+                "--script",
+                &script,
+                "--mode-script",
+                &mode,
+                "--license-key",
+                "/nonexistent/k.key",
+            ],
+            "license_key_failed",
+        ),
+        (
+            vec!["--name", "a/b", "--script", &script, "--mode-script", &mode],
+            "invalid_name",
+        ),
+        (
+            vec!["--name", "ok", "--script", &empty, "--mode-script", &mode],
+            "empty_script",
+        ),
+        (
+            vec![
+                "--name",
+                "ok",
+                "--script",
+                &script,
+                "--mode-script",
+                "/nonexistent/m.rsc",
+            ],
+            "script_failed",
+        ),
+    ] {
+        let mut args = vec!["profiles", "save", "--version", "stable"];
+        args.extend(extra.iter().copied());
+        let (code, _, err) = env.run(&args).await;
+        assert_eq!(code, 1, "{extra:?}");
+        assert!(err.contains(code_name), "{extra:?}: {err}");
+        for name in ["good.rsc", "mode.rsc", "empty.rsc"] {
+            assert!(
+                !env.dir.join("cache/local").join(name).exists(),
+                "{extra:?}: {name} registered"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn profiles_can_be_saved_listed_shown_and_deleted() {
     let env = Env::new("cli-profiles");
     let script = env.dir.join("Lab.rsc");
@@ -158,7 +316,9 @@ async fn profiles_can_be_saved_listed_shown_and_deleted() {
         list,
         serde_json::json!([{"name": "Lab", "version": "long-term",
             "extra_packages": ["wifi-qcom"],
-            "config": {"mode": "custom_script", "local_name": "lab.rsc"}}])
+            "config": {"mode": "script", "local_name": "lab.rsc"},
+            "mode_script": null, "remove_branding": false, "license_key": null,
+            "after_install": "reboot"}])
     );
     let (_, out, _) = env.run(&["profiles", "list"]).await;
     assert!(out.starts_with("Lab "), "{out}");
@@ -201,8 +361,6 @@ async fn preflight_failure_exits_with_4() {
             "preflight",
             "--iface",
             "lo0",
-            "--server-mac",
-            "02:00:00:00:00:01",
             "--bootp-port",
             "0",
             "--tftp-port",
@@ -234,8 +392,6 @@ fn flash_args(srv: &TestServer, lan: &SimLan) -> Vec<String> {
         "stable",
         "--package",
         "wireless",
-        "--server-mac",
-        "02:00:00:00:00:01",
         "--bootp-port",
         "0",
         "--tftp-port",

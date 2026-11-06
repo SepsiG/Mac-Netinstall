@@ -18,7 +18,7 @@
 //! (as if it rebooted into Netinstall mode).
 
 use crate::{DeviceSim, ReceivedFile};
-use ni_proto::{DeviceInfo, Frame, Mac};
+use ni_proto::{AfterInstall, DeviceInfo, Frame, Mac, Offer};
 use ni_tftp::{Packet, Request};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -106,6 +106,10 @@ pub async fn tftp_get(server: SocketAddr, file: &str) -> io::Result<Vec<u8>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceReport {
     pub received: Vec<ReceivedFile>,
+    /// The offer it accepted.
+    pub offer: Option<Offer>,
+    /// What `TERM` asked for, once received.
+    pub after_install: Option<AfterInstall>,
     pub terminated: bool,
     pub violations: Vec<String>,
     /// Frames addressed to this device since it was added or reset.
@@ -289,6 +293,8 @@ async fn run(sock: UdpSocket, mut cmds: mpsc::Receiver<Cmd>) {
                 Some(Cmd::Report(mac, reply)) => {
                     let report = devices.get(&mac).map(|d| DeviceReport {
                         received: d.sim.received_files().to_vec(),
+                        offer: d.sim.offer().cloned(),
+                        after_install: d.sim.after_install(),
                         terminated: d.sim.is_terminated(),
                         violations: d.sim.violations().to_vec(),
                         frames_to_device: d.frames,

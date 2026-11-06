@@ -8,6 +8,7 @@
   import LogPanel from "./components/LogPanel.svelte";
   import ProfileEditor from "./components/ProfileEditor.svelte";
   import SettingsDialog from "./components/SettingsDialog.svelte";
+  import { initDialogSizes } from "./lib/dialogSizes";
   import StatusBar from "./components/StatusBar.svelte";
   import { toFailure, type Backend, type Unlisten } from "./lib/api";
   import { setBackend } from "./lib/context";
@@ -62,7 +63,6 @@
     "ipv4_dhcp",
     "no_ipv4",
     "server_ip_not_on_interface",
-    "no_mac",
     "invalid_netmask",
     "server_ip_not_host",
     "pool_inverted",
@@ -160,6 +160,7 @@
       unlisten.push(await backend.onLagged(() => void resync()));
       unlisten.push(await backend.onCloseRequested((n) => (quitAsk = n)));
       settings = (await attempt(() => backend.getSettings())) ?? null;
+      initDialogSizes(settings?.dialog_sizes, (id, s) => backend.setDialogSize(id, s.width, s.height));
       preferred = (await attempt(() => backend.preferredLanguages())) ?? [];
       applyLanguage();
       iface = settings?.last_interface ?? null;

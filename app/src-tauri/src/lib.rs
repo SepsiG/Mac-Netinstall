@@ -6,6 +6,7 @@
 //! - [`forward`]: engine events to the window.
 //! - [`settings`]: `settings.json` in Application Support.
 //! - [`codes`]: the code catalog the UI's translations are checked against.
+//! - [`window`]: the main window's size and position across launches.
 
 pub mod codes;
 pub mod commands;
@@ -17,6 +18,7 @@ pub mod logging;
 mod macos;
 pub mod settings;
 pub mod views;
+pub mod window;
 
 use crate::core::{AppCore, Paths};
 use crate::forward::{forward_events, Forwarded, CLOSE_REQUESTED, ENGINE_EVENT, ENGINE_LAGGED};
@@ -24,7 +26,11 @@ use ni_assets::HttpConfig;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, WebviewWindow, WindowEvent};
+use window::WindowTracker;
+
+/// Label of the main window (tauri.conf.json).
+const MAIN_WINDOW: &str = "main";
 
 /// Set once quitting is confirmed (or nothing is being flashed), so the
 /// close and exit handlers let it through.
@@ -117,9 +123,65 @@ async fn stop_engine(app: &AppHandle) {
     }
 }
 
+/// Store the main window's last normal geometry.
+fn save_window(app: &AppHandle) {
+    if let Some(g) = app.state::<WindowTracker>().get() {
+        app.state::<AppCore>().remember_window(g);
+    }
+}
+
+/// Note the main window's geometry, unless it is minimized, maximized or
+/// full screen (then the last normal one is kept).
+fn track_window<R: Runtime>(w: &tauri::Window<R>) {
+    let abnormal = w.is_minimized().unwrap_or(true)
+        || w.is_maximized().unwrap_or(true)
+        || w.is_fullscreen().unwrap_or(true);
+    if abnormal {
+        return;
+    }
+    let (Ok(pos), Ok(size), Ok(scale)) = (w.outer_position(), w.inner_size(), w.scale_factor())
+    else {
+        return;
+    };
+    if let Some(g) = window::geometry((pos.x, pos.y), (size.width, size.height), scale) {
+        w.app_handle().state::<WindowTracker>().set(g);
+    }
+}
+
+/// Size (and, if it is on a connected display, place) the main window as
+/// it was left.
+fn restore_window(w: &WebviewWindow, saved: &settings::WindowGeometry) {
+    let displays: Vec<window::Display> = w
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let scale = m.scale_factor();
+            let pos = m.position().to_logical::<f64>(scale);
+            let size = m.size().to_logical::<f64>(scale);
+            window::Display {
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+            }
+        })
+        .collect();
+    let ((width, height), position) = window::restore(saved, &displays);
+    if let Err(e) = w.set_size(tauri::LogicalSize::new(width, height)) {
+        tracing::warn!("cannot restore the window size: {e}");
+    }
+    if let Some((x, y)) = position {
+        if let Err(e) = w.set_position(tauri::LogicalPosition::new(x, y)) {
+            tracing::warn!("cannot restore the window position: {e}");
+        }
+    }
+}
+
 /// Quit for good: stop the engine first, then exit.
 pub(crate) async fn quit_now(app: AppHandle) {
     app.state::<CloseGuard>().allow();
+    save_window(&app);
     stop_engine(&app).await;
     app.exit(0);
 }
@@ -213,8 +275,15 @@ pub fn run() {
                 AppCore::new(paths, HttpConfig::default())
             })?;
             let engines = core.watch_engine();
+            let saved_window = core.settings().window;
             app.manage(core);
             app.manage(CloseGuard::default());
+            app.manage(WindowTracker::default());
+            if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
+                if let Some(saved) = saved_window {
+                    restore_window(&w, &saved);
+                }
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(forward_events(engines, move |f| {
                 let _ = match f {
@@ -231,14 +300,18 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 let app = window.app_handle();
                 if !app.state::<CloseGuard>().allowed() {
                     api.prevent_close();
                     tauri::async_runtime::spawn(request_close(app.clone()));
                 }
             }
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) if window.label() == MAIN_WINDOW => {
+                track_window(window);
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_interfaces,
@@ -261,8 +334,10 @@ pub fn run() {
             commands::delete_profile,
             commands::available_packages,
             commands::pick_script,
+            commands::pick_license_key,
             commands::get_settings,
             commands::set_settings,
+            commands::set_dialog_size,
             commands::cache_inventory,
             commands::delete_cached,
             commands::export_log,
@@ -271,16 +346,18 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("cannot build the Tauri app");
-    app.run(|app, event| {
+    app.run(|app, event| match event {
         // The last window closing or `exit` from elsewhere: same rule as
         // the close button. (Cmd-Q is the menu item above; Dock Quit and
         // logout come through `applicationShouldTerminate:`, see `macos`.)
-        if let RunEvent::ExitRequested { api, .. } = event {
+        RunEvent::ExitRequested { api, .. } => {
             if !app.state::<CloseGuard>().allowed() {
                 api.prevent_exit();
                 tauri::async_runtime::spawn(request_close(app.clone()));
             }
         }
+        RunEvent::Exit => save_window(app),
+        _ => {}
     });
 }
 

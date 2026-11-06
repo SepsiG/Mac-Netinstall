@@ -1,0 +1,29 @@
+# Official netinstall-cli 7.25.1 (MikroTik), captured in spike 5 (run e14_shutdown)
+# against the device simulator sim.py; see
+# docs/superpowers/research/2026-11-06-official-netinstall-wire-spec.md.
+# S <[0:6]> <[6:12]> <seq> <ack> <payload | data N>: a server frame;
+# D <seq> <ack> <payload>: the device's reply ([0:6] = device, [6:12] = zeros);
+# R <seq> <count>: <count> server data frames of 1024 bytes from <seq> on,
+# [0:6] zeros, ack = seq - 2, each answered RETR. File contents are not
+# stored (package sizes only; scripts come from the files next to this one).
+args --shutdown
+packages routeros-7.25.1-arm64.npk
+size routeros-7.25.1-arm64.npk 13984181
+device 64:d1:54:aa:bb:01
+hello "DSCV\nABCD-1234\n\nRB5009UG+S+\narm64\n7.1\nx\ny\n"
+S ff:ff:ff:ff:ff:ff 64:d1:54:aa:bb:01 1 0 "OFFR\n\nkeep\nremoveBranding\n\0"
+D 1 1 "YACK\n"
+S 00:00:00:00:00:00 64:d1:54:aa:bb:01 2 0 ""
+D 2 2 "STRT"
+S 00:00:00:00:00:00 64:d1:54:aa:bb:01 3 1 ""
+D 3 3 "RETR"
+S 00:00:00:00:00:00 64:d1:54:aa:bb:01 4 2 "FILE\nrouteros-7.25.1-arm64.npk\n13984181\n\0"
+D 4 4 "RETR"
+R 5 13656
+S 00:00:00:00:00:00 64:d1:54:aa:bb:01 13661 13659 data 437
+D 13661 13661 "RETR"
+S 00:00:00:00:00:00 64:d1:54:aa:bb:01 13662 13660 ""
+D 13662 13662 "RETR"
+S 00:00:00:00:00:00 64:d1:54:aa:bb:01 13663 13661 ""
+D 13663 13663 "WTRM"
+S 00:00:00:00:00:00 64:d1:54:aa:bb:01 13664 13662 "TERM\nshutdown\n\0"

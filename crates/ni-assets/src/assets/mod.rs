@@ -40,7 +40,9 @@ pub use inventory::{
 };
 pub(crate) use local::LOCAL_DIR;
 
-pub use local::{LocalFile, LocalKind, MAX_LOCAL_NAME, MAX_SCRIPT_SIZE};
+pub use local::{
+    read_regular_file, LocalFile, LocalKind, ReadFileError, MAX_LOCAL_NAME, MAX_SCRIPT_SIZE,
+};
 
 /// `<root>/channels.json`: the last successful resolution of each channel
 /// (`{"stable": "7.25.1"}`), so an offline run can stay on the version

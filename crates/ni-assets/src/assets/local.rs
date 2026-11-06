@@ -61,38 +61,57 @@ fn local_key(name: &str) -> Result<(String, LocalKind), AssetError> {
     Ok((key, kind))
 }
 
-/// Read a regular file (symlinks followed) of at most `max` bytes. FIFOs,
-/// devices and directories are refused without blocking: the file is
-/// opened with `O_NONBLOCK` and checked before anything is read.
-fn read_local(path: &Path, name: &str, max: u64) -> Result<Vec<u8>, AssetError> {
+/// Why [`read_regular_file`] refused a file.
+#[derive(Debug)]
+pub enum ReadFileError {
+    /// It could not be opened or read.
+    Io(std::io::Error),
+    /// It is a FIFO, device, directory, ...
+    NotAFile,
+    /// It has more than the allowed bytes.
+    TooLarge,
+}
+
+/// Read a regular file (symlinks followed) of at most `max` bytes, opening
+/// it once. FIFOs, devices and directories are refused without blocking:
+/// the file is opened with `O_NONBLOCK` and the open file (not the path) is
+/// checked before anything is read; the read itself stops after `max + 1`
+/// bytes, so a file growing meanwhile is still caught.
+pub fn read_regular_file(path: &Path, max: u64) -> Result<Vec<u8>, ReadFileError> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
         .open(path)
-        .map_err(AssetError::io("read", path))?;
-    let meta = file.metadata().map_err(AssetError::io("read", path))?;
+        .map_err(ReadFileError::Io)?;
+    let meta = file.metadata().map_err(ReadFileError::Io)?;
     if !meta.is_file() {
-        return Err(AssetError::LocalNotAFile { name: name.into() });
+        return Err(ReadFileError::NotAFile);
     }
     if meta.len() > max {
-        return Err(AssetError::LocalFileTooLarge {
-            name: name.into(),
-            max,
-        });
+        return Err(ReadFileError::TooLarge);
     }
     let mut data = Vec::new();
     file.take(max + 1)
         .read_to_end(&mut data)
-        .map_err(AssetError::io("read", path))?;
+        .map_err(ReadFileError::Io)?;
     if data.len() as u64 > max {
-        return Err(AssetError::LocalFileTooLarge {
-            name: name.into(),
-            max,
-        });
+        return Err(ReadFileError::TooLarge);
     }
     Ok(data)
+}
+
+/// [`read_regular_file`] with the local-file errors.
+fn read_local(path: &Path, name: &str, max: u64) -> Result<Vec<u8>, AssetError> {
+    read_regular_file(path, max).map_err(|e| match e {
+        ReadFileError::Io(e) => AssetError::io("read", path)(e),
+        ReadFileError::NotAFile => AssetError::LocalNotAFile { name: name.into() },
+        ReadFileError::TooLarge => AssetError::LocalFileTooLarge {
+            name: name.into(),
+            max,
+        },
+    })
 }
 
 impl Assets {
@@ -102,16 +121,7 @@ impl Assets {
     /// regular file. The registered [`LocalFile::name`] is the file name in
     /// lowercase (see [`Assets::local_file`]).
     pub async fn register_local_file(&self, path: &Path) -> Result<LocalFile, AssetError> {
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let (name, kind) = local_key(&file_name)?;
-        let max = match kind {
-            LocalKind::Package => self.max_download,
-            LocalKind::Script => MAX_SCRIPT_SIZE,
-        };
+        let (file_name, name, kind, max) = self.local_target(path)?;
         let dir = CacheDir::new(self.root.join(LOCAL_DIR));
         let lock = lock::lock_target(dir.lock_path(&name)).await?;
         let path = path.to_path_buf();
@@ -134,6 +144,43 @@ impl Assets {
             })
         })
         .await?
+    }
+
+    /// Check what [`Assets::register_local_file`] would register (name,
+    /// kind, a regular file within the size limit, an `.npk`'s magic)
+    /// without touching the cache.
+    pub async fn check_local_file(&self, path: &Path) -> Result<LocalFile, AssetError> {
+        let (file_name, name, kind, max) = self.local_target(path)?;
+        let path = path.to_path_buf();
+        blocking(move || {
+            let data = read_local(&path, &file_name, max)?;
+            if kind == LocalKind::Package {
+                check_npk(&file_name, &data)?;
+            }
+            let entry = Entry::new(&data, format!("file://{}", path.display()), false);
+            Ok(LocalFile {
+                name,
+                kind,
+                size: entry.size,
+                sha256: entry.sha256,
+            })
+        })
+        .await?
+    }
+
+    /// File name, cache name, kind and size limit of a local file.
+    fn local_target(&self, path: &Path) -> Result<(String, String, LocalKind, u64), AssetError> {
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let (name, kind) = local_key(&file_name)?;
+        let max = match kind {
+            LocalKind::Package => self.max_download,
+            LocalKind::Script => MAX_SCRIPT_SIZE,
+        };
+        Ok((file_name, name, kind, max))
     }
 
     /// The contents of a registered local file, verified. `name` is
@@ -191,6 +238,20 @@ mod tests {
     use crate::arch::PkgArch;
     use crate::npk::sha256_hex;
     use crate::testutil::*;
+
+    #[tokio::test]
+    async fn checking_a_local_file_does_not_register_it() {
+        let dir = tempdir("local-check");
+        let a = Assets::new(dir.join("cache"), crate::HttpConfig::default()).unwrap();
+        let script = dir.join("Lab.rsc");
+        std::fs::write(&script, b"/x\n").unwrap();
+        let checked = a.check_local_file(&script).await.unwrap();
+        assert_eq!((checked.name.as_str(), checked.size), ("lab.rsc", 3));
+        assert!(a.local_file("lab.rsc").await.is_err(), "not registered");
+        assert_eq!(a.register_local_file(&script).await.unwrap(), checked);
+        let missing = a.check_local_file(&dir.join("none.rsc")).await;
+        assert!(missing.is_err());
+    }
 
     #[tokio::test]
     async fn local_files_are_registered_and_verified() {

@@ -19,6 +19,14 @@ mod start;
 
 pub use device::MAX_DEVICES;
 
+/// How many times, in this process, a stop's aborted tasks (listeners) did
+/// not end in time (logged as "aborted engine tasks did not end in time";
+/// their ports may then still be busy). For tests: it should stay 0.
+#[doc(hidden)]
+pub fn reap_timeouts() -> u64 {
+    core::REAP_TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 use crate::config::{EngineConfig, NetPlan};
 use crate::event::{DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo};
 use crate::prepare::asset_failure;
@@ -46,6 +54,9 @@ pub struct DeviceView {
     pub info: Option<DeviceInfoView>,
     /// Name of the profile assigned with `flash` (or in use).
     pub profile: Option<String>,
+    /// That profile's configuration mode: `keep`, `default`, `empty` or
+    /// `script`.
+    pub config: Option<String>,
     /// RouterOS version of the current (or last) install attempt, once
     /// resolved.
     pub version: Option<String>,

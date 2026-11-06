@@ -17,6 +17,7 @@ function dev(state: DeviceState, extra: Partial<DeviceRow> = {}): DeviceRow {
     boot_arch: "arm64",
     info: { model: "RB5009UG+S+", arch: "arm64", license_id: "X", min_os: "7" },
     version: "7.25.1",
+    config: null,
     attempt: 1,
     updated_ms: Date.now(),
     state,
@@ -58,6 +59,13 @@ describe("DeviceTable", () => {
     show([dev(state)]);
     expect(within(row()).getByText(text)).toBeInTheDocument();
     expect(within(row()).getByText("RB5009UG+S+")).toBeInTheDocument();
+  });
+
+  it("shows the configuration mode under the version", async () => {
+    show([dev({ state: "done" }, { config: "empty" })]);
+    expect(within(row()).getByText("empty configuration")).toBeInTheDocument();
+    locale.set("hu");
+    expect(await within(row()).findByText("üres konfiguráció")).toBeInTheDocument();
   });
 
   it("shows progress for kernel transfer and flashing", () => {

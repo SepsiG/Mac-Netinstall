@@ -15,7 +15,7 @@ use crate::config::{
     check_pool_reserved, link_status, resolve_addresses, subnet, EngineConfig, LinkStatus, NetPlan,
 };
 use crate::event::Failure;
-use crate::profile::{ConfigMode, Profile};
+use crate::profile::Profile;
 use ni_assets::Assets;
 use ni_bootp::{BootpConfig, BootpResponder};
 use ni_net::{bind_udp, BindOptions, Interface, InterfaceKind, NetError};
@@ -70,7 +70,7 @@ impl PreflightReport {
 }
 
 /// Interface and address checks. Errors: `unknown_interface`,
-/// `interface_down`, `no_ipv4`, `server_ip_not_on_interface`, `no_mac`,
+/// `interface_down`, `no_ipv4`, `server_ip_not_on_interface`,
 /// `invalid_netmask`, `server_ip_not_host`, `pool_inverted`,
 /// `pool_outside_subnet`, `pool_includes_reserved` (the network or
 /// broadcast address), `invalid_network` (what `ni-bootp` refuses, e.g. a
@@ -270,7 +270,8 @@ pub fn bind_failure(service: &str, e: &NetError) -> Failure {
 }
 
 /// Can the profile's assets be had? Errors: `version_unavailable`
-/// (`cause`: the asset error code), `script_missing`. Warning:
+/// (`cause`: the asset error code), `script_missing`, `empty_script` (the
+/// configuration script is empty). Warning:
 /// `kernels_not_cached` (they will be downloaded at start).
 pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -292,13 +293,17 @@ pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
             }
         }
     }
-    if let ConfigMode::CustomScript { local_name } = &profile.config {
-        if let Err(e) = assets.local_file(local_name).await {
-            out.push(Finding::error(
+    for local_name in profile.scripts() {
+        match assets.local_file(local_name).await {
+            Err(e) => out.push(Finding::error(
                 Failure::new("script_missing")
                     .with("name", local_name)
                     .with("cause", e.code()),
-            ));
+            )),
+            Ok(data) if data.is_empty() && profile.config.script() == Some(local_name) => {
+                out.push(Finding::error(crate::prepare::empty_script(local_name)));
+            }
+            Ok(_) => {}
         }
     }
     out
@@ -341,6 +346,7 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::config::test_iface as iface;
+    use crate::profile::ConfigMode;
     use ni_assets::testutil::{assets, mirror, tempdir, TestServer};
     use ni_assets::{Channel, VersionSpec};
     use ni_proto::Mac;
@@ -578,7 +584,6 @@ mod tests {
     async fn the_local_check_binds_no_port_and_needs_no_assets() {
         let held = bind_udp(&BindOptions::new(0).addr(Ipv4Addr::LOCALHOST)).unwrap();
         let mut cfg = EngineConfig::new("lo0");
-        cfg.server_mac = Some(MAC);
         cfg.ports.bind_ip = Ipv4Addr::LOCALHOST;
         cfg.ports.bootp = 0;
         cfg.ports.tftp = held.local_addr().unwrap().port();
@@ -616,11 +621,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(check_assets(&a, &profile).await, []);
-        profile.config = ConfigMode::CustomScript {
+        profile.config = ConfigMode::Script {
             local_name: "setup.rsc".into(),
         };
+        profile.mode_script = Some("mode.rsc".into());
         let findings = check_assets(&a, &profile).await;
-        assert_eq!(codes(&findings), [("script_missing", Severity::Error)]);
+        assert_eq!(
+            codes(&findings),
+            [
+                ("script_missing", Severity::Error),
+                ("script_missing", Severity::Error)
+            ]
+        );
+        assert_eq!(findings[1].failure.param("name"), Some("mode.rsc"));
+        // A registered but empty script: use "empty configuration" instead.
+        let empty = dir.join("setup.rsc");
+        std::fs::write(&empty, b"").unwrap();
+        a.register_local_file(&empty).await.unwrap();
+        profile.mode_script = None;
+        let findings = check_assets(&a, &profile).await;
+        assert_eq!(codes(&findings), [("empty_script", Severity::Error)]);
+        assert_eq!(findings[0].failure.param("name"), Some("setup.rsc"));
         profile.version = VersionSpec::Channel(Channel::Testing);
         profile.config = ConfigMode::Default;
         let findings = check_assets(&a, &profile).await;
@@ -631,7 +652,6 @@ mod tests {
     #[tokio::test]
     async fn run_on_loopback_warns_about_the_interface_kind() {
         let mut cfg = EngineConfig::new("lo0");
-        cfg.server_mac = Some(MAC);
         cfg.ports.bootp = 0;
         cfg.ports.tftp = 0;
         cfg.ports.netinstall = 0;

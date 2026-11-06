@@ -1,11 +1,16 @@
 //! Everything but `flash`: interfaces, preflight, assets, profiles.
 
-use crate::cli::{exit, AssetsCommand, Cli, Command, NetArgs, ProfilesCommand, RecipeArgs};
+use crate::cli::{
+    exit, AfterArg, AssetsCommand, Cli, Command, ConfigArg, NetArgs, ProfilesCommand, RecipeArgs,
+};
 use crate::output::finding;
 use ni_assets::{default_cache_root, AssetEvent, Assets, HttpConfig, PkgArch, VersionSpec};
 use ni_engine::preflight::{self, PreflightReport};
 use ni_engine::profile::spec_to_string;
-use ni_engine::{default_profiles_root, ConfigMode, EngineConfig, Failure, Profile, ProfileStore};
+use ni_engine::{
+    default_profiles_root, license_key_from_file, AfterInstall, ConfigMode, EngineConfig, Failure,
+    Profile, ProfileStore,
+};
 use ni_net::{list_interfaces, Interface};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -92,7 +97,6 @@ pub fn engine_config(net: &NetArgs) -> EngineConfig {
     cfg.allow_non_ethernet = net.allow_any_interface;
     cfg.netmask = net.netmask;
     cfg.pool = net.pool;
-    cfg.server_mac = net.server_mac;
     let p = &mut cfg.ports;
     if let Some(ip) = net.bind_ip {
         p.bind_ip = ip;
@@ -204,8 +208,8 @@ async fn preflight(ctx: &Ctx, net: &NetArgs, profile: Option<&str>) -> Outcome {
     if !ctx.json {
         if let Some(n) = &report.network {
             println!(
-                "server {} / {}, pool {} - {}, MAC {}",
-                n.server_ip, n.netmask, n.pool_start, n.pool_end, n.server_mac
+                "server {} / {}, pool {} - {}",
+                n.server_ip, n.netmask, n.pool_start, n.pool_end
             );
         }
         println!(
@@ -270,8 +274,15 @@ async fn fetch(ctx: &Ctx, spec: &VersionSpec, archs: &[String], extras: &[String
 
 // ------------------------------------------------------------ profiles
 
-/// A profile from command-line arguments. A script is registered in the
-/// cache (as its lowercase file name) first.
+/// A profile from command-line arguments. Everything is checked first
+/// (options, key file, script files, the profile itself); only then are the
+/// scripts registered in the cache (as their lowercase file names), so a
+/// refused profile leaves the cache alone. Errors besides the profile
+/// validation codes: `script_with_config` (`config`: `--script` with
+/// `--config keep` or `empty`, which the official tool refuses too),
+/// `mode_script_with_keep`, `script_failed`, `empty_script` (`name`: use
+/// `--config empty` instead), `license_key_failed` (`path`, `detail`:
+/// unreadable key file), `invalid_license_key`.
 pub async fn recipe_profile(
     assets: &Assets,
     name: &str,
@@ -279,29 +290,131 @@ pub async fn recipe_profile(
 ) -> Result<Profile, Failure> {
     let mut p = Profile::new(name, recipe.version.clone());
     p.extra_packages = recipe.packages.clone();
-    if let Some(script) = &recipe.script {
-        let local = register_script(assets, script).await?;
-        p.config = ConfigMode::CustomScript { local_name: local };
+    let c = &recipe.config;
+    let script = match (c.config, &c.script) {
+        (None | Some(ConfigArg::Default), None) => {
+            p.config = ConfigMode::Default;
+            None
+        }
+        (Some(ConfigArg::Keep), None) => {
+            p.config = ConfigMode::Keep;
+            None
+        }
+        (Some(ConfigArg::Empty), None) => {
+            p.config = ConfigMode::Empty;
+            None
+        }
+        (None | Some(ConfigArg::Default), Some(script)) => Some(script),
+        (Some(other), Some(_)) => {
+            let config = format!("{other:?}").to_lowercase();
+            return Err(Failure::new("script_with_config").with("config", config));
+        }
+    };
+    if c.mode_script.is_some() && p.config == ConfigMode::Keep {
+        return Err(Failure::new("mode_script_with_keep"));
+    }
+    p.remove_branding = c.remove_branding;
+    if let Some(path) = &c.license_key {
+        let data = std::fs::read(path).map_err(|e| {
+            Failure::new("license_key_failed")
+                .with("path", path.display())
+                .with("detail", e)
+        })?;
+        p.license_key = Some(license_key_from_file(&data)?);
+    }
+    p.after_install = match c.after {
+        None | Some(AfterArg::Reboot) => AfterInstall::Reboot,
+        Some(AfterArg::RebootMessage) => AfterInstall::RebootMessage,
+        Some(AfterArg::Shutdown) => AfterInstall::Shutdown,
+    };
+    if let Some(path) = script {
+        let checked = check_script(assets, path).await?;
+        if checked.size == 0 {
+            return Err(ni_engine::prepare::empty_script(&checked.name));
+        }
+        p.config = ConfigMode::Script {
+            local_name: checked.name,
+        };
+    }
+    if let Some(path) = &c.mode_script {
+        p.mode_script = Some(check_script(assets, path).await?.name);
     }
     p.validate()?;
+    // Everything checked: register.
+    for path in script.into_iter().chain(&c.mode_script) {
+        register_script(assets, path).await?;
+    }
     Ok(p)
 }
 
+fn script_failed(path: &Path, e: &ni_assets::AssetError) -> Failure {
+    Failure::new("script_failed")
+        .with("path", path.display())
+        .with("cause", e.code())
+        .with("detail", e)
+}
+
+async fn check_script(assets: &Assets, path: &Path) -> Result<ni_assets::LocalFile, Failure> {
+    assets
+        .check_local_file(path)
+        .await
+        .map_err(|e| script_failed(path, &e))
+}
+
 async fn register_script(assets: &Assets, path: &Path) -> Result<String, Failure> {
-    let local = assets.register_local_file(path).await.map_err(|e| {
-        Failure::new("script_failed")
-            .with("path", path.display())
-            .with("cause", e.code())
-            .with("detail", e)
-    })?;
+    let local = assets
+        .register_local_file(path)
+        .await
+        .map_err(|e| script_failed(path, &e))?;
     Ok(local.name)
 }
 
-fn config_text(c: &ConfigMode) -> String {
-    match c {
-        ConfigMode::Default => "default config".into(),
-        ConfigMode::CustomScript { local_name } => format!("script {local_name}"),
+/// How a license key is shown: never the key itself, only its last 4
+/// characters and its length (`****abcd (44 chars)`).
+pub fn masked_key(key: &str) -> String {
+    let tail: String = key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("****{tail} ({} chars)", key.chars().count())
+}
+
+/// A profile as JSON for output, its license key masked ([`masked_key`]).
+fn shown(p: &Profile) -> serde_json::Value {
+    let mut v = serde_json::to_value(p).expect("profiles serialize");
+    if let Some(key) = &p.license_key {
+        v["license_key"] = serde_json::Value::String(masked_key(key));
     }
+    v
+}
+
+/// `default config`, `script lab.rsc, mode script m.rsc, shutdown`, ...
+fn config_text(p: &Profile) -> String {
+    let mut out = match &p.config {
+        ConfigMode::Keep => "keep config".to_string(),
+        ConfigMode::Default => "default config".to_string(),
+        ConfigMode::Empty => "empty config".to_string(),
+        ConfigMode::Script { local_name } => format!("script {local_name}"),
+    };
+    if let Some(m) = &p.mode_script {
+        out.push_str(&format!(", mode script {m}"));
+    }
+    if p.remove_branding {
+        out.push_str(", remove branding");
+    }
+    if let Some(key) = &p.license_key {
+        out.push_str(&format!(", license key {}", masked_key(key)));
+    }
+    match p.after_install {
+        AfterInstall::Reboot => {}
+        AfterInstall::RebootMessage => out.push_str(", reboot with message"),
+        AfterInstall::Shutdown => out.push_str(", shutdown"),
+    }
+    out
 }
 
 async fn profiles(ctx: &Ctx, command: ProfilesCommand) -> Outcome {
@@ -312,7 +425,8 @@ async fn profiles(ctx: &Ctx, command: ProfilesCommand) -> Outcome {
                 eprintln!("warning: {}: {f}", path.display());
             }
             if ctx.json {
-                print_json(&listing.profiles);
+                let shown: Vec<_> = listing.profiles.iter().map(shown).collect();
+                print_json(&shown);
             } else if listing.profiles.is_empty() {
                 println!("no profiles in {}", ctx.profiles.root().display());
             } else {
@@ -324,24 +438,28 @@ async fn profiles(ctx: &Ctx, command: ProfilesCommand) -> Outcome {
                         p.name,
                         spec_to_string(&p.version),
                         packages.join(","),
-                        config_text(&p.config)
+                        config_text(p)
                     );
                 }
             }
         }
         ProfilesCommand::Show { name } => {
             let p = ctx.profiles.load(&name)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&p).expect("serializable")
-            );
+            if ctx.json {
+                print_json(&shown(&p));
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&shown(&p)).expect("serializable")
+                );
+            }
         }
         ProfilesCommand::Save { name, recipe } => {
             let assets = ctx.assets()?;
             let p = recipe_profile(&assets, &name, &recipe).await?;
             ctx.profiles.save(&p)?;
             if ctx.json {
-                print_json(&p);
+                print_json(&shown(&p));
             } else {
                 println!("saved profile {}", p.name);
             }
@@ -368,8 +486,6 @@ mod tests {
             "preflight",
             "--iface",
             "lo0",
-            "--server-mac",
-            "02:00:00:00:00:01",
             "--bootp-port",
             "6700",
             "--tftp-port",
@@ -392,7 +508,6 @@ mod tests {
         let cfg = engine_config(&net);
         assert_eq!(cfg.interface, "lo0");
         assert_eq!(cfg.server_ip, Some("127.0.0.1".parse().unwrap()));
-        assert_eq!(cfg.server_mac, Some(ni_proto::Mac([2, 0, 0, 0, 0, 1])));
         assert_eq!(
             (cfg.ports.bootp, cfg.ports.tftp, cfg.ports.netinstall),
             (6700, 6900, 0)
@@ -406,7 +521,6 @@ mod tests {
             server_ip: None,
             netmask: None,
             pool: None,
-            server_mac: None,
             bind_ip: None,
             bootp_port: None,
             tftp_port: None,

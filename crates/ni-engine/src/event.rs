@@ -123,9 +123,13 @@ pub enum DeviceState {
     /// RouterOS version being installed, once known (it is known at once
     /// when the profile's version is the one the boot kernels were
     /// resolved to; otherwise it is resolved during preparation).
+    /// `config` is the profile's configuration mode (`keep`, `default`,
+    /// `empty`, `script`).
     Preparing {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config: Option<String>,
     },
     /// The install session runs; `phase` is [`ni_proto::Phase::name`],
     /// `version` the RouterOS version being installed.
@@ -360,6 +364,7 @@ mod tests {
             mac: MAC,
             state: DeviceState::Preparing {
                 version: version.map(String::from),
+                config: None,
             },
         };
         assert_eq!(
@@ -367,6 +372,18 @@ mod tests {
             json!({"event": "device", "mac": "48:A9:8A:11:22:33", "state": "preparing"})
         );
         assert_eq!(roundtrip(&preparing(Some("7.25.1")))["version"], "7.25.1");
+        let with_config = EngineEvent::Device {
+            mac: MAC,
+            state: DeviceState::Preparing {
+                version: None,
+                config: Some("empty".into()),
+            },
+        };
+        assert_eq!(
+            roundtrip(&with_config),
+            json!({"event": "device", "mac": "48:A9:8A:11:22:33", "state": "preparing",
+                   "config": "empty"})
+        );
         let failed = EngineEvent::Device {
             mac: MAC,
             state: DeviceState::failed(Failure::new("flash_timeout").with("phase", "offering")),
@@ -501,7 +518,10 @@ mod tests {
             DeviceState::Waiting {
                 reason: WaitReason::Concurrency,
             },
-            DeviceState::Preparing { version: None },
+            DeviceState::Preparing {
+                version: None,
+                config: None,
+            },
             DeviceState::Flashing {
                 version: "7.25.1".into(),
                 phase: "offering".into(),

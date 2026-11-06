@@ -131,6 +131,12 @@ pub struct ScriptView {
     pub size: u64,
 }
 
+/// A license key read from a key file (line breaks removed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LicenseKeyView {
+    pub key: String,
+}
+
 /// The download cache, for the settings view: what is in it, by
 /// path-free ids ([`ni_assets::Inventory`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

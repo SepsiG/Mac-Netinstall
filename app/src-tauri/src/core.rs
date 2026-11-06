@@ -5,22 +5,25 @@
 
 use crate::settings::{Settings, SettingsStore};
 use crate::views::{
-    without_paths, BrokenProfile, CacheView, InterfaceView, PackagesView, ProfilesView, ScriptView,
-    StartRequest,
+    without_paths, BrokenProfile, CacheView, InterfaceView, LicenseKeyView, PackagesView,
+    ProfilesView, ScriptView, StartRequest,
 };
 use ni_assets::{
     default_cache_root, item_version, AssetError, DeleteScope, HttpConfig, LocalKind, PkgArch,
     Version, VersionSpec,
 };
 use ni_engine::{
-    default_profiles_root, preflight, EngineConfig, EngineHandle, Failure, PreflightReport,
-    Profile, ProfileStore, Snapshot, StartInfo,
+    default_profiles_root, license_key_from_file, preflight, EngineConfig, EngineHandle, Failure,
+    PreflightReport, Profile, ProfileStore, Snapshot, StartInfo,
 };
 use ni_proto::Mac;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::sync::watch;
+
+/// Largest key file read (MikroTik key files are a few hundred bytes).
+pub const MAX_KEY_FILE: u64 = 64 * 1024;
 
 /// Where the app keeps its files.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +197,31 @@ impl AppCore {
                 .await?;
         }
         Ok(s)
+    }
+
+    /// Remember the main window's geometry (ignored unless valid).
+    pub fn remember_window(&self, g: crate::settings::WindowGeometry) {
+        if g.is_valid() && self.settings().window != Some(g) {
+            self.remember(|s| s.window = Some(g));
+        }
+    }
+
+    /// Remember a dialog's size. Error: `invalid_setting` (`field`:
+    /// `dialog_sizes`) for a bad id or size, or a new id past
+    /// [`crate::settings::MAX_DIALOGS`].
+    pub fn set_dialog_size(&self, id: &str, width: u32, height: u32) -> Result<(), Failure> {
+        let size = crate::settings::DialogSize { width, height };
+        let mut s = lock(&self.settings);
+        let mut next = s.clone();
+        next.dialog_sizes.insert(id.to_string(), size);
+        if !crate::settings::valid_dialog_id(id) || next.validate().is_err() {
+            return Err(Failure::new("invalid_setting").with("field", "dialog_sizes"));
+        }
+        if let Err(f) = self.store.save(&next) {
+            tracing::warn!("cannot store settings: {f}");
+        }
+        *s = next;
+        Ok(())
     }
 
     /// Change a few fields and store them; a failure to store is only
@@ -454,6 +482,23 @@ impl AppCore {
             name: file.name,
             size: file.size,
         })
+    }
+
+    /// The license key in the key file at `path` (the official tool's
+    /// `-k`), opened once and read only if it is a regular file (a FIFO
+    /// or device never blocks the call; see
+    /// [`ni_assets::read_regular_file`]). Errors: `key_file_failed`
+    /// (`reason`: `unreadable`, `not_a_file`, or `too_large` past
+    /// [`MAX_KEY_FILE`] bytes), `invalid_license_key` (`max`).
+    pub fn read_license_key(&self, path: &Path) -> Result<LicenseKeyView, Failure> {
+        let failed = |reason: &str| Failure::new("key_file_failed").with("reason", reason);
+        let data = ni_assets::read_regular_file(path, MAX_KEY_FILE).map_err(|e| match e {
+            ni_assets::ReadFileError::Io(_) => failed("unreadable"),
+            ni_assets::ReadFileError::NotAFile => failed("not_a_file"),
+            ni_assets::ReadFileError::TooLarge => failed("too_large"),
+        })?;
+        let key = license_key_from_file(&data)?;
+        Ok(LicenseKeyView { key })
     }
 
     // ------------------------------------------------------------ cache, log

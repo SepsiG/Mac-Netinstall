@@ -6,6 +6,7 @@ mod common;
 use common::*;
 use ni_engine::{DeviceState, EngineEvent, EngineHandle, WaitReason};
 use ni_net::{bind_udp, BindOptions};
+use ni_sim::AfterFiles;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -278,6 +279,67 @@ async fn a_refused_install_is_flash_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_that_stops_before_the_last_file_is_flash_ended_early() {
+    let mut rig = rig(|_| {}).await;
+    let mut early = sim_config(A);
+    early.after_files = AfterFiles::EarlyWtrm;
+    let sim = boot(&rig, A, early).await;
+    rig.lan.add(sim).await;
+    let e = state(&mut rig.events, A, "failed").await;
+    let EngineEvent::Device {
+        state: DeviceState::Failed { code, params },
+        ..
+    } = e
+    else {
+        unreachable!()
+    };
+    assert_eq!(code, "flash_ended_early");
+    assert_eq!(params["remaining"], "1", "wireless was not sent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_that_never_says_wtrm_is_done_with_a_warning() {
+    let mut rig = rig(|_| {}).await;
+    let mut never = sim_config(A);
+    never.after_files = AfterFiles::NeverWtrm;
+    let sim = boot(&rig, A, never).await;
+    rig.lan.add(sim).await;
+    let w = next(
+        &mut rig.events,
+        |e| matches!(e, EngineEvent::Warning(f) if f.code == "finish_unconfirmed"),
+    )
+    .await;
+    let EngineEvent::Warning(f) = w else {
+        unreachable!()
+    };
+    assert_eq!(f.param("mac"), Some("48:A9:8A:00:00:0A"));
+    state(&mut rig.events, A, "done").await;
+    let report = rig.lan.wait_terminated(A, WAIT).await;
+    assert!(report.is_some(), "TERM reached the device");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_newer_min_os_is_only_a_warning() {
+    let mut rig = rig(|_| {}).await;
+    let mut newer = sim_config(A);
+    newer.info.min_os = "7.99".into();
+    let sim = boot(&rig, A, newer).await;
+    rig.lan.add(sim).await;
+    let w = next(
+        &mut rig.events,
+        |e| matches!(e, EngineEvent::Warning(f) if f.code == "min_os_newer"),
+    )
+    .await;
+    let EngineEvent::Warning(f) = w else {
+        unreachable!()
+    };
+    assert_eq!(f.param("min_os"), Some("7.99"));
+    assert_eq!(f.param("version"), Some("7.25.1"));
+    assert_eq!(f.param("mac"), Some("48:A9:8A:00:00:0A"));
+    state(&mut rig.events, A, "done").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_device_that_netboots_again_is_reflashed() {
     let mut rig = rig(|_| {}).await;
     let sim = boot(&rig, A, sim_config(A)).await;
@@ -406,12 +468,20 @@ async fn an_explicit_flash_keeps_the_queue_position() {
 async fn stop_and_start_on_fixed_ports_never_finds_them_busy() {
     let mut rig = rig(|_| {}).await;
     rig.engine.stop().await.unwrap();
-    let free = || {
-        let s = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
-        s.local_addr().unwrap().port()
-    };
+    // Three distinct free ports: bound together (one at a time, a port
+    // dropped could be handed out again at once), released together right
+    // before the first start.
+    let probes: Vec<std::net::UdpSocket> = (0..3)
+        .map(|_| std::net::UdpSocket::bind("0.0.0.0:0").unwrap())
+        .collect();
+    let ports: Vec<u16> = probes
+        .iter()
+        .map(|s| s.local_addr().unwrap().port())
+        .collect();
     let mut cfg = config(&rig.lan);
-    (cfg.ports.bootp, cfg.ports.tftp, cfg.ports.netinstall) = (free(), free(), free());
+    (cfg.ports.bootp, cfg.ports.tftp, cfg.ports.netinstall) = (ports[0], ports[1], ports[2]);
+    let slow_reaps = ni_engine::engine::reap_timeouts();
+    drop(probes);
     for round in 0..20 {
         let started = rig
             .engine
@@ -422,6 +492,11 @@ async fn stop_and_start_on_fixed_ports_never_finds_them_busy() {
         rig.engine.stop().await.unwrap();
     }
     next(&mut rig.events, |e| *e == EngineEvent::Stopped).await;
+    assert_eq!(
+        ni_engine::engine::reap_timeouts(),
+        slow_reaps,
+        "aborted engine tasks did not end in time"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

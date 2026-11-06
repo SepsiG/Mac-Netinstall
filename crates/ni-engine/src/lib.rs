@@ -29,4 +29,7 @@ pub use event::{
     DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo, WaitReason,
 };
 pub use preflight::{Finding, PreflightReport, Severity};
-pub use profile::{default_profiles_root, ConfigMode, Listing, Profile, ProfileStore};
+pub use profile::{
+    default_profiles_root, license_key_from_file, AfterInstall, ConfigMode, Listing, Profile,
+    ProfileStore, MAX_LICENSE_KEY,
+};

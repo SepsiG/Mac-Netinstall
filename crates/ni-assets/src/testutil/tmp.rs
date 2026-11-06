@@ -51,6 +51,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn temp_dirs_are_unique_per_process_and_call() {
+        // Per-root state (e.g. the inventory's hash counters) relies on it.
+        let (a, b) = (tempdir("inv-memo"), tempdir("inv-memo"));
+        assert_ne!(a.to_path_buf(), b.to_path_buf());
+        let pid = std::process::id().to_string();
+        assert!(a.to_string_lossy().contains(&pid));
+    }
+
+    #[test]
     fn temp_dirs_are_removed_on_drop() {
         let dir = tempdir("guard");
         let path = dir.to_path_buf();

@@ -14,6 +14,10 @@
 //! waiting (`busy` if a download holds it), updates the index under its
 //! lock, removes the target's part files, and never follows a symlink out
 //! of the cache root (a symlink is only unlinked).
+//!
+//! A version directory with nothing in it (no index entry, no part file;
+//! e.g. after its last item was deleted) is never listed, and listings and
+//! deletions remove it, unless a download is starting in it.
 
 use super::{blocking, part_target, Assets, LOCAL_DIR};
 use crate::cache::{CacheDir, Index, Lookup, DIR_LOCK, INDEX_FILE, LOCK_DIR, PART_SUFFIX};
@@ -24,7 +28,6 @@ use crate::version::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -39,12 +42,25 @@ pub(crate) struct Check {
 /// Checks by file path, shared by one [`Assets`].
 pub(crate) type Checks = Arc<Mutex<HashMap<PathBuf, Check>>>;
 
-/// Files hashed by inventories (tests count them).
-static HASHES: AtomicU64 = AtomicU64::new(0);
+/// Files hashed by inventories, per cache root (tests count them; per root
+/// so tests running in parallel do not see each other's).
+#[cfg(test)]
+static HASHES: Mutex<std::collections::BTreeMap<PathBuf, u64>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Count one hashed `file` (`<root>/<dir>/<file>`) for the tests.
+fn count_hash(_file: &Path) {
+    #[cfg(test)]
+    if let Some(root) = _file.parent().and_then(Path::parent) {
+        let mut counts = HASHES.lock().unwrap_or_else(|e| e.into_inner());
+        *counts.entry(root.to_path_buf()).or_default() += 1;
+    }
+}
 
 #[cfg(test)]
-fn hashes() -> u64 {
-    HASHES.load(Ordering::Relaxed)
+fn hashes(root: &Path) -> u64 {
+    let counts = HASHES.lock().unwrap_or_else(|e| e.into_inner());
+    counts.get(root).copied().unwrap_or(0)
 }
 
 /// How a cached file checks out.
@@ -228,7 +244,7 @@ fn integrity(
             _ => Integrity::Unchecked,
         };
     }
-    HASHES.fetch_add(1, Ordering::Relaxed);
+    count_hash(&path);
     let valid = matches!(dir.lookup(index, name), Lookup::Valid(_));
     memo.insert(
         path,
@@ -309,16 +325,51 @@ fn subdirs(root: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-fn inventory(root: &Path, checks: &Checks, verify: bool) -> Inventory {
-    let mut inv = Inventory::default();
+/// The version directories under `root`, oldest first.
+fn version_dirs(root: &Path) -> Vec<Version> {
     let mut versions: Vec<Version> = subdirs(root)
         .iter()
         .filter_map(|(n, _)| Version::parse(n).ok())
         .collect();
     versions.sort();
-    for v in &versions {
-        inv.versions
-            .push(version_inventory(root, v, checks, verify));
+    versions
+}
+
+/// Whether `dir` holds part files.
+fn has_parts(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(PART_SUFFIX) && part_target(n).is_some())
+        })
+}
+
+/// Remove `version`'s directory if nothing is in it; a directory being
+/// downloaded into (`busy`) is left alone. Returns whether it was removed.
+fn remove_if_empty(root: &Path, version: &Version) -> Result<bool, AssetError> {
+    match delete_version(root, version, true) {
+        Ok(None) => Ok(false),
+        Ok(Some(_)) => Ok(true),
+        Err(AssetError::Busy { .. }) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Everything in the cache. With `prune`, empty version directories are
+/// removed on the way (errors ignored: they are not listed either way).
+fn inventory(root: &Path, checks: &Checks, verify: bool, prune: bool) -> Inventory {
+    let mut inv = Inventory::default();
+    for v in &version_dirs(root) {
+        let listed = version_inventory(root, v, checks, verify);
+        if !listed.items.is_empty() {
+            inv.versions.push(listed);
+        } else if prune {
+            let _ = remove_if_empty(root, v);
+        }
     }
     for (dir_name, path) in subdirs(root) {
         for entry in std::fs::read_dir(&path).into_iter().flatten().flatten() {
@@ -448,16 +499,25 @@ fn delete_kernels(root: &Path, version: &Version, id: &str) -> Result<u64, Asset
 }
 
 /// Delete a whole version directory, holding every lock its writers use.
-fn delete_version(root: &Path, version: &Version) -> Result<u64, AssetError> {
+/// With `only_if_empty`, nothing is deleted (`None`) unless the directory
+/// has no index entry and no part file (checked under the locks).
+fn delete_version(
+    root: &Path,
+    version: &Version,
+    only_if_empty: bool,
+) -> Result<Option<u64>, AssetError> {
     let id = version.as_str();
     let path = root.join(id);
     let meta = match std::fs::symlink_metadata(&path) {
         Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Some(0)),
         Err(e) => return Err(AssetError::io("remove", &path)(e)),
     };
     if !meta.is_dir() {
-        return remove(&path); // a symlink (or stray file): unlink only
+        if only_if_empty {
+            return Ok(None);
+        }
+        return remove(&path).map(Some); // a symlink (or stray file): unlink only
     }
     let dir = CacheDir::new(path.clone());
     let index = dir.load();
@@ -469,10 +529,13 @@ fn delete_version(root: &Path, version: &Version) -> Result<u64, AssetError> {
         held.push(try_hold(&dir, name, id)?);
     }
     let _index_lock = try_hold(&dir, INDEX_FILE, id)?;
-    let size = version_inventory(root, version, &Checks::default(), false).size;
+    let listed = version_inventory(root, version, &Checks::default(), false);
+    if only_if_empty && (!listed.items.is_empty() || has_parts(&path)) {
+        return Ok(None);
+    }
     std::fs::remove_dir_all(&path).map_err(AssetError::io("remove", &path))?;
     drop(held);
-    Ok(size)
+    Ok(Some(listed.size))
 }
 
 /// Delete the item `id`.
@@ -530,14 +593,14 @@ impl Assets {
     /// Everything in the cache, quickly (see the module docs).
     pub async fn cached_inventory(&self) -> Result<Inventory, AssetError> {
         let (root, checks) = (self.root.clone(), self.checks.clone());
-        blocking(move || inventory(&root, &checks, false)).await
+        blocking(move || inventory(&root, &checks, false, true)).await
     }
 
     /// Everything in the cache, every file's SHA-256 checked against its
     /// index entry (and remembered for later listings).
     pub async fn verify_cache(&self) -> Result<Inventory, AssetError> {
         let (root, checks) = (self.root.clone(), self.checks.clone());
-        blocking(move || inventory(&root, &checks, true)).await
+        blocking(move || inventory(&root, &checks, true, true)).await
     }
 
     /// Delete `scope`; returns the bytes freed. Errors: `invalid_item`
@@ -548,18 +611,22 @@ impl Assets {
         let (root, checks) = (self.root.clone(), self.checks.clone());
         blocking(move || -> Result<u64, AssetError> {
             match scope {
-                DeleteScope::Item { id } => delete_item(&root, &id),
+                DeleteScope::Item { id } => {
+                    let freed = delete_item(&root, &id)?;
+                    if let Some(v) = item_version(&id) {
+                        remove_if_empty(&root, &v)?;
+                    }
+                    Ok(freed)
+                }
                 DeleteScope::Version { version } => {
                     let v = Version::parse(&version).map_err(|_| invalid(&version))?;
-                    delete_version(&root, &v)
+                    Ok(delete_version(&root, &v, false)?.unwrap_or(0))
                 }
                 DeleteScope::All => {
-                    let inv = inventory(&root, &checks, false);
+                    let inv = inventory(&root, &checks, false, false);
                     let mut freed = 0;
-                    for v in &inv.versions {
-                        let version =
-                            Version::parse(&v.version).map_err(|_| invalid(&v.version))?;
-                        freed += delete_version(&root, &version)?;
+                    for version in version_dirs(&root) {
+                        freed += delete_version(&root, &version, false)?.unwrap_or(0);
                     }
                     for item in &inv.partial {
                         freed += delete_item(&root, &item.id)?;
@@ -567,10 +634,13 @@ impl Assets {
                     Ok(freed)
                 }
                 DeleteScope::Damaged => {
-                    let inv = inventory(&root, &checks, false);
+                    let inv = inventory(&root, &checks, false, false);
                     let mut freed = 0;
                     for item in inv.items().filter(|i| i.integrity.damaged()) {
                         freed += delete_item(&root, &item.id)?;
+                    }
+                    for version in version_dirs(&root) {
+                        remove_if_empty(&root, &version)?;
                     }
                     Ok(freed)
                 }
@@ -676,27 +746,27 @@ mod tests {
     #[tokio::test]
     async fn listings_reuse_verification_results_of_unchanged_files() {
         let (_srv, root, a) = filled("inv-memo").await;
-        let before = hashes();
+        let before = hashes(&root);
         let verified = a.verify_cache().await.unwrap();
-        assert!(hashes() > before, "verify reads the files");
+        assert!(hashes(&root) > before, "verify reads the files");
         assert!(verified
             .items()
             .all(|i| i.integrity != Integrity::Unchecked));
-        let after_verify = hashes();
+        let after_verify = hashes(&root);
         let quick = a.cached_inventory().await.unwrap();
         assert_eq!(
-            hashes(),
+            hashes(&root),
             after_verify,
             "unchanged files are not hashed again"
         );
         assert_eq!(quick, verified);
         // Deleting the damaged ones does not hash everything again either.
         a.delete_cached(DeleteScope::Damaged).await.unwrap();
-        assert_eq!(hashes(), after_verify);
+        assert_eq!(hashes(&root), after_verify);
         // A fresh manager has nothing remembered: unchecked, not hashed.
         let fresh = assets(&_srv, &root);
         let listed = fresh.cached_inventory().await.unwrap();
-        assert_eq!(hashes(), after_verify);
+        assert_eq!(hashes(&root), after_verify);
         assert_eq!(
             item(&listed, "7.25.1/wireless-7.25.1-arm64.npk").integrity,
             Integrity::Unchecked
@@ -811,6 +881,43 @@ mod tests {
         .await
         .unwrap();
         assert!(a.cached_inventory().await.unwrap().local.is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_version_directories_are_neither_listed_nor_kept() {
+        let (_srv, root, a) = filled("inv-empty").await;
+        // A directory left empty by an earlier version of the app.
+        let stale = root.join("7.24.6");
+        std::fs::create_dir_all(&stale).unwrap();
+        CacheDir::new(stale.clone()).update(|_| {}).unwrap();
+        let inv = a.cached_inventory().await.unwrap();
+        let listed: Vec<&str> = inv.versions.iter().map(|v| v.version.as_str()).collect();
+        assert_eq!(listed, ["7.25.1"]);
+        assert!(!stale.exists(), "removed by the listing");
+        // Deleting the last items of a version removes its directory.
+        for id in [
+            "7.25.1/kernels",
+            "7.25.1/routeros-7.25.1-arm64.npk",
+            "7.25.1/wireless-7.25.1-arm64.npk",
+        ] {
+            assert!(root.join("7.25.1").exists(), "{id}");
+            a.delete_cached(DeleteScope::Item { id: id.into() })
+                .await
+                .unwrap();
+        }
+        assert!(!root.join("7.25.1").exists());
+        assert!(a.cached_inventory().await.unwrap().versions.is_empty());
+        // One being downloaded into is left alone.
+        std::fs::create_dir_all(&stale).unwrap();
+        let dir = CacheDir::new(stale.clone());
+        let held = lock::try_lock_file(&dir.lock_path(DIR_LOCK))
+            .unwrap()
+            .unwrap();
+        assert!(a.cached_inventory().await.unwrap().versions.is_empty());
+        assert!(stale.exists(), "busy: kept, but not listed");
+        drop(held);
+        a.delete_cached(DeleteScope::All).await.unwrap();
+        assert!(!stale.exists(), "everything includes empty directories");
     }
 
     #[tokio::test]

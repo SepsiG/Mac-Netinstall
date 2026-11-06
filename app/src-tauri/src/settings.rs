@@ -25,7 +25,68 @@ pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
 /// Version 3 stores the pool as automatic (both ends `null`) unless it was
 /// chosen: an older pool equal to the automatic one (for the last
 /// interface's manual IPv4) becomes automatic.
-pub const SETTINGS_VERSION: u32 = 3;
+///
+/// Version 4 adds `window` (the main window's position and size) and
+/// `dialog_sizes` (each dialog's size, by id); older files have neither and
+/// keep everything else.
+pub const SETTINGS_VERSION: u32 = 4;
+
+/// Smallest main window (also `minWidth` / `minHeight` in tauri.conf.json).
+pub const MIN_WINDOW_WIDTH: u32 = 820;
+pub const MIN_WINDOW_HEIGHT: u32 = 520;
+/// Largest stored window or dialog side (points).
+pub const MAX_SIDE: u32 = 16_384;
+/// Largest stored window coordinate (points, either sign).
+pub const MAX_COORDINATE: i32 = 100_000;
+/// Smallest stored dialog side (points).
+pub const MIN_DIALOG_SIDE: u32 = 120;
+/// Most dialog sizes stored.
+pub const MAX_DIALOGS: usize = 16;
+/// Longest dialog id.
+pub const MAX_DIALOG_ID: usize = 32;
+
+/// The main window's position (top-left of its frame) and content size,
+/// in points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl WindowGeometry {
+    pub fn is_valid(&self) -> bool {
+        (MIN_WINDOW_WIDTH..=MAX_SIDE).contains(&self.width)
+            && (MIN_WINDOW_HEIGHT..=MAX_SIDE).contains(&self.height)
+            && (-MAX_COORDINATE..=MAX_COORDINATE).contains(&self.x)
+            && (-MAX_COORDINATE..=MAX_COORDINATE).contains(&self.y)
+    }
+}
+
+/// A dialog's size as the user left it, in CSS pixels (points).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialogSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl DialogSize {
+    pub fn is_valid(&self) -> bool {
+        (MIN_DIALOG_SIDE..=MAX_SIDE).contains(&self.width)
+            && (MIN_DIALOG_SIDE..=MAX_SIDE).contains(&self.height)
+    }
+}
+
+/// A dialog id: 1..=[`MAX_DIALOG_ID`] of `a-z`, `0-9`, `_`, starting with
+/// a letter.
+pub fn valid_dialog_id(id: &str) -> bool {
+    id.len() <= MAX_DIALOG_ID
+        && id.starts_with(|c: char| c.is_ascii_lowercase())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
 
 /// The automatic pool for an interface (by BSD name), if it has a manual
 /// IPv4 in macOS.
@@ -62,6 +123,11 @@ pub struct Settings {
     pub last_profile: Option<String>,
     /// Longest time one download may take.
     pub download_timeout_secs: u64,
+    /// The main window as it was left; restored at start (its position
+    /// only if that is on a connected display).
+    pub window: Option<WindowGeometry>,
+    /// Each dialog's size as the user left it, by dialog id.
+    pub dialog_sizes: std::collections::BTreeMap<String, DialogSize>,
 }
 
 impl Default for Settings {
@@ -77,6 +143,8 @@ impl Default for Settings {
             auto_repeat: false,
             last_profile: None,
             download_timeout_secs: 30 * 60,
+            window: None,
+            dialog_sizes: Default::default(),
         }
     }
 }
@@ -106,6 +174,17 @@ impl Settings {
                 .with("min", MIN_DOWNLOAD_TIMEOUT)
                 .with("max", MAX_DOWNLOAD_TIMEOUT));
         }
+        if self.window.is_some_and(|w| !w.is_valid()) {
+            return Err(invalid("window"));
+        }
+        let sizes_ok = self.dialog_sizes.len() <= MAX_DIALOGS
+            && self
+                .dialog_sizes
+                .iter()
+                .all(|(id, size)| valid_dialog_id(id) && size.is_valid());
+        if !sizes_ok {
+            return Err(invalid("dialog_sizes"));
+        }
         Ok(())
     }
 
@@ -115,13 +194,15 @@ impl Settings {
 
     /// `edit` (from the settings dialog) with what the app remembers by
     /// itself kept from `self`: the last interface, profile and
-    /// auto-repeat. A dialog opened before a start must not undo what the
-    /// start remembered.
+    /// auto-repeat, the window and the dialog sizes. A dialog opened before
+    /// a start must not undo what the start remembered.
     pub fn merged_edit(&self, edit: Settings) -> Settings {
         Settings {
             last_interface: self.last_interface.clone(),
             last_profile: self.last_profile.clone(),
             auto_repeat: self.auto_repeat,
+            window: self.window,
+            dialog_sizes: self.dialog_sizes.clone(),
             ..edit
         }
     }
@@ -138,6 +219,8 @@ const FIELDS: &[&str] = &[
     "auto_repeat",
     "last_profile",
     "download_timeout_secs",
+    "window",
+    "dialog_sizes",
 ];
 
 /// Set `field` of `s` from the file's JSON `obj`; `false` if it has the
@@ -180,6 +263,8 @@ fn set_field(
         "auto_repeat" => get(obj, field, &mut s.auto_repeat),
         "last_profile" => get(obj, field, &mut s.last_profile),
         "download_timeout_secs" => get(obj, field, &mut s.download_timeout_secs),
+        "window" => get(obj, field, &mut s.window),
+        "dialog_sizes" => get(obj, field, &mut s.dialog_sizes),
         _ => unreachable!("unknown settings field {field}"),
     }
 }
@@ -579,6 +664,142 @@ mod tests {
             (f.param("field"), f.param("min")),
             (Some("download_timeout"), Some("60"))
         );
+    }
+
+    #[test]
+    fn window_and_dialog_sizes_are_validated() {
+        let field = |s: &Settings| s.validate().unwrap_err().param("field").map(String::from);
+        let mut s = Settings {
+            window: Some(WindowGeometry {
+                x: -1200,
+                y: 40,
+                width: 1040,
+                height: 680,
+            }),
+            ..Settings::default()
+        };
+        s.dialog_sizes.insert(
+            "profile".into(),
+            DialogSize {
+                width: 640,
+                height: 480,
+            },
+        );
+        assert!(s.validate().is_ok());
+        let ok = s.clone();
+        for bad in [
+            WindowGeometry {
+                width: MIN_WINDOW_WIDTH - 1,
+                ..ok.window.unwrap()
+            },
+            WindowGeometry {
+                height: MIN_WINDOW_HEIGHT - 1,
+                ..ok.window.unwrap()
+            },
+            WindowGeometry {
+                width: MAX_SIDE + 1,
+                ..ok.window.unwrap()
+            },
+            WindowGeometry {
+                x: MAX_COORDINATE + 1,
+                ..ok.window.unwrap()
+            },
+            WindowGeometry {
+                y: -MAX_COORDINATE - 1,
+                ..ok.window.unwrap()
+            },
+        ] {
+            s.window = Some(bad);
+            assert_eq!(field(&s).as_deref(), Some("window"), "{bad:?}");
+        }
+        s.window = ok.window;
+        for (id, w, h) in [
+            ("profile", MIN_DIALOG_SIDE - 1, 400),
+            ("profile", 400, MAX_SIDE + 1),
+            ("", 400, 400),
+            ("Profile", 400, 400),
+            ("../x", 400, 400),
+            (&"x".repeat(33), 400, 400),
+        ] {
+            let mut t = ok.clone();
+            t.dialog_sizes.insert(
+                id.to_string(),
+                DialogSize {
+                    width: w,
+                    height: h,
+                },
+            );
+            assert_eq!(field(&t).as_deref(), Some("dialog_sizes"), "{id} {w}x{h}");
+        }
+        let mut many = ok.clone();
+        for i in 0..=MAX_DIALOGS {
+            many.dialog_sizes.insert(
+                format!("d{i}"),
+                DialogSize {
+                    width: 400,
+                    height: 400,
+                },
+            );
+        }
+        assert_eq!(field(&many).as_deref(), Some("dialog_sizes"));
+    }
+
+    #[test]
+    fn version_3_files_gain_window_and_dialog_sizes() {
+        let dir = tempdir("settings-v3");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 3, "language": "hu", "max_parallel": 2}"#,
+        )
+        .unwrap();
+        let loaded = SettingsStore::new(&path).load_checked();
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert_eq!(loaded.settings.window, None);
+        assert!(loaded.settings.dialog_sizes.is_empty());
+        assert_eq!(loaded.settings.max_parallel, 2);
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["version"], 4);
+        assert_eq!(stored["window"], json!(null));
+        assert_eq!(stored["dialog_sizes"], json!({}));
+        // Invalid sizes fall back alone; the rest is kept.
+        std::fs::write(
+            &path,
+            json!({"version": 4, "language": "hu",
+                "window": {"x": 0, "y": 0, "width": 10, "height": 10},
+                "dialog_sizes": {"profile": {"width": 9, "height": 9}}})
+            .to_string(),
+        )
+        .unwrap();
+        let loaded = SettingsStore::new(&path).load_checked();
+        assert_eq!(loaded.problems, ["window", "dialog_sizes"]);
+        assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+        assert_eq!(loaded.settings.window, None);
+        assert!(loaded.settings.dialog_sizes.is_empty());
+    }
+
+    #[test]
+    fn the_settings_dialog_keeps_the_window_and_dialog_sizes() {
+        let mut current = Settings {
+            window: Some(WindowGeometry {
+                x: 10,
+                y: 20,
+                width: 1100,
+                height: 700,
+            }),
+            ..Settings::default()
+        };
+        current.dialog_sizes.insert(
+            "settings".into(),
+            DialogSize {
+                width: 600,
+                height: 500,
+            },
+        );
+        let merged = current.merged_edit(Settings::default());
+        assert_eq!(merged.window, current.window);
+        assert_eq!(merged.dialog_sizes, current.dialog_sizes);
     }
 
     #[test]

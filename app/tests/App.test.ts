@@ -4,11 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import App from "../src/App.svelte";
 import type { Backend } from "../src/lib/api";
 import type { DeviceState, DeviceView, Profile, Snapshot } from "../src/lib/types";
-import { mockBackend, SETTINGS, IDLE } from "./mock";
+import { mockBackend, profile, SETTINGS, IDLE } from "./mock";
 
 const A = "48:A9:8A:00:00:0A";
 const B = "48:A9:8A:00:00:0B";
-const LAB: Profile = { name: "lab", version: "stable", extra_packages: [], config: { mode: "default" } };
+const LAB: Profile = profile("lab");
 const OTHER: Profile = { ...LAB, name: "other" };
 const FORMATTING: DeviceState = { state: "flashing", version: "7.25.1", phase: "formatting", sent: 0, total: 100 };
 
@@ -19,6 +19,7 @@ function view(mac: string, state: DeviceState): DeviceView {
     boot_arch: "arm64",
     info: { model: "RB5009UG+S+", arch: "arm64", license_id: "X", min_os: "7" },
     profile: "lab",
+    config: "default",
     version: "7.25.1",
     attempt: 1,
     first_seen_ms: Date.now(),
@@ -173,8 +174,8 @@ describe("App", () => {
     await userEvent.type(screen.getByLabelText("Name"), "fresh");
     vi.mocked(backend.listProfiles).mockResolvedValueOnce({
       profiles: [
-        { name: "fresh", version: "stable", extra_packages: [], config: { mode: "default" } },
-        { name: "lab", version: "stable", extra_packages: [], config: { mode: "default" } },
+        profile("fresh"),
+        profile("lab"),
       ],
       broken: [],
     });

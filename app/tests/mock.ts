@@ -2,7 +2,7 @@
 // and `emit*` drive the event callbacks.
 import { vi } from "vitest";
 import type { Backend } from "../src/lib/api";
-import type { CacheView, EngineEvent, Settings, Snapshot } from "../src/lib/types";
+import type { CacheView, EngineEvent, Profile, Settings, Snapshot } from "../src/lib/types";
 
 export const SETTINGS: Settings = {
   version: 1,
@@ -15,6 +15,8 @@ export const SETTINGS: Settings = {
   auto_repeat: false,
   last_profile: null,
   download_timeout_secs: 1800,
+  window: null,
+  dialog_sizes: {},
 };
 
 export const CACHE: CacheView = {
@@ -67,6 +69,21 @@ export const IDLE: Snapshot = {
   link_down: null,
   devices: [],
 };
+
+/** A stored profile with the default options. */
+export function profile(name: string, more: Partial<Profile> = {}): Profile {
+  return {
+    name,
+    version: "stable",
+    extra_packages: [],
+    config: { mode: "default" },
+    mode_script: null,
+    remove_branding: false,
+    license_key: null,
+    after_install: "reboot",
+    ...more,
+  };
+}
 
 export interface MockBackend extends Backend {
   emit(e: EngineEvent): void;
@@ -129,7 +146,7 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
     setCooldown: ok(),
     snapshot: vi.fn(async () => IDLE),
     listProfiles: vi.fn(async () => ({
-      profiles: [{ name: "lab", version: "stable", extra_packages: [], config: { mode: "default" as const } }],
+      profiles: [profile("lab")],
       broken: [],
     })),
     saveProfile: ok(),
@@ -140,8 +157,10 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
       packages: ["container", "wireless"],
     })),
     pickScript: vi.fn(async () => ({ name: "setup.rsc", size: 30 })),
+    pickLicenseKey: vi.fn(async () => ({ key: "-----BEGIN KEY-----AAAA-----END KEY-----" })),
     getSettings: vi.fn(async () => ({ ...SETTINGS })),
     setSettings: vi.fn(async (s: Settings) => s),
+    setDialogSize: vi.fn(async (_id: string, _w: number, _h: number) => {}),
     cacheInventory: vi.fn(async () => structuredClone(CACHE)),
     deleteCached: vi.fn(async () => 1_000_000),
     exportLog: vi.fn(async () => true),

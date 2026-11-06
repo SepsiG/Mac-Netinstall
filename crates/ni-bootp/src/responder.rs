@@ -393,6 +393,21 @@ mod tests {
     }
 
     #[test]
+    fn requests_shorter_than_300_bytes_are_answered() {
+        // The official netinstall-cli ignores BOOTP requests under 300
+        // bytes (RFC 951's size); we answer anything that parses.
+        let mut r = responder();
+        let mut buf = sample_request(MAC, None, Some("ARM64__boot"));
+        let options = HEADER_LEN + 4;
+        let end = options + buf[options..].iter().position(|&b| b == opt::END).unwrap();
+        buf.truncate(end + 1);
+        assert!(buf.len() < 300, "{} bytes", buf.len());
+        let rep = reply(r.handle(&buf).unwrap());
+        assert_eq!(rep.kind, ReplyKind::Bootp);
+        assert!(rep.bytes.len() >= 300, "replies are padded to 300 bytes");
+    }
+
+    #[test]
     fn request_for_other_server_is_ignored() {
         let mut r = responder();
         let mut buf = sample_request(MAC, Some(3), Some("MMipsBoot"));

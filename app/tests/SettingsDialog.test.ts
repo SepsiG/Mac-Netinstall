@@ -130,6 +130,14 @@ describe("SettingsDialog", () => {
     expect(await screen.findByText(/RouterOS 7.25.1 is in use right now/)).toBeInTheDocument();
   });
 
+  it("never shows a version without files", async () => {
+    const view = structuredClone(CACHE);
+    view.inventory.versions.unshift({ version: "7.24.6", size: 0, items: [] });
+    open(mockBackend({ cacheInventory: vi.fn(async () => view) }));
+    expect(await screen.findByText(/RouterOS 7\.25\.1/)).toBeInTheDocument();
+    expect(screen.queryByText(/RouterOS 7\.24\.6/)).toBeNull();
+  });
+
   it("has nothing to delete when nothing is downloaded", async () => {
     const backend = mockBackend({
       cacheInventory: vi.fn(async () => ({

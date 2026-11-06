@@ -8,6 +8,7 @@ import type {
   EngineEvent,
   Failure,
   InterfaceView,
+  LicenseKeyView,
   PackagesView,
   PreflightReport,
   Profile,
@@ -45,8 +46,12 @@ export interface Backend {
   availablePackages(version: string, arch: string): Promise<PackagesView>;
   /** Opens a file dialog (in Rust); `null` if cancelled. */
   pickScript(): Promise<ScriptView | null>;
+  /** Opens a file dialog and reads the key file (in Rust); `null` if cancelled. */
+  pickLicenseKey(): Promise<LicenseKeyView | null>;
   getSettings(): Promise<Settings>;
   setSettings(settings: Settings): Promise<Settings>;
+  /** Remember a dialog's size (validated and stored in Rust). */
+  setDialogSize(id: string, width: number, height: number): Promise<void>;
   /** `verify`: check every file's SHA-256 (slow); else a quick listing. */
   cacheInventory(verify: boolean): Promise<CacheView>;
   /** Bytes freed. */
@@ -98,8 +103,10 @@ export function tauriBackend(): Backend {
     deleteProfile: (name) => invoke("delete_profile", { name }),
     availablePackages: (version, arch) => invoke("available_packages", { version, arch }),
     pickScript: () => invoke("pick_script"),
+    pickLicenseKey: () => invoke("pick_license_key"),
     getSettings: () => invoke("get_settings"),
     setSettings: (settings) => invoke("set_settings", { settings }),
+    setDialogSize: (id, width, height) => invoke("set_dialog_size", { id, width, height }),
     cacheInventory: (verify) => invoke("cache_inventory", { verify }),
     deleteCached: (scope) => invoke("delete_cached", { scope }),
     exportLog: (text) => invoke("export_log", { text }),
