@@ -159,6 +159,7 @@ impl BootpResponder {
         }))
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
