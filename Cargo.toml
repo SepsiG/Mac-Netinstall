@@ -6,13 +6,14 @@ members = [
     "crates/ni-net",
     "crates/ni-bootp",
     "crates/ni-tftp",
+    "crates/ni-assets",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
-rust-version = "1.80"
+rust-version = "1.88"
 
 [workspace.dependencies]
 bytes = "1"
@@ -21,5 +22,12 @@ proptest = "1"
 nix = { version = "0.31.3", default-features = false }
 socket2 = "0.6.5"
 tokio = "1.54.1"
+reqwest = { version = "0.13.5", default-features = false }
+flate2 = "1.1.11"
+tar = "0.4.46"
+sha2 = "0.11.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 ni-proto = { path = "crates/ni-proto" }
 ni-net = { path = "crates/ni-net" }
+ni-bootp = { path = "crates/ni-bootp" }
