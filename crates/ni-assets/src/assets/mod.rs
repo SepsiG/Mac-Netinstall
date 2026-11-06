@@ -33,7 +33,7 @@ use std::time::{Duration, SystemTime};
 mod local;
 mod packages;
 
-pub use local::{LocalFile, LocalKind, MAX_SCRIPT_SIZE};
+pub use local::{LocalFile, LocalKind, MAX_LOCAL_NAME, MAX_SCRIPT_SIZE};
 
 /// Cache directory name under `~/Library/Caches`.
 pub const BUNDLE_ID: &str = "io.github.sepsig.mac-netinstall";
@@ -144,7 +144,17 @@ fn part_target(name: &str) -> Option<&str> {
     (digits(n) && digits(pid) && !target.is_empty()).then_some(target)
 }
 
-/// Remove part files under `root/<dir>/` older than `age` whose target
+/// The lock that guards writing `target` in the cache directory named
+/// `dir_name`: kernel files are written under their version's tarball lock.
+fn guarding_lock(dir_name: &str, target: &str) -> String {
+    let is_kernel = target.starts_with("kernel-") && target.ends_with(".elf");
+    match Version::parse(dir_name) {
+        Ok(v) if is_kernel => urls::tarball_name(&v),
+        _ => target.to_string(),
+    }
+}
+
+/// Remove part files under `root/<dir>/` older than `age` whose guarding
 /// lock is free. Errors are ignored: this is housekeeping.
 pub(crate) fn remove_stale_parts(root: &Path, age: Duration) {
     let Ok(dirs) = std::fs::read_dir(root) else {
@@ -157,6 +167,7 @@ pub(crate) fn remove_stale_parts(root: &Path, age: Duration) {
             continue;
         }
         let cache = CacheDir::new(dir.path());
+        let dir_name = dir.file_name().to_string_lossy().into_owned();
         for entry in std::fs::read_dir(dir.path())
             .into_iter()
             .flatten()
@@ -173,7 +184,8 @@ pub(crate) fn remove_stale_parts(root: &Path, age: Duration) {
             if !old || !entry.file_type().is_ok_and(|t| t.is_file()) {
                 continue;
             }
-            if let Ok(Some(_free)) = lock::try_lock_file(&cache.lock_path(target)) {
+            let guard = guarding_lock(&dir_name, target);
+            if let Ok(Some(_free)) = lock::try_lock_file(&cache.lock_path(&guard)) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -182,11 +194,20 @@ pub(crate) fn remove_stale_parts(root: &Path, age: Duration) {
 
 impl Assets {
     /// An asset manager caching under `root` (created on first write).
+    ///
     /// Part files left behind by a crash (older than [`STALE_PART_AGE`]
-    /// and not being written) are removed.
+    /// and not being written) are removed. Inside a tokio runtime this
+    /// cleanup runs as a background blocking task, so `new` never does file
+    /// work on an async thread; outside a runtime it runs before `new`
+    /// returns. Either way it is best-effort and never fails `new`.
     pub fn new(root: impl Into<PathBuf>, cfg: HttpConfig) -> Result<Self, AssetError> {
         let root = root.into();
-        remove_stale_parts(&root, STALE_PART_AGE);
+        let cleanup_root = root.clone();
+        let cleanup = move || remove_stale_parts(&cleanup_root, STALE_PART_AGE);
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => drop(rt.spawn_blocking(cleanup)),
+            Err(_) => cleanup(),
+        }
         Ok(Self {
             root,
             http: Http::new(&cfg)?,
@@ -237,7 +258,7 @@ impl Assets {
 
     /// The published SHA-256 of `file` at `url`. From 7.15 on a checksum
     /// must exist (`checksum_missing` otherwise); for older versions `None`
-    /// means none is published.
+    /// means none is published. A present checksum is always enforced.
     async fn published_checksum(
         &self,
         version: &Version,
@@ -614,10 +635,30 @@ mod tests {
             .unwrap()
             .unwrap();
         let _a = assets(&srv, &root);
+        // The cleanup runs in the background inside a runtime.
+        for _ in 0..200 {
+            if !stale.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(!stale.exists(), "old and unlocked: removed");
         assert!(fresh.exists(), "may still be written");
         assert!(busy.exists(), "its target is locked");
         assert!(other.exists(), "not a part file");
+    }
+
+    #[test]
+    fn outside_a_runtime_the_cleanup_runs_before_new_returns() {
+        let root = tempdir("stale-sync");
+        let dir = CacheDir::new(root.join(V));
+        dir.create().unwrap();
+        let part = dir.path("a.npk.1.0.part");
+        let f = std::fs::File::create(&part).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(2 * 3600))
+            .unwrap();
+        Assets::new(&*root, HttpConfig::default()).unwrap();
+        assert!(!part.exists());
     }
 
     #[tokio::test]
@@ -640,5 +681,41 @@ mod tests {
         let got = a.cached_versions().await.unwrap();
         let got: Vec<&str> = got.iter().map(Version::as_str).collect();
         assert_eq!(got, ["7.9", V]);
+    }
+
+    #[test]
+    fn kernel_parts_follow_the_tarball_lock() {
+        let root = tempdir("kernel-parts");
+        let dir = CacheDir::new(root.join(V));
+        dir.create().unwrap();
+        let part = dir.path("kernel-arm.elf.4242.0.part");
+        std::fs::write(&part, b"half").unwrap();
+        let tarball = format!("netinstall-{V}.tar.gz");
+        let held = lock::try_lock_file(&dir.lock_path(&tarball))
+            .unwrap()
+            .unwrap();
+        remove_stale_parts(&root, Duration::ZERO);
+        assert!(part.exists(), "written under the tarball lock");
+        drop(held);
+        remove_stale_parts(&root, Duration::ZERO);
+        assert!(!part.exists());
+    }
+
+    #[tokio::test]
+    async fn a_present_checksum_is_enforced_before_7_15_too() {
+        let srv = TestServer::start().await;
+        let old = "7.14.3";
+        mirror_version(&srv, old);
+        let tarball = format!("netinstall-{old}.tar.gz");
+        srv.route(
+            &format!("/dl/{old}/{tarball}.sha256"),
+            sum_file(b"other bytes", &tarball),
+        );
+        let root = tempdir("old-sum-enforced");
+        let err = assets(&srv, &root)
+            .ensure_kernels(&Version::parse(old).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "checksum_mismatch");
     }
 }

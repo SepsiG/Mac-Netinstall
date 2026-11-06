@@ -10,6 +10,9 @@ use bytes::Bytes;
 use std::path::Path;
 use std::time::Duration;
 
+/// Longest local file name (bytes) accepted: lock and part file names add
+/// up to ~25 bytes, and APFS allows 255.
+pub const MAX_LOCAL_NAME: usize = 200;
 /// Largest local `.rsc` script accepted.
 pub const MAX_SCRIPT_SIZE: u64 = 1 << 20;
 /// Cache subdirectory for user-supplied files.
@@ -37,7 +40,8 @@ pub struct LocalFile {
 /// the cache usually lives on a case-insensitive APFS volume where
 /// `Setup.rsc` and `setup.rsc` are the same file: names differing only by
 /// case refer to the same local file. A name must be a plain file name
-/// (no `/`, not hidden, no control characters, at most 255 bytes) ending
+/// (no `/`, not hidden, no control characters, at most [`MAX_LOCAL_NAME`]
+/// bytes) ending
 /// in `.npk` or `.rsc`.
 fn local_key(name: &str) -> Result<(String, LocalKind), AssetError> {
     let key = name.to_lowercase();
@@ -45,7 +49,7 @@ fn local_key(name: &str) -> Result<(String, LocalKind), AssetError> {
     if key.starts_with('.')
         || key.contains('/')
         || key.chars().any(char::is_control)
-        || key.len() > 255
+        || key.len() > MAX_LOCAL_NAME
     {
         return Err(unsupported());
     }
@@ -369,5 +373,26 @@ mod tests {
         assert_eq!(std::fs::read(outside.join("keep.me")).unwrap(), b"precious");
         assert!(!local.join("x.rsc.77.0.part").exists());
         assert!(local.join("x.rsc").exists());
+    }
+
+    #[tokio::test]
+    async fn long_local_names_are_capped_with_a_clear_error() {
+        let srv = TestServer::start().await;
+        let root = tempdir("local-long");
+        let src = tempdir("local-long-src");
+        let a = assets(&srv, &root);
+        let at_limit = format!("{}.rsc", "a".repeat(MAX_LOCAL_NAME - 4));
+        assert_eq!(at_limit.len(), MAX_LOCAL_NAME);
+        std::fs::write(src.join(&at_limit), b"#").unwrap();
+        let reg = a.register_local_file(&src.join(&at_limit)).await.unwrap();
+        assert_eq!(a.local_file(&reg.name).await.unwrap().as_ref(), b"#");
+        for len in [MAX_LOCAL_NAME + 1, 244, 249, 255] {
+            let name = format!("{}.rsc", "b".repeat(len - 4));
+            std::fs::write(src.join(&name), b"#").unwrap();
+            let err = a.register_local_file(&src.join(&name)).await.unwrap_err();
+            assert_eq!(err.code(), "unsupported_local_file", "{len}: {err:?}");
+            let err = a.local_file(&name).await.unwrap_err();
+            assert_eq!(err.code(), "unsupported_local_file", "{len}");
+        }
     }
 }

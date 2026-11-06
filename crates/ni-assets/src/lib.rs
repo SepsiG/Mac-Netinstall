@@ -31,8 +31,8 @@ mod testutil;
 pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;
 pub use assets::{
-    default_cache_root, kernel_file_name, Assets, LocalFile, LocalKind, BUNDLE_ID, MAX_SCRIPT_SIZE,
-    STALE_PART_AGE,
+    default_cache_root, kernel_file_name, Assets, LocalFile, LocalKind, BUNDLE_ID, MAX_LOCAL_NAME,
+    MAX_SCRIPT_SIZE, STALE_PART_AGE,
 };
 pub use cache::{Entry, Index};
 pub use error::AssetError;
