@@ -9,7 +9,6 @@ use crate::settings::Settings;
 use crate::views::{
     CacheInfo, InterfaceView, PackagesView, ProfilesView, ScriptView, StartRequest,
 };
-use crate::CloseGuard;
 use ni_engine::{Failure, PreflightReport, Profile, Snapshot, StartInfo};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -177,9 +176,10 @@ pub fn preferred_languages() -> Vec<String> {
     crate::locale::preferred_languages()
 }
 
-/// Quit now (after the window confirmed it while devices were busy).
+/// Quit now (after the window confirmed it while devices were busy): the
+/// engine is stopped first.
 #[tauri::command(rename_all = "snake_case")]
-pub fn quit(app: AppHandle, guard: State<'_, CloseGuard>) {
-    guard.allow();
-    app.exit(0);
+pub async fn quit(app: AppHandle) -> R<()> {
+    crate::quit_now(app).await;
+    Ok(())
 }

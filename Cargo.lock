@@ -2100,6 +2100,7 @@ dependencies = [
  "ni-net",
  "ni-proto",
  "ni-sim",
+ "objc2",
  "serde",
  "serde_json",
  "tauri",

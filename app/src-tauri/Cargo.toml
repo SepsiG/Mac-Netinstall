@@ -35,6 +35,10 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "std"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The termination guard (src/macos.rs); the same version tao uses.
+objc2 = "0.6.5"
+
 [dev-dependencies]
 ni-assets = { workspace = true, features = ["testing"] }
 ni-sim = { workspace = true, features = ["lan"] }
