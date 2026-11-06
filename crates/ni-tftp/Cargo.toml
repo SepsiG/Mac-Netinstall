@@ -1,0 +1,16 @@
+[package]
+name = "ni-tftp"
+description = "Minimal read-only TFTP server for RouterBOOT boot kernels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytes.workspace = true
+ni-net.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+proptest.workspace = true

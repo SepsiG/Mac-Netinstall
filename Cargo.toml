@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/ni-proto", "crates/ni-sim"]
+members = [
+    "crates/ni-proto",
+    "crates/ni-sim",
+    "crates/ni-net",
+    "crates/ni-bootp",
+    "crates/ni-tftp",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,4 +18,8 @@ rust-version = "1.80"
 bytes = "1"
 thiserror = "2"
 proptest = "1"
+nix = { version = "0.31.3", default-features = false }
+socket2 = "0.6.5"
+tokio = "1.54.1"
 ni-proto = { path = "crates/ni-proto" }
+ni-net = { path = "crates/ni-net" }
