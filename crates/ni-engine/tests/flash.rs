@@ -22,7 +22,7 @@ async fn one_device_is_booted_and_flashed_with_packages_and_script() {
     assert_eq!(local.name, "setup.rsc");
     rig.engine.stop().await.unwrap();
     let mut p = profile();
-    p.config = ConfigMode::CustomScript {
+    p.config = ConfigMode::Script {
         local_name: local.name,
     };
     let mut cfg = config(&rig.lan);

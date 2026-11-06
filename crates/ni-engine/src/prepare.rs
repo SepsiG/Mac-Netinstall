@@ -39,7 +39,9 @@ pub async fn resolve_or_remembered(
 /// Resolve the profile's version (or use `version` if the caller resolved
 /// it already; see [`resolve_or_remembered`] for offline), check it against
 /// `kernel_version` (the boot kernels the device runs), then fetch packages
-/// and the script. Returns the version installed and the plan. Errors:
+/// and the scripts. The plan carries the profile's configuration options
+/// and sends the system package first. Returns the version installed and
+/// the plan. Errors:
 /// `assets_failed` (`cause`), `profile_version_mismatch` (`version`,
 /// `kernel_version`), `invalid_plan` (`detail`).
 ///
@@ -71,16 +73,26 @@ pub async fn prepare(
         .await
         .map_err(fail)?;
     let config = match &profile.config {
+        ConfigMode::Keep => DeviceConfig::Keep,
         ConfigMode::Default => DeviceConfig::Default,
-        ConfigMode::CustomScript { local_name } => {
+        ConfigMode::Empty => DeviceConfig::Empty,
+        ConfigMode::Script { local_name } => {
             DeviceConfig::Script(assets.local_file(local_name).await.map_err(fail)?)
         }
     };
-    let plan = InstallPlan {
+    let mode_script = match &profile.mode_script {
+        Some(name) => Some(assets.local_file(name).await.map_err(fail)?),
+        None => None,
+    };
+    let mut plan = InstallPlan {
         packages,
         config,
-        ..InstallPlan::default()
+        mode_script,
+        remove_branding: profile.remove_branding,
+        license_key: profile.license_key.clone().unwrap_or_default(),
+        after_install: profile.after_install.into(),
     };
+    plan.system_package_first();
     plan.validate()
         .map_err(|e| Failure::new("invalid_plan").with("detail", e))?;
     Ok((version, plan))
@@ -207,7 +219,7 @@ mod tests {
         std::fs::write(&script, b"/system identity set name=x\n").unwrap();
         let local = a.register_local_file(&script).await.unwrap();
         let mut p = profile();
-        p.config = ConfigMode::CustomScript {
+        p.config = ConfigMode::Script {
             local_name: local.name,
         };
         let (version, plan) = prepare(&a, &p, None, None, "arm64").await.unwrap();
@@ -223,6 +235,46 @@ mod tests {
             plan.config,
             DeviceConfig::Script(Bytes::from_static(b"/system identity set name=x\n"))
         );
+    }
+
+    #[tokio::test]
+    async fn plan_carries_the_configuration_options() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let dir = tempdir("prepare-options");
+        let a = assets(&srv, &dir);
+        let mode = dir.join("mode.rsc");
+        std::fs::write(&mode, b":log info mode\n").unwrap();
+        let mut p = profile();
+        p.config = ConfigMode::Empty;
+        p.mode_script = Some(a.register_local_file(&mode).await.unwrap().name);
+        p.remove_branding = true;
+        p.license_key = Some("KEY-1".into());
+        p.after_install = crate::profile::AfterInstall::Shutdown;
+        let (_, plan) = prepare(&a, &p, None, None, "arm64").await.unwrap();
+        assert_eq!(plan.config, DeviceConfig::Empty);
+        assert_eq!(plan.mode_script.as_deref(), Some(&b":log info mode\n"[..]));
+        assert!(plan.remove_branding);
+        assert_eq!(plan.license_key, "KEY-1");
+        assert_eq!(plan.after_install, ni_proto::AfterInstall::Shutdown);
+        let files: Vec<String> = plan.files().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(
+            files,
+            [
+                "routeros-7.25.1-arm64.npk",
+                "wireless-7.25.1-arm64.npk",
+                "mode.scr",
+                "autorun.scr"
+            ]
+        );
+        p.config = ConfigMode::Keep;
+        p.mode_script = None;
+        let (_, plan) = prepare(&a, &p, None, None, "arm64").await.unwrap();
+        assert!(plan.offer().keep_config);
+        p.mode_script = Some("missing.rsc".into());
+        p.config = ConfigMode::Default;
+        let err = prepare(&a, &p, None, None, "arm64").await.unwrap_err();
+        assert_eq!(err.code, "assets_failed");
     }
 
     #[tokio::test]

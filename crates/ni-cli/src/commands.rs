@@ -5,7 +5,9 @@ use crate::output::finding;
 use ni_assets::{default_cache_root, AssetEvent, Assets, HttpConfig, PkgArch, VersionSpec};
 use ni_engine::preflight::{self, PreflightReport};
 use ni_engine::profile::spec_to_string;
-use ni_engine::{default_profiles_root, ConfigMode, EngineConfig, Failure, Profile, ProfileStore};
+use ni_engine::{
+    default_profiles_root, AfterInstall, ConfigMode, EngineConfig, Failure, Profile, ProfileStore,
+};
 use ni_net::{list_interfaces, Interface};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -281,7 +283,7 @@ pub async fn recipe_profile(
     p.extra_packages = recipe.packages.clone();
     if let Some(script) = &recipe.script {
         let local = register_script(assets, script).await?;
-        p.config = ConfigMode::CustomScript { local_name: local };
+        p.config = ConfigMode::Script { local_name: local };
     }
     p.validate()?;
     Ok(p)
@@ -297,11 +299,29 @@ async fn register_script(assets: &Assets, path: &Path) -> Result<String, Failure
     Ok(local.name)
 }
 
-fn config_text(c: &ConfigMode) -> String {
-    match c {
-        ConfigMode::Default => "default config".into(),
-        ConfigMode::CustomScript { local_name } => format!("script {local_name}"),
+/// `default config`, `script lab.rsc, mode script m.rsc, shutdown`, ...
+fn config_text(p: &Profile) -> String {
+    let mut out = match &p.config {
+        ConfigMode::Keep => "keep config".to_string(),
+        ConfigMode::Default => "default config".to_string(),
+        ConfigMode::Empty => "empty config".to_string(),
+        ConfigMode::Script { local_name } => format!("script {local_name}"),
+    };
+    if let Some(m) = &p.mode_script {
+        out.push_str(&format!(", mode script {m}"));
     }
+    if p.remove_branding {
+        out.push_str(", remove branding");
+    }
+    if p.license_key.is_some() {
+        out.push_str(", license key");
+    }
+    match p.after_install {
+        AfterInstall::Reboot => {}
+        AfterInstall::RebootMessage => out.push_str(", reboot with message"),
+        AfterInstall::Shutdown => out.push_str(", shutdown"),
+    }
+    out
 }
 
 async fn profiles(ctx: &Ctx, command: ProfilesCommand) -> Outcome {
@@ -324,7 +344,7 @@ async fn profiles(ctx: &Ctx, command: ProfilesCommand) -> Outcome {
                         p.name,
                         spec_to_string(&p.version),
                         packages.join(","),
-                        config_text(&p.config)
+                        config_text(p)
                     );
                 }
             }

@@ -15,7 +15,7 @@ use crate::config::{
     check_pool_reserved, link_status, resolve_addresses, subnet, EngineConfig, LinkStatus, NetPlan,
 };
 use crate::event::Failure;
-use crate::profile::{ConfigMode, Profile};
+use crate::profile::Profile;
 use ni_assets::Assets;
 use ni_bootp::{BootpConfig, BootpResponder};
 use ni_net::{bind_udp, BindOptions, Interface, InterfaceKind, NetError};
@@ -292,7 +292,7 @@ pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
             }
         }
     }
-    if let ConfigMode::CustomScript { local_name } = &profile.config {
+    for local_name in profile.scripts() {
         if let Err(e) = assets.local_file(local_name).await {
             out.push(Finding::error(
                 Failure::new("script_missing")
@@ -341,6 +341,7 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::config::test_iface as iface;
+    use crate::profile::ConfigMode;
     use ni_assets::testutil::{assets, mirror, tempdir, TestServer};
     use ni_assets::{Channel, VersionSpec};
     use ni_proto::Mac;
@@ -616,11 +617,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(check_assets(&a, &profile).await, []);
-        profile.config = ConfigMode::CustomScript {
+        profile.config = ConfigMode::Script {
             local_name: "setup.rsc".into(),
         };
+        profile.mode_script = Some("mode.rsc".into());
         let findings = check_assets(&a, &profile).await;
-        assert_eq!(codes(&findings), [("script_missing", Severity::Error)]);
+        assert_eq!(
+            codes(&findings),
+            [
+                ("script_missing", Severity::Error),
+                ("script_missing", Severity::Error)
+            ]
+        );
+        assert_eq!(findings[1].failure.param("name"), Some("mode.rsc"));
+        profile.mode_script = None;
         profile.version = VersionSpec::Channel(Channel::Testing);
         profile.config = ConfigMode::Default;
         let findings = check_assets(&a, &profile).await;

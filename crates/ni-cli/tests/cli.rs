@@ -158,7 +158,9 @@ async fn profiles_can_be_saved_listed_shown_and_deleted() {
         list,
         serde_json::json!([{"name": "Lab", "version": "long-term",
             "extra_packages": ["wifi-qcom"],
-            "config": {"mode": "custom_script", "local_name": "lab.rsc"}}])
+            "config": {"mode": "script", "local_name": "lab.rsc"},
+            "mode_script": null, "remove_branding": false, "license_key": null,
+            "after_install": "reboot"}])
     );
     let (_, out, _) = env.run(&["profiles", "list"]).await;
     assert!(out.starts_with("Lab "), "{out}");

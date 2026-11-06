@@ -5,13 +5,25 @@
 //!   "name": "hAP ax2 stable",
 //!   "version": "stable",
 //!   "extra_packages": ["wifi-qcom"],
-//!   "config": { "mode": "custom_script", "local_name": "setup.rsc" }
+//!   "config": { "mode": "script", "local_name": "setup.rsc" },
+//!   "mode_script": "mode.rsc",
+//!   "remove_branding": false,
+//!   "license_key": null,
+//!   "after_install": "reboot"
 //! }
 //! ```
 //!
 //! `version` is a channel (`stable`, `long-term`, `testing`,
-//! `development`) or an exact version (`7.25.1`). A custom script names a
-//! file registered with `ni_assets::Assets::register_local_file`.
+//! `development`) or an exact version (`7.25.1`). Scripts name files
+//! registered with `ni_assets::Assets::register_local_file`. The
+//! configuration options are the official `netinstall-cli`'s (`-r`, `-e`,
+//! `-s`, `-sm`, `-b`, `-k`, `--reboot`, `--shutdown`); see
+//! `docs/superpowers/research/2026-11-06-official-netinstall-wire-spec.md`.
+//!
+//! Older profiles (Plans 4–6) load unchanged: `{"mode": "default"}` is
+//! still the default configuration, `{"mode": "custom_script", ...}` reads
+//! as `script`, and the fields added later take their defaults. They are
+//! written in the new form the next time they are saved.
 
 use crate::event::Failure;
 use ni_assets::npk::valid_package_name;
@@ -51,13 +63,77 @@ pub fn spec_to_string(spec: &VersionSpec) -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum ConfigMode {
-    /// RouterOS applies its default configuration.
+    /// Keep the existing configuration (the official tool's default).
+    Keep,
+    /// RouterOS applies its default configuration (`-r`).
     #[default]
     Default,
-    /// Upload this registered local `.rsc` file as `autorun.scr`.
-    CustomScript { local_name: String },
-    // Plan 5 adds `Keep`, `NoDefault` and `Empty` once the official tool's
-    // encoding (OFFR fields / `mode.scr`) is captured. Not implemented.
+    /// Start without any configuration (`-e`).
+    Empty,
+    /// Run this registered local `.rsc` file on first boot (`-s`),
+    /// uploaded as `autorun.scr`. Plans 4–6 called it `custom_script`.
+    #[serde(alias = "custom_script")]
+    Script { local_name: String },
+}
+
+impl ConfigMode {
+    /// `keep`, `default`, `empty` or `script` (as in the JSON).
+    pub fn name(&self) -> &'static str {
+        match self {
+            ConfigMode::Keep => "keep",
+            ConfigMode::Default => "default",
+            ConfigMode::Empty => "empty",
+            ConfigMode::Script { .. } => "script",
+        }
+    }
+}
+
+/// What the device does when the install is done.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfterInstall {
+    /// Reboot (the official tool's default).
+    #[default]
+    Reboot,
+    /// Reboot with the message "Installation successful" (`--reboot`).
+    RebootMessage,
+    /// Shut down (`--shutdown`).
+    Shutdown,
+}
+
+impl From<AfterInstall> for ni_proto::AfterInstall {
+    fn from(a: AfterInstall) -> Self {
+        match a {
+            AfterInstall::Reboot => ni_proto::AfterInstall::Reboot,
+            AfterInstall::RebootMessage => ni_proto::AfterInstall::RebootWithMessage,
+            AfterInstall::Shutdown => ni_proto::AfterInstall::Shutdown,
+        }
+    }
+}
+
+/// Longest license key, in bytes (after line breaks are removed).
+pub const MAX_LICENSE_KEY: usize = ni_proto::message::MAX_LICENSE_KEY;
+
+/// A license key from a key file's contents (the official tool's `-k`):
+/// line breaks removed. Error: `invalid_license_key` (`max`) unless the
+/// rest is 1..=[`MAX_LICENSE_KEY`] printable ASCII characters.
+pub fn license_key_from_file(data: &[u8]) -> Result<String, Failure> {
+    let key: Vec<u8> = data
+        .iter()
+        .copied()
+        .filter(|b| !matches!(b, b'\n' | b'\r'))
+        .collect();
+    let key = String::from_utf8(key).unwrap_or_default();
+    check_license_key(&key)?;
+    Ok(key)
+}
+
+fn check_license_key(key: &str) -> Result<(), Failure> {
+    let printable = key.bytes().all(|b| (0x20..0x7f).contains(&b));
+    if key.is_empty() || key.len() > MAX_LICENSE_KEY || !printable {
+        return Err(Failure::new("invalid_license_key").with("max", MAX_LICENSE_KEY));
+    }
+    Ok(())
 }
 
 /// A reusable install recipe.
@@ -71,6 +147,18 @@ pub struct Profile {
     pub extra_packages: Vec<String>,
     #[serde(default)]
     pub config: ConfigMode,
+    /// The official tool's mode script (`-sm`): a registered local `.rsc`
+    /// file, uploaded as `mode.scr`. Not with [`ConfigMode::Keep`].
+    #[serde(default)]
+    pub mode_script: Option<String>,
+    /// The official tool's `-b` (what devices do with it is unverified).
+    #[serde(default)]
+    pub remove_branding: bool,
+    /// Software license key ([`license_key_from_file`]).
+    #[serde(default)]
+    pub license_key: Option<String>,
+    #[serde(default)]
+    pub after_install: AfterInstall,
 }
 
 impl Profile {
@@ -82,12 +170,30 @@ impl Profile {
             version,
             extra_packages: Vec::new(),
             config: ConfigMode::Default,
+            mode_script: None,
+            remove_branding: false,
+            license_key: None,
+            after_install: AfterInstall::Reboot,
         }
+    }
+
+    /// The registered local files the profile uses: its script, then its
+    /// mode script.
+    pub fn scripts(&self) -> Vec<&str> {
+        let script = match &self.config {
+            ConfigMode::Script { local_name } => Some(local_name.as_str()),
+            _ => None,
+        };
+        script
+            .into_iter()
+            .chain(self.mode_script.as_deref())
+            .collect()
     }
 
     /// Check the profile can be stored and used. Codes: `invalid_name`,
     /// `invalid_package_name`, `duplicate_package`, `too_many_packages`,
-    /// `invalid_script_name`.
+    /// `invalid_script_name` (`name`), `mode_script_with_keep` (the
+    /// official tool refuses it too), `invalid_license_key` (`max`).
     pub fn validate(&self) -> Result<(), Failure> {
         if !valid_name(&self.name) {
             return Err(Failure::new("invalid_name").with("name", &self.name));
@@ -103,7 +209,7 @@ impl Profile {
                 return Err(Failure::new("duplicate_package").with("package", p));
             }
         }
-        if let ConfigMode::CustomScript { local_name } = &self.config {
+        for local_name in self.scripts() {
             let ok = !local_name.is_empty()
                 && local_name.len() <= MAX_LOCAL_NAME
                 && local_name.ends_with(".rsc")
@@ -113,6 +219,12 @@ impl Profile {
             if !ok {
                 return Err(Failure::new("invalid_script_name").with("name", local_name));
             }
+        }
+        if self.mode_script.is_some() && self.config == ConfigMode::Keep {
+            return Err(Failure::new("mode_script_with_keep"));
+        }
+        if let Some(key) = &self.license_key {
+            check_license_key(key)?;
         }
         Ok(())
     }
@@ -281,9 +393,13 @@ mod tests {
             name: "hAP ax2 stable".into(),
             version: VersionSpec::Channel(Channel::Stable),
             extra_packages: vec!["wifi-qcom".into()],
-            config: ConfigMode::CustomScript {
+            config: ConfigMode::Script {
                 local_name: "setup.rsc".into(),
             },
+            mode_script: Some("mode.rsc".into()),
+            remove_branding: true,
+            license_key: Some("KEY-1".into()),
+            after_install: AfterInstall::Shutdown,
         }
     }
 
@@ -294,7 +410,9 @@ mod tests {
             v,
             json!({"name": "hAP ax2 stable", "version": "stable",
                    "extra_packages": ["wifi-qcom"],
-                   "config": {"mode": "custom_script", "local_name": "setup.rsc"}})
+                   "config": {"mode": "script", "local_name": "setup.rsc"},
+                   "mode_script": "mode.rsc", "remove_branding": true,
+                   "license_key": "KEY-1", "after_install": "shutdown"})
         );
         let minimal: Profile =
             serde_json::from_value(json!({"name": "x", "version": "7.25.1"})).unwrap();
@@ -305,12 +423,87 @@ mod tests {
         assert!(
             serde_json::from_value::<Profile>(json!({"name": "x", "version": "6.49"})).is_err()
         );
-        assert!(
-            serde_json::from_value::<Profile>(json!({"name": "x", "version": "7.1",
-                "config": {"mode": "keep"}}))
-            .is_err(),
-            "keep is Plan 5"
+        for (mode, want) in [
+            ("keep", ConfigMode::Keep),
+            ("default", ConfigMode::Default),
+            ("empty", ConfigMode::Empty),
+        ] {
+            let p: Profile = serde_json::from_value(
+                json!({"name": "x", "version": "7.1", "config": {"mode": mode}}),
+            )
+            .unwrap();
+            assert_eq!((p.config.name(), &p.config), (mode, &want));
+        }
+        let after: Vec<AfterInstall> = ["reboot", "reboot_message", "shutdown"]
+            .iter()
+            .map(|a| serde_json::from_value(json!(a)).unwrap())
+            .collect();
+        assert_eq!(
+            after,
+            [
+                AfterInstall::Reboot,
+                AfterInstall::RebootMessage,
+                AfterInstall::Shutdown
+            ]
         );
+    }
+
+    /// A profile file written by Plans 4–6.
+    #[test]
+    fn old_profiles_load_and_are_saved_in_the_new_form() {
+        let dir = tempdir("profiles-old");
+        let store = ProfileStore::new(dir.to_path_buf());
+        std::fs::write(
+            dir.join("lab.json"),
+            br#"{"name": "Lab", "version": "stable", "extra_packages": [],
+                "config": {"mode": "custom_script", "local_name": "lab.rsc"}}"#,
+        )
+        .unwrap();
+        let p = store.load("Lab").unwrap();
+        assert_eq!(
+            p.config,
+            ConfigMode::Script {
+                local_name: "lab.rsc".into()
+            }
+        );
+        assert_eq!(
+            (
+                p.mode_script.as_deref(),
+                p.remove_branding,
+                p.license_key.as_deref()
+            ),
+            (None, false, None)
+        );
+        assert_eq!(p.after_install, AfterInstall::Reboot);
+        store.save(&p).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("lab.json")).unwrap()).unwrap();
+        assert_eq!(
+            v["config"],
+            json!({"mode": "script", "local_name": "lab.rsc"})
+        );
+        assert_eq!(v["after_install"], "reboot");
+    }
+
+    #[test]
+    fn license_keys_come_from_key_files() {
+        let file = b"-----BEGIN MIKROTIK SOFTWARE KEY------------\r\nAAAA\nBBBB==\n-----END\n";
+        assert_eq!(
+            license_key_from_file(file).unwrap(),
+            "-----BEGIN MIKROTIK SOFTWARE KEY------------AAAABBBB==-----END"
+        );
+        for bad in [
+            &b""[..],
+            b"\n\r\n",
+            b"key\0x",
+            "kulcs\u{e9}".as_bytes(),
+            &[b'k'; MAX_LICENSE_KEY + 1],
+        ] {
+            let e = license_key_from_file(bad).unwrap_err();
+            assert_eq!(e.code, "invalid_license_key", "{bad:?}");
+            assert_eq!(e.param("max"), Some("4096"));
+        }
+        assert!(license_key_from_file(&[b'k'; MAX_LICENSE_KEY]).is_ok());
     }
 
     #[test]
@@ -344,11 +537,28 @@ mod tests {
         assert_eq!(code(p), "too_many_packages");
         for bad in ["", "setup.txt", "Setup.rsc", "../x.rsc", ".rsc"] {
             let mut p = sample();
-            p.config = ConfigMode::CustomScript {
+            p.config = ConfigMode::Script {
                 local_name: bad.into(),
             };
             assert_eq!(code(p), "invalid_script_name", "{bad:?}");
+            let mut p = sample();
+            p.mode_script = Some(bad.into());
+            assert_eq!(code(p), "invalid_script_name", "mode script {bad:?}");
         }
+        let mut p = sample();
+        p.config = ConfigMode::Keep;
+        assert_eq!(code(p.clone()), "mode_script_with_keep");
+        p.mode_script = None;
+        assert_eq!(p.validate(), Ok(()));
+        for mode in [ConfigMode::Default, ConfigMode::Empty] {
+            let mut p = sample();
+            p.config = mode;
+            assert_eq!(p.validate(), Ok(()), "a mode script with -r / -e");
+        }
+        let mut p = sample();
+        p.license_key = Some("two\nlines".into());
+        assert_eq!(code(p), "invalid_license_key");
+        assert_eq!(sample().scripts(), ["setup.rsc", "mode.rsc"]);
     }
 
     #[test]
