@@ -16,6 +16,31 @@ use std::time::Duration;
 /// while it reboots (RouterBOOT may netboot once more).
 pub const MIN_COOLDOWN: Duration = Duration::from_secs(30);
 
+/// Most devices prepared or flashed at the same time.
+pub const MAX_PARALLEL: usize = 64;
+
+/// `invalid_cooldown` (`min_secs`, `secs`) if `cooldown` is below `min`.
+pub fn check_cooldown(cooldown: Duration, min: Duration) -> Result<(), Failure> {
+    if cooldown < min {
+        return Err(Failure::new("invalid_cooldown")
+            .with("min_secs", min.as_secs())
+            .with("secs", cooldown.as_secs()));
+    }
+    Ok(())
+}
+
+/// `invalid_max_parallel` (`min`, `max`, `value`) unless `1 ..=`
+/// [`MAX_PARALLEL`].
+pub fn check_max_parallel(n: usize) -> Result<(), Failure> {
+    if !(1..=MAX_PARALLEL).contains(&n) {
+        return Err(Failure::new("invalid_max_parallel")
+            .with("min", 1)
+            .with("max", MAX_PARALLEL)
+            .with("value", n));
+    }
+    Ok(())
+}
+
 /// Netmask used with a configured server IP that is not on the interface
 /// (yet): `/24`.
 pub const DEFAULT_NETMASK: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
@@ -112,7 +137,8 @@ pub struct EngineConfig {
     pub auto_repeat: bool,
     /// Serve only this device (BOOTP and Netinstall).
     pub only_mac: Option<Mac>,
-    /// Devices preparing or flashing at the same time (at least 1).
+    /// Devices preparing or flashing at the same time (1 ..=
+    /// [`MAX_PARALLEL`]).
     pub max_parallel: usize,
     /// How long a finished device is ignored (it reboots, and must not be
     /// flashed again); at least `min_cooldown`. After the cooldown a done
@@ -164,13 +190,11 @@ impl EngineConfig {
     }
 
     /// Settings `start` refuses. Codes: `invalid_cooldown` (`min_secs`,
-    /// `secs`), profile validation codes.
+    /// `secs`), `invalid_max_parallel` (`min`, `max`, `value`), profile
+    /// validation codes.
     pub fn validate(&self) -> Result<(), Failure> {
-        if self.cooldown < self.min_cooldown {
-            return Err(Failure::new("invalid_cooldown")
-                .with("min_secs", self.min_cooldown.as_secs())
-                .with("secs", self.cooldown.as_secs()));
-        }
+        check_cooldown(self.cooldown, self.min_cooldown)?;
+        check_max_parallel(self.max_parallel)?;
         if let Some(p) = &self.profile {
             p.validate()?;
         }
@@ -528,6 +552,26 @@ mod tests {
         );
         cfg.cooldown = MIN_COOLDOWN;
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn max_parallel_is_bounded() {
+        let mut cfg = EngineConfig::new("en7");
+        for (n, ok) in [
+            (0, false),
+            (1, true),
+            (MAX_PARALLEL, true),
+            (MAX_PARALLEL + 1, false),
+        ] {
+            cfg.max_parallel = n;
+            assert_eq!(cfg.validate().is_ok(), ok, "{n}");
+        }
+        let err = check_max_parallel(0).unwrap_err();
+        assert_eq!(err.code, "invalid_max_parallel");
+        assert_eq!(
+            (err.param("min"), err.param("max"), err.param("value")),
+            (Some("1"), Some("64"), Some("0"))
+        );
     }
 
     #[test]

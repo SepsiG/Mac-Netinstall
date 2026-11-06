@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 /// Capacity of the event broadcast channel.
@@ -93,6 +94,9 @@ pub(crate) enum Command {
     Flash(Mac, Box<Profile>, Reply<()>),
     Retry(Mac, Reply<()>),
     AutoRepeat(bool, Reply<()>),
+    OnlyMac(Option<Mac>, Reply<()>),
+    MaxParallel(usize, Reply<()>),
+    Cooldown(Duration, Reply<()>),
     Snapshot(oneshot::Sender<Snapshot>),
     /// Makes the engine task panic (tests of `engine_gone`).
     #[cfg(test)]
@@ -250,6 +254,29 @@ impl EngineHandle {
     /// without one).
     pub async fn set_auto_repeat(&self, on: bool) -> Result<(), Failure> {
         self.call(|tx| Command::AutoRepeat(on, tx)).await?
+    }
+
+    /// Serve only `mac` from now on (`None`: every device). Others get no
+    /// boot file and their hellos are `ignored` (`not_selected`); devices
+    /// already being prepared or flashed are not affected. Error:
+    /// `not_running`.
+    pub async fn set_only_mac(&self, mac: Option<Mac>) -> Result<(), Failure> {
+        self.call(|tx| Command::OnlyMac(mac, tx)).await?
+    }
+
+    /// Change the concurrency limit. A higher limit starts waiting devices
+    /// at once; a lower one lets running installs finish. Errors:
+    /// `not_running`, `invalid_max_parallel` (`min`, `max`, `value`).
+    pub async fn set_max_parallel(&self, n: usize) -> Result<(), Failure> {
+        self.call(|tx| Command::MaxParallel(n, tx)).await?
+    }
+
+    /// Change the post-flash cooldown for devices finishing from now on
+    /// (running cooldowns keep their end). Errors: `not_running`,
+    /// `invalid_cooldown` (`min_secs`, `secs`; at least
+    /// [`crate::MIN_COOLDOWN`]).
+    pub async fn set_cooldown(&self, cooldown: Duration) -> Result<(), Failure> {
+        self.call(|tx| Command::Cooldown(cooldown, tx)).await?
     }
 
     pub async fn snapshot(&self) -> Result<Snapshot, Failure> {

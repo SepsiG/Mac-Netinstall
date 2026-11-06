@@ -3,7 +3,9 @@
 use super::device::{self, Device, MAX_DEVICES};
 use super::start::start;
 use super::{Command, Snapshot};
-use crate::config::{link_status, EngineConfig, LinkStatus, NetPlan};
+use crate::config::{
+    check_cooldown, check_max_parallel, link_status, EngineConfig, LinkStatus, NetPlan,
+};
 use crate::event::{
     DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo, WaitReason,
 };
@@ -265,6 +267,15 @@ impl Core {
             Command::AutoRepeat(on, reply) => {
                 let _ = reply.send(self.set_auto_repeat(on));
             }
+            Command::OnlyMac(mac, reply) => {
+                let _ = reply.send(self.set_only_mac(mac));
+            }
+            Command::MaxParallel(n, reply) => {
+                let _ = reply.send(self.set_max_parallel(n));
+            }
+            Command::Cooldown(d, reply) => {
+                let _ = reply.send(self.set_cooldown(d));
+            }
             Command::Snapshot(reply) => {
                 let _ = reply.send(self.snapshot());
             }
@@ -479,6 +490,27 @@ impl Core {
         for mac in waiting {
             self.route(mac);
         }
+        Ok(())
+    }
+
+    fn set_only_mac(&mut self, mac: Option<Mac>) -> Result<(), Failure> {
+        let run = self.running()?;
+        run.cfg.only_mac = mac;
+        run.gate.set_only(mac);
+        Ok(())
+    }
+
+    fn set_max_parallel(&mut self, n: usize) -> Result<(), Failure> {
+        check_max_parallel(n)?;
+        self.running()?.cfg.max_parallel = n;
+        self.admit();
+        Ok(())
+    }
+
+    fn set_cooldown(&mut self, cooldown: Duration) -> Result<(), Failure> {
+        let run = self.running()?;
+        check_cooldown(cooldown, run.cfg.min_cooldown)?;
+        run.cfg.cooldown = cooldown;
         Ok(())
     }
 

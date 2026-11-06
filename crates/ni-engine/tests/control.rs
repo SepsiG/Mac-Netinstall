@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use ni_engine::{EngineEvent, EngineHandle, KernelState};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -102,4 +102,97 @@ async fn devices_carry_attempts_and_timestamps() {
     assert!(dev.first_seen_ms >= before, "first seen during the test");
     assert!(dev.updated_ms >= dev.first_seen_ms);
     assert!(dev.updated_ms <= now_ms());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raising_the_limit_starts_a_waiting_device_at_once() {
+    let mut rig = rig(|cfg| cfg.max_parallel = 1).await;
+    let mut slow = sim_config(A);
+    slow.format_delay = Duration::from_millis(1500);
+    let a = boot(&rig, A, slow).await;
+    let b = boot(&rig, B, sim_config(B)).await;
+    rig.lan.add(a).await;
+    state(&mut rig.events, A, "flashing").await;
+    rig.lan.add(b).await;
+    state(&mut rig.events, B, "waiting").await;
+    assert_eq!(
+        rig.engine.set_max_parallel(0).await.unwrap_err().code,
+        "invalid_max_parallel"
+    );
+    rig.engine.set_max_parallel(2).await.unwrap();
+    state(&mut rig.events, B, "preparing").await;
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert_eq!(snap.max_parallel, 2);
+    let a_state = snap.devices.iter().find(|d| d.mac == A).unwrap();
+    assert_eq!(a_state.state.name(), "flashing", "B started while A runs");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_cooldown_can_change_but_not_below_the_minimum() {
+    let rig = rig(|_| {}).await;
+    let err = rig
+        .engine
+        .set_cooldown(Duration::from_secs(29))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.param("min_secs")),
+        ("invalid_cooldown", Some("30"))
+    );
+    rig.engine
+        .set_cooldown(Duration::from_secs(90))
+        .await
+        .unwrap();
+    assert_eq!(rig.engine.snapshot().await.unwrap().cooldown_secs, 90);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_mac_can_change_while_running() {
+    let mut rig = rig(|_| {}).await;
+    rig.engine.set_only_mac(Some(B)).await.unwrap();
+    assert_eq!(rig.engine.snapshot().await.unwrap().only_mac, Some(B));
+    let reply = rig
+        .lan
+        .boot(
+            A,
+            "ARM64__boot",
+            rig.started.bootp,
+            Duration::from_millis(500),
+        )
+        .await;
+    assert_eq!(reply, None, "A is not selected: no boot file");
+    let e = next(&mut rig.events, |e| {
+        matches!(e, EngineEvent::Ignored { .. })
+    })
+    .await;
+    assert_eq!(
+        e,
+        EngineEvent::Ignored {
+            mac: A,
+            reason: "not_selected".into()
+        }
+    );
+    rig.engine.set_only_mac(None).await.unwrap();
+    let sim = boot(&rig, A, sim_config(A)).await;
+    rig.lan.add(sim).await;
+    state(&mut rig.events, A, "done").await;
+}
+
+#[tokio::test]
+async fn runtime_settings_need_a_running_engine() {
+    let cache = ni_assets::testutil::tempdir("control-idle");
+    let engine = EngineHandle::spawn(cache.join("cache"), offline_http()).unwrap();
+    assert_eq!(
+        engine.set_only_mac(None).await.unwrap_err().code,
+        "not_running"
+    );
+    assert_eq!(
+        engine.set_max_parallel(2).await.unwrap_err().code,
+        "not_running"
+    );
+    let err = engine
+        .set_cooldown(Duration::from_secs(60))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "not_running");
 }
