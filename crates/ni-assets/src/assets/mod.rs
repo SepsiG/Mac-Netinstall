@@ -5,8 +5,9 @@
 //!
 //! There is no global lock. Each target (a package file, a version's kernel
 //! set, a package list, a local file) is downloaded and written under its
-//! own lock ([`crate::lock`]), shared by every `Assets` in this process and
-//! by other processes using the same cache root. After taking a target's
+//! own lock (an in-process async lock plus a `flock` on
+//! `<root>/.locks/<dir>-<name>.lock`), shared by every `Assets` in this
+//! process and by other processes using the same cache root. After taking a target's
 //! lock the cache is checked again, so a target fetched meanwhile by
 //! another holder is not downloaded twice. Cached reads take no lock and
 //! never wait for downloads. The index is changed by short read-merge-write

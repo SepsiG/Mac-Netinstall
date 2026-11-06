@@ -17,7 +17,7 @@
 //! its index entry is treated as missing. A missing or unreadable index is
 //! treated as empty. The index is changed only by read-merge-write under a
 //! lock ([`CacheDir::update`]), and lock files live in `<root>/.locks/`
-//! (see [`crate::lock`]).
+//! ([`CacheDir::lock_path`]).
 
 use crate::error::AssetError;
 use crate::lock;
