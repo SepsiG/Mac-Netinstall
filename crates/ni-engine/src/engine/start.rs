@@ -1,5 +1,5 @@
-//! `start`: bind the three listeners, spawn the runners and the kernel
-//! download.
+//! `start`: bind the three listeners and spawn the runners (the engine
+//! loop starts the kernel download).
 //!
 //! # Starting without link
 //!
@@ -22,11 +22,9 @@
 
 use super::core::{Internal, Io, Link, Running};
 use crate::config::{link_status, resolve_network, EngineConfig, LinkStatus};
-use crate::event::{Failure, StartInfo};
+use crate::event::{Failure, KernelState, StartInfo};
 use crate::gate::Gate;
 use crate::preflight::bind_failure;
-use crate::prepare::kernels;
-use ni_assets::{Assets, Channel, VersionSpec};
 use ni_bootp::{serve_shared, BootpConfig, BootpHandle, BootpResponder};
 use ni_net::{bind_udp, BindOptions};
 use ni_tftp::{serve_watched, FileMap, TftpConfig};
@@ -69,7 +67,6 @@ fn spawn_runner(
 
 pub(crate) fn start(
     cfg: EngineConfig,
-    assets: Arc<Assets>,
     internal: mpsc::Sender<Internal>,
     epoch: u64,
 ) -> Result<(Running, Io), Failure> {
@@ -137,7 +134,7 @@ pub(crate) fn start(
         server_ip: net.server_ip,
         interface: Some(cfg.interface.clone()),
     };
-    let mut tasks = vec![
+    let tasks = vec![
         spawn_runner(
             "bootp",
             serve_shared(
@@ -156,17 +153,6 @@ pub(crate) fn start(
             epoch,
         ),
     ];
-    let spec = cfg
-        .profile
-        .as_ref()
-        .map(|p| p.version.clone())
-        .unwrap_or(VersionSpec::Channel(Channel::Stable));
-    let kernel_assets = assets.clone();
-    let kernel_tx = internal.clone();
-    tasks.push(tokio::spawn(async move {
-        let result = kernels(&kernel_assets, &spec).await;
-        let _ = kernel_tx.send(Internal::Kernels { epoch, result }).await;
-    }));
     let next_link_check = cfg.link_check.map(|d| Instant::now() + d);
     let running = Running {
         cfg,
@@ -178,6 +164,9 @@ pub(crate) fn start(
         gate,
         devices: BTreeMap::new(),
         kernel_version: None,
+        kernel_spec: None,
+        kernel_gen: 0,
+        kernels: KernelState::Idle,
         queue_seq: 0,
         ignored: HashMap::new(),
         next_link_check,

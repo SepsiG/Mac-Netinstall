@@ -24,6 +24,25 @@ pub mod mac_str {
     }
 }
 
+/// `Option<Mac>` as `"48:A9:8A:11:22:33"` or `null`.
+pub mod mac_opt {
+    use ni_proto::Mac;
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(mac: &Option<Mac>, s: S) -> Result<S::Ok, S::Error> {
+        match mac {
+            Some(mac) => s.collect_str(mac),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Mac>, D::Error> {
+        Option::<String>::deserialize(d)?
+            .map(|s| s.parse().map_err(de::Error::custom))
+            .transpose()
+    }
+}
+
 /// A failure: a stable `code` (an i18n key) and named parameters.
 ///
 /// Used as the error type of every engine command, inside
@@ -161,6 +180,48 @@ impl DeviceState {
     }
 }
 
+/// The boot kernels the engine serves (see [`EngineEvent::Kernels`]).
+///
+/// While they are not `ready` the engine runs but serves no boot file:
+/// devices that netboot are `ignored` (`no_boot_file`) and RouterBOOT
+/// keeps asking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum KernelState {
+    /// The engine is not running.
+    Idle,
+    /// Being resolved and fetched for `spec` (a channel such as `stable`
+    /// or an exact version). `done` / `total` are bytes of the
+    /// `netinstall` tarball while it downloads (a cached set skips that).
+    Downloading {
+        spec: String,
+        done: u64,
+        total: Option<u64>,
+    },
+    /// Served. `offline`: the mirror was unreachable, so this is the
+    /// version the channel last resolved to (from the cache).
+    Ready { version: String, offline: bool },
+    /// Could not be had (`kernels_unavailable` with the asset error as
+    /// `cause`). The engine keeps running without boot kernels.
+    Unavailable {
+        code: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params: BTreeMap<String, String>,
+    },
+}
+
+impl KernelState {
+    /// Stable name of the state (the serialized `state` tag).
+    pub fn name(&self) -> &'static str {
+        match self {
+            KernelState::Idle => "idle",
+            KernelState::Downloading { .. } => "downloading",
+            KernelState::Ready { .. } => "ready",
+            KernelState::Unavailable { .. } => "unavailable",
+        }
+    }
+}
+
 /// What a device said about itself in its Netinstall hello.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInfoView {
@@ -198,6 +259,13 @@ pub struct StartInfo {
 pub enum EngineEvent {
     Started(StartInfo),
     Stopped,
+    /// The boot kernel state changed (also reported for download
+    /// progress). `kernels_ready` and the `kernels_unavailable` error are
+    /// still sent as well.
+    Kernels {
+        #[serde(flatten)]
+        state: KernelState,
+    },
     /// Boot kernels of `version` are being served.
     KernelsReady {
         version: String,
@@ -332,7 +400,39 @@ mod tests {
             },
         };
         assert_eq!(roundtrip(&disc)["model"], "RB5009");
+        let kernels = EngineEvent::Kernels {
+            state: KernelState::Downloading {
+                spec: "stable".into(),
+                done: 5,
+                total: Some(10),
+            },
+        };
+        assert_eq!(
+            roundtrip(&kernels),
+            json!({"event": "kernels", "state": "downloading", "spec": "stable",
+                   "done": 5, "total": 10})
+        );
+        let unavailable = EngineEvent::Kernels {
+            state: KernelState::Unavailable {
+                code: "kernels_unavailable".into(),
+                params: [("cause".to_string(), "network".to_string())].into(),
+            },
+        };
+        assert_eq!(
+            roundtrip(&unavailable),
+            json!({"event": "kernels", "state": "unavailable", "code": "kernels_unavailable",
+                   "params": {"cause": "network"}})
+        );
         for e in [
+            EngineEvent::Kernels {
+                state: KernelState::Idle,
+            },
+            EngineEvent::Kernels {
+                state: KernelState::Ready {
+                    version: "7.25.1".into(),
+                    offline: true,
+                },
+            },
             EngineEvent::Stopped,
             EngineEvent::KernelsReady {
                 version: "7.25.1".into(),
@@ -389,6 +489,47 @@ mod tests {
             assert_eq!(v["state"], s.name());
             assert_eq!(s.is_active(), matches!(s.name(), "preparing" | "flashing"));
         }
+    }
+
+    #[test]
+    fn kernel_state_names_match_serde_tags() {
+        for s in [
+            KernelState::Idle,
+            KernelState::Downloading {
+                spec: "7.25.1".into(),
+                done: 0,
+                total: None,
+            },
+            KernelState::Ready {
+                version: "7.25.1".into(),
+                offline: false,
+            },
+            KernelState::Unavailable {
+                code: "kernels_unavailable".into(),
+                params: BTreeMap::new(),
+            },
+        ] {
+            assert_eq!(serde_json::to_value(&s).unwrap()["state"], s.name());
+        }
+    }
+
+    #[test]
+    fn optional_macs_are_strings_or_null() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct T {
+            #[serde(with = "mac_opt")]
+            m: Option<Mac>,
+        }
+        let some = T { m: Some(MAC) };
+        assert_eq!(
+            serde_json::to_value(&some).unwrap(),
+            json!({"m": "48:A9:8A:11:22:33"})
+        );
+        assert_eq!(
+            serde_json::from_value::<T>(json!({"m": null})).unwrap(),
+            T { m: None }
+        );
+        assert!(serde_json::from_value::<T>(json!({"m": "x"})).is_err());
     }
 
     #[test]

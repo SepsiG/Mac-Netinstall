@@ -22,6 +22,8 @@ pub use config::{
     EngineConfig, InterfaceSource, LinkStatus, NetPlan, Ports, DEFAULT_NETMASK, MIN_COOLDOWN,
 };
 pub use engine::{DeviceView, EngineHandle, Snapshot, EVENT_CAPACITY};
-pub use event::{DeviceInfoView, DeviceState, EngineEvent, Failure, StartInfo, WaitReason};
+pub use event::{
+    DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo, WaitReason,
+};
 pub use preflight::{Finding, PreflightReport, Severity};
 pub use profile::{default_profiles_root, ConfigMode, Listing, Profile, ProfileStore};

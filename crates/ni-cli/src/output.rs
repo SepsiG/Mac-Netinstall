@@ -37,6 +37,8 @@ impl Printer {
                 s.interface, s.server_ip
             )),
             EngineEvent::Stopped => Some("stopped".into()),
+            // `kernels_ready` / the `kernels_unavailable` error say it.
+            EngineEvent::Kernels { .. } => None,
             EngineEvent::KernelsReady { version } => Some(format!(
                 "boot kernels {version} ready; waiting for devices (Etherboot)"
             )),

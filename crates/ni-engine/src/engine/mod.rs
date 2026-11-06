@@ -20,7 +20,7 @@ mod start;
 pub use device::MAX_DEVICES;
 
 use crate::config::{EngineConfig, NetPlan};
-use crate::event::{DeviceInfoView, DeviceState, EngineEvent, Failure, StartInfo};
+use crate::event::{DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo};
 use crate::prepare::asset_failure;
 use crate::profile::Profile;
 use ni_assets::{AssetEvent, Assets, HttpConfig};
@@ -47,6 +47,13 @@ pub struct DeviceView {
     /// RouterOS version of the current (or last) install attempt, once
     /// resolved.
     pub version: Option<String>,
+    /// Install attempts so far (preparations started). Lets a client that
+    /// missed events tell "finished twice" from "finished once".
+    pub attempt: u64,
+    /// When the engine first saw the device (Unix time, milliseconds).
+    pub first_seen_ms: u64,
+    /// When its state last changed (Unix time, milliseconds).
+    pub updated_ms: u64,
     pub state: DeviceState,
 }
 
@@ -58,9 +65,22 @@ pub struct Snapshot {
     pub network: Option<NetPlan>,
     /// Version of the boot kernels being served, once ready.
     pub kernel_version: Option<String>,
+    /// The boot kernel state: `downloading` or `unavailable` while running
+    /// means "running but no kernels" (nothing is served).
+    pub kernels: KernelState,
     pub auto_repeat: bool,
     /// Name of the active profile.
     pub profile: Option<String>,
+    /// Only this device is served (see `set_only_mac`).
+    #[serde(with = "crate::event::mac_opt")]
+    pub only_mac: Option<Mac>,
+    /// Concurrency limit (0 when not running).
+    pub max_parallel: usize,
+    /// Post-flash cooldown in seconds (0 when not running).
+    pub cooldown_secs: u64,
+    /// Why the link is down (the last `link_down` reason), `None` while it
+    /// is up or the engine is not running.
+    pub link_down: Option<String>,
     /// Sorted by MAC.
     pub devices: Vec<DeviceView>,
 }
@@ -112,6 +132,11 @@ fn download_event(e: AssetEvent) -> Option<EngineEvent> {
     }
 }
 
+/// The `netinstall-<version>.tar.gz` download carries the boot kernels.
+fn is_kernel_tarball(file: &str) -> bool {
+    file.starts_with("netinstall-") && file.ends_with(".tar.gz")
+}
+
 impl EngineHandle {
     /// Create the asset cache at `cache_root` and spawn the engine task
     /// (idle until [`EngineHandle::start`]). Must be called inside a tokio
@@ -120,16 +145,35 @@ impl EngineHandle {
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let weak = events.downgrade();
         let sink = weak.clone();
+        let (internal, internal_rx) = mpsc::channel(64);
+        let progress = internal.clone();
         let assets = Assets::new(cache_root, http)
             .map_err(|e| asset_failure("assets_failed", &e))?
             .with_events(Arc::new(move |e| {
-                if let (Some(ev), Some(tx)) = (download_event(e), sink.upgrade()) {
+                let Some(ev) = download_event(e) else { return };
+                if let EngineEvent::Download { file, done, total } = &ev {
+                    if is_kernel_tarball(file) {
+                        // Dropped if the engine is behind; the next one
+                        // carries the newer count anyway.
+                        let _ = progress.try_send(core::Internal::Download {
+                            file: file.clone(),
+                            done: *done,
+                            total: *total,
+                        });
+                    }
+                }
+                if let Some(tx) = sink.upgrade() {
                     let _ = tx.send(ev);
                 }
             }));
         let assets = Arc::new(assets);
         let (cmds, rx) = mpsc::channel(32);
-        tokio::spawn(core::run(assets.clone(), events, rx));
+        tokio::spawn(core::run(
+            assets.clone(),
+            events,
+            rx,
+            (internal, internal_rx),
+        ));
         Ok(EngineHandle {
             cmds,
             events: weak,
@@ -218,6 +262,13 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use tokio::sync::broadcast::error::RecvError;
+
+    #[test]
+    fn kernel_tarballs_are_recognised() {
+        assert!(is_kernel_tarball("netinstall-7.25.1.tar.gz"));
+        assert!(!is_kernel_tarball("routeros-7.25.1-arm64.npk"));
+        assert!(!is_kernel_tarball("netinstall-7.25.1.tar.gz.sha256"));
+    }
 
     #[tokio::test]
     async fn a_dead_engine_closes_the_event_stream() {

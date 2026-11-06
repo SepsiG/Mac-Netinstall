@@ -8,7 +8,13 @@ use ni_bootp::BootArch;
 use ni_proto::{DeviceInfo, Mac, ServerSession};
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// Milliseconds since the Unix epoch (0 before it).
+pub(crate) fn unix_ms(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
 
 /// Most devices the engine keeps track of. Beyond it the oldest finished
 /// (done/failed) device is forgotten first, then the oldest idle one
@@ -37,6 +43,10 @@ pub(crate) struct Device {
     pub last_progress: Option<Instant>,
     /// Creation or last state change (for eviction).
     pub updated: Instant,
+    /// Wall-clock time of creation, for the snapshot.
+    pub first_seen: SystemTime,
+    /// Wall-clock time of the last state change, for the snapshot.
+    pub changed: SystemTime,
 }
 
 impl Device {
@@ -55,6 +65,8 @@ impl Device {
             session: None,
             last_progress: None,
             updated: Instant::now(),
+            first_seen: SystemTime::now(),
+            changed: SystemTime::now(),
         }
     }
 
@@ -82,6 +94,9 @@ impl Device {
                 .or(self.assigned.as_ref())
                 .map(|p| p.name.clone()),
             version: self.version.as_ref().map(|v| v.to_string()),
+            attempt: self.attempt,
+            first_seen_ms: unix_ms(self.first_seen),
+            updated_ms: unix_ms(self.changed),
             state: self.state.clone()?,
         })
     }
@@ -162,6 +177,22 @@ mod tests {
         let new = Mac([2, 0, 0, 0, 0, 9]);
         entry(&mut map, new, 1);
         assert_eq!(map.len(), 2, "grows when everything is busy");
+    }
+
+    #[test]
+    fn views_carry_attempts_and_wall_clock_times() {
+        let mut d = Device::new(Mac([2, 0, 0, 0, 0, 1]));
+        assert_eq!(d.view(), None, "nothing to show before the first state");
+        d.state = Some(DeviceState::Discovered);
+        d.attempt = 2;
+        d.first_seen = UNIX_EPOCH + Duration::from_millis(1_000);
+        d.changed = UNIX_EPOCH + Duration::from_millis(2_500);
+        let v = d.view().unwrap();
+        assert_eq!(
+            (v.attempt, v.first_seen_ms, v.updated_ms),
+            (2, 1_000, 2_500)
+        );
+        assert_eq!(unix_ms(UNIX_EPOCH - Duration::from_secs(1)), 0);
     }
 
     #[test]
