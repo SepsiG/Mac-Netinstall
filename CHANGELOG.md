@@ -9,8 +9,9 @@ The release workflow takes a version's notes from its section below.
 
 ## [0.1.1] - 2026-11-09
 
-The first release validated on real hardware: a MikroTik hEX RB750Gr3 was
-installed from a Mac with all four configuration modes. On first launch the
+The first release validated on real hardware: a MikroTik hEX RB750Gr3 (mmips)
+was installed from a Mac with all four configuration modes, and a hAP ac²
+(arm) with an extra package. On first launch the
 app asks for the **Local Network** and the firewall (incoming connections)
 permissions: allow both. The build is ad-hoc signed, not notarized: open it
 the first time via System Settings → Privacy & Security → **Open Anyway**.
@@ -55,7 +56,10 @@ USB 2.5G Ethernet adapter:
 - Keep existing configuration: works.
 - Auto-repeat: works (flashing started immediately when the device appeared).
 
-Not yet tested on hardware: the other architectures (arm, arm64, mipsbe, ppc,
+MikroTik hAP ac² (D53G-5HacD2HnD, `arm`), RouterOS 7.25.1, same Mac: installed
+with the `routeros` and `wireless` packages (two packages in one install).
+
+Not yet tested on hardware: the other architectures (arm64, mipsbe, ppc,
 tile), the mode script, remove branding, the license key and shutdown.
 
 ## [0.1.0] - 2026-11-06

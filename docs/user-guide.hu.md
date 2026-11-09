@@ -4,8 +4,8 @@
 
 > **Állapot:** valódi hardveren, egy **hEX RB750Gr3**-on (`mmips`, RouterOS 7.25.1)
 > kipróbálva: mind a négy konfigurációs mód (alapértelmezett, üres, egyéni szkript,
-> meglévő megtartása) és az automatikus ismétlés működik. Más architektúrákon (arm, arm64,
-> mipsbe, ppc, tile), a módszkripttel, a márkajelzés eltávolításával, a licenckulccsal és a
+> meglévő megtartása) és az automatikus ismétlés működik; egy **hAP ac²** (`arm`) is
+> felment egy extra csomaggal. A többi architektúrán (arm64, mipsbe, ppc, tile), a módszkripttel, a márkajelzés eltávolításával, a licenckulccsal és a
 > telepítés utáni leállítással **még nem tesztelt** hardveren. Ilyen típusoknál tarts kéznél
 > tartalékot: olyan eszközt, amelyet szükség esetén a MikroTik hivatalos Netinstalljával
 > (Windows/Linux) helyre tudsz állítani.
@@ -408,8 +408,8 @@ megszakít. Minden opció: `ni-cli --help` és `ni-cli <parancs> --help`.
 
 - **Valódi hardveren csak részben kipróbálva.** Eddig egy hEX RB750Gr3-on (`mmips`)
   működött az alapértelmezett, az üres, a szkriptes és a megtartó konfigurációs mód, valamint
-  az automatikus ismétlés. Még nem tesztelt: a többi architektúra (elindul-e a boot
-  kernelük), a módszkript, a márkajelzés eltávolítása, a licenckulcs és a telepítés utáni
+  az automatikus ismétlés, valamint egy hAP ac²-n (`arm`) egy extra csomaggal is. Még nem
+  tesztelt: az arm64, mipsbe, ppc és tile (elindul-e a boot kernelük), a módszkript, a márkajelzés eltávolítása, a licenckulcs és a telepítés utáni
   leállítás. Nem tesztelt típusoknál tartsd kéznél a hivatalos Netinstallt tartalékként.
   A nyitott pontok listája:
   [roadmap](superpowers/plans/2026-11-06-00-roadmap.md).

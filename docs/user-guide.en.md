@@ -4,7 +4,8 @@
 
 > **Status:** validated on real hardware with a **hEX RB750Gr3** (`mmips`, RouterOS 7.25.1):
 > all four configuration modes (default, empty, custom script, keep existing) and auto-repeat
-> work. Other architectures (arm, arm64, mipsbe, ppc, tile), the mode script, remove
+> work; a **hAP ac²** (`arm`) was also installed with an extra package. Other architectures
+> (arm64, mipsbe, ppc, tile), the mode script, remove
 > branding, the license key and the shutdown variant have **not yet been tested** on
 > hardware. For such models keep a fallback: a device you can recover with MikroTik's
 > official Netinstall (Windows/Linux) if needed.
@@ -390,8 +391,9 @@ seconds aborts. All options: `ni-cli --help` and `ni-cli <command> --help`.
 ## 11. Known limitations
 
 - **Only partly validated on real hardware.** Tested so far: a hEX RB750Gr3 (`mmips`) with
-  the default, empty, script and keep configuration modes and auto-repeat. Not yet tested:
-  the other architectures (whether their boot kernels boot), the mode script, remove
+  the default, empty, script and keep configuration modes and auto-repeat, and a hAP ac²
+  (`arm`) with an extra package. Not yet tested: arm64, mipsbe, ppc and tile (whether their
+  boot kernels boot), the mode script, remove
   branding, the license key and the shutdown variant. Keep the official Netinstall as a
   fallback for untested models. The open points are listed in the
   [roadmap](superpowers/plans/2026-11-06-00-roadmap.md).
