@@ -7,20 +7,26 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
-First successful hardware install: hEX RB750Gr3 (`mmips`, RouterOS 7.25.1).
+## [0.1.1] - 2026-11-09
+
+The first release validated on real hardware: a MikroTik hEX RB750Gr3 was
+installed from a Mac with all four configuration modes. On first launch the
+app asks for the **Local Network** and the firewall (incoming connections)
+permissions: allow both. The build is ad-hoc signed, not notarized: open it
+the first time via System Settings → Privacy & Security → **Open Anyway**.
 
 ### Added
 
-- User guide in English and Hungarian
-  ([docs/user-guide.en.md](docs/user-guide.en.md),
-  [docs/user-guide.hu.md](docs/user-guide.hu.md)), linked from the README.
+- macOS permissions sheet at first launch (and from Settings): asks for the
+  Local Network and incoming-connection permissions up front, shows what
+  macOS answered and opens System Settings at the right pane.
 - Log panel: resizable (the height is remembered), newest line first, Pause /
   Resume (new lines are collected and counted meanwhile), identical
   consecutive lines shown once with a count; the export keeps every line,
   oldest first.
-- macOS permissions sheet at first launch (and from Settings): asks for the
-  Local Network and incoming-connection permissions up front, shows what
-  macOS answered and opens System Settings at the right pane.
+- User guide in English and Hungarian
+  ([docs/user-guide.en.md](docs/user-guide.en.md),
+  [docs/user-guide.hu.md](docs/user-guide.hu.md)), linked from the README.
 
 ### Changed
 
@@ -28,6 +34,28 @@ First successful hardware install: hEX RB750Gr3 (`mmips`, RouterOS 7.25.1).
   are one clear `local_network_denied` message, in red in the status line and
   in the device's row, instead of a warning per BOOTP request.
 - A refused limited broadcast is retried to the subnet's directed broadcast.
+- Documentation status updated for the hardware validation; download names
+  in the docs no longer carry a version.
+
+### Fixed
+
+- A missing Local Network permission no longer floods the log with one
+  warning per BOOTP request (see above).
+
+### Hardware validation
+
+MikroTik hEX RB750Gr3 (`mmips`), RouterOS 7.25.1, Mac (Apple Silicon) with a
+USB 2.5G Ethernet adapter:
+
+- Default configuration: works (checked in WinBox: the default configuration
+  dialog).
+- Empty configuration: works.
+- Custom script: works.
+- Keep existing configuration: works.
+- Auto-repeat: works (flashing started immediately when the device appeared).
+
+Not yet tested on hardware: the other architectures (arm, arm64, mipsbe, ppc,
+tile), the mode script, remove branding, the license key and shutdown.
 
 ## [0.1.0] - 2026-11-06
 
@@ -78,5 +106,6 @@ Not affiliated with MikroTik.
 - Apple Silicon only; x86 (`X86_64__boot`, PXE) and ARM64 UEFI devices are
   not supported.
 
-[Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/SepsiG/Mac-Netinstall/releases/tag/v0.1.0

@@ -2,11 +2,13 @@
 
 *English version: [user-guide.en.md](user-guide.en.md)*
 
-> **Állapot:** a 0.1.0 egy **előzetes kiadás (pre-release)**, és még **nincs valódi
-> RouterBOARD hardveren kipróbálva**. A protokoll a hivatalos `netinstall-cli`
-> viselkedését követi, de eddig csak szimulátoron tesztelt. Először olyan eszközön
-> próbáld ki, amelyet szükség esetén a MikroTik hivatalos Netinstalljával (Windows/Linux)
-> helyre tudsz állítani.
+> **Állapot:** valódi hardveren, egy **hEX RB750Gr3**-on (`mmips`, RouterOS 7.25.1)
+> kipróbálva: mind a négy konfigurációs mód (alapértelmezett, üres, egyéni szkript,
+> meglévő megtartása) és az automatikus ismétlés működik. Más architektúrákon (arm, arm64,
+> mipsbe, ppc, tile), a módszkripttel, a márkajelzés eltávolításával, a licenckulccsal és a
+> telepítés utáni leállítással **még nem tesztelt** hardveren. Ilyen típusoknál tarts kéznél
+> tartalékot: olyan eszközt, amelyet szükség esetén a MikroTik hivatalos Netinstalljával
+> (Windows/Linux) helyre tudsz állítani.
 
 ## Tartalom
 
@@ -56,16 +58,16 @@ mikrotik.com-ról, és helyben tárolja őket; MikroTik-binárisokat nem tartalm
 ## 3. Telepítés
 
 1. A [Releases](https://github.com/SepsiG/Mac-Netinstall/releases) oldalról töltsd le
-   a `Mac-Netinstall_0.1.0_aarch64.dmg` és a `Mac-Netinstall_0.1.0_aarch64.dmg.sha256`
+   a `Mac-Netinstall_<verzió>_aarch64.dmg` és a `Mac-Netinstall_<verzió>_aarch64.dmg.sha256`
    fájlt.
 2. (Ajánlott) Ellenőrizd a letöltést. A Terminálban, abban a mappában, ahol mindkét
    fájl van:
 
    ```sh
-   shasum -a 256 -c Mac-Netinstall_0.1.0_aarch64.dmg.sha256
+   shasum -a 256 -c Mac-Netinstall_<verzió>_aarch64.dmg.sha256
    ```
 
-   Az eredmény: `Mac-Netinstall_0.1.0_aarch64.dmg: OK`.
+   Az eredmény: `Mac-Netinstall_<verzió>_aarch64.dmg: OK`.
 3. Nyisd meg a `.dmg` fájlt, és húzd a **Mac Netinstall** ikont az **Alkalmazások**
    (Applications) mappára.
 4. **Első indítás.** Az alkalmazás ad-hoc aláírású, nincs az Apple-nél hitelesítve
@@ -404,10 +406,12 @@ megszakít. Minden opció: `ni-cli --help` és `ni-cli <parancs> --help`.
 
 ## 11. Ismert korlátok
 
-- **Valódi hardveren még nincs kipróbálva.** Több részlet csak eszközön ellenőrizhető
-  (pl. hogy a konfigurációs módok, a módszkript, a márkajelzés eltávolítása és a
-  licenckulcs pontosan úgy működnek-e, mint a hivatalos eszközzel; hogy minden
-  architektúra boot kernele elindul-e). A nyitott pontok listája:
+- **Valódi hardveren csak részben kipróbálva.** Eddig egy hEX RB750Gr3-on (`mmips`)
+  működött az alapértelmezett, az üres, a szkriptes és a megtartó konfigurációs mód, valamint
+  az automatikus ismétlés. Még nem tesztelt: a többi architektúra (elindul-e a boot
+  kernelük), a módszkript, a márkajelzés eltávolítása, a licenckulcs és a telepítés utáni
+  leállítás. Nem tesztelt típusoknál tartsd kéznél a hivatalos Netinstallt tartalékként.
+  A nyitott pontok listája:
   [roadmap](superpowers/plans/2026-11-06-00-roadmap.md).
 - Az alkalmazás alapból újraküldi a meg nem válaszolt Netinstall-kereteket; hogy a
   valódi eszközök ezt jól kezelik-e, még nem ellenőrzött. Ha egy telepítés egy lépésnél

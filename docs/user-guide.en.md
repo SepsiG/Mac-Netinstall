@@ -2,10 +2,12 @@
 
 *Magyar változat: [user-guide.hu.md](user-guide.hu.md)*
 
-> **Status:** 0.1.0 is a **pre-release** and has **not yet been validated on real
-> RouterBOARD hardware**. The protocol follows the official `netinstall-cli`, but so far it
-> has been tested against a simulator only. Try it first on a device you can recover with
-> MikroTik's official Netinstall (Windows/Linux) if needed.
+> **Status:** validated on real hardware with a **hEX RB750Gr3** (`mmips`, RouterOS 7.25.1):
+> all four configuration modes (default, empty, custom script, keep existing) and auto-repeat
+> work. Other architectures (arm, arm64, mipsbe, ppc, tile), the mode script, remove
+> branding, the license key and the shutdown variant have **not yet been tested** on
+> hardware. For such models keep a fallback: a device you can recover with MikroTik's
+> official Netinstall (Windows/Linux) if needed.
 
 ## Contents
 
@@ -54,14 +56,14 @@ keeps them locally; it does not ship any MikroTik binaries.
 ## 3. Installing the app
 
 1. From the [Releases](https://github.com/SepsiG/Mac-Netinstall/releases) page download
-   `Mac-Netinstall_0.1.0_aarch64.dmg` and `Mac-Netinstall_0.1.0_aarch64.dmg.sha256`.
+   `Mac-Netinstall_<version>_aarch64.dmg` and `Mac-Netinstall_<version>_aarch64.dmg.sha256`.
 2. (Recommended) Verify the download. In Terminal, in the folder that holds both files:
 
    ```sh
-   shasum -a 256 -c Mac-Netinstall_0.1.0_aarch64.dmg.sha256
+   shasum -a 256 -c Mac-Netinstall_<version>_aarch64.dmg.sha256
    ```
 
-   It prints `Mac-Netinstall_0.1.0_aarch64.dmg: OK`.
+   It prints `Mac-Netinstall_<version>_aarch64.dmg: OK`.
 3. Open the `.dmg` and drag **Mac Netinstall** onto **Applications**.
 4. **First launch.** The app is ad-hoc signed, not notarized by Apple, so macOS blocks it
    the first time.
@@ -387,10 +389,11 @@ seconds aborts. All options: `ni-cli --help` and `ni-cli <command> --help`.
 
 ## 11. Known limitations
 
-- **Not yet validated on real hardware.** Several details can only be checked on a device
-  (e.g. whether the configuration modes, the mode script, remove branding and the license
-  key behave exactly as with the official tool; whether every architecture's boot kernel
-  boots). The open points are listed in the
+- **Only partly validated on real hardware.** Tested so far: a hEX RB750Gr3 (`mmips`) with
+  the default, empty, script and keep configuration modes and auto-repeat. Not yet tested:
+  the other architectures (whether their boot kernels boot), the mode script, remove
+  branding, the license key and the shutdown variant. Keep the official Netinstall as a
+  fallback for untested models. The open points are listed in the
   [roadmap](superpowers/plans/2026-11-06-00-roadmap.md).
 - By default the app re-sends unanswered Netinstall frames; whether real devices handle
   this correctly is unverified. If an install stalls at a step, `ni-cli`'s
