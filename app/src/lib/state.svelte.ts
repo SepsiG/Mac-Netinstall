@@ -11,8 +11,42 @@ import type {
   StartInfo,
 } from "./types";
 
-/** Most log entries kept (oldest dropped first). */
-export const MAX_LOG = 2000;
+/** Most log entries kept for the export (oldest dropped first). The panel
+ *  renders only the newest of them (`MAX_SHOWN` in logPanel.ts). */
+export const MAX_LOG = 50_000;
+
+/** The log lines kept, oldest first. A plain array changed in place, so a
+ *  line costs no proxy and no copy; `version` is what tells about changes
+ *  (the panel redraws at most once a frame). */
+export class LogBuffer {
+  readonly lines: LogEntry[] = [];
+  /** Lines ever added, also those dropped or cleared since: `lines[i]` is
+   *  line number `added - lines.length + i`. */
+  added = 0;
+  /** How many times the buffer was cleared. */
+  clears = 0;
+  /** Changes with every added line and every clear. */
+  version = $state(0);
+
+  private readonly max: number;
+
+  constructor(max: number = MAX_LOG) {
+    this.max = max;
+  }
+
+  push(e: LogEntry): void {
+    this.lines.push(e);
+    this.added += 1;
+    if (this.lines.length > this.max) this.lines.splice(0, this.lines.length - this.max);
+    this.version += 1;
+  }
+
+  clear(): void {
+    this.lines.length = 0;
+    this.clears += 1;
+    this.version += 1;
+  }
+}
 
 export interface DeviceRow {
   mac: string;
@@ -54,7 +88,7 @@ export class EngineState {
   /** The rows are from an engine that has stopped since. */
   stale = $state(false);
   devices = $state<Record<string, DeviceRow>>({});
-  log = $state<LogEntry[]>([]);
+  readonly log = new LogBuffer();
 
   /** Devices sorted by MAC. */
   get rows(): DeviceRow[] {
@@ -111,10 +145,7 @@ export class EngineState {
 
   apply(e: EngineEvent, now: number = Date.now()): void {
     const entry = logEntry(e, now);
-    if (entry) {
-      this.log.push(entry);
-      if (this.log.length > MAX_LOG) this.log.splice(0, this.log.length - MAX_LOG);
-    }
+    if (entry) this.log.push(entry);
     switch (e.event) {
       case "started": {
         const { event: _e, ...info } = e;
@@ -180,6 +211,6 @@ export class EngineState {
   }
 
   clearLog(): void {
-    this.log = [];
+    this.log.clear();
   }
 }

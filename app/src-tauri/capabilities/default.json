@@ -32,6 +32,7 @@
     "allow-get-settings",
     "allow-set-settings",
     "allow-set-dialog-size",
+    "allow-set-log-panel-height",
     "allow-cache-inventory",
     "allow-delete-cached",
     "allow-export-log",

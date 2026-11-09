@@ -52,6 +52,8 @@ export interface Backend {
   setSettings(settings: Settings): Promise<Settings>;
   /** Remember a dialog's size (validated and stored in Rust). */
   setDialogSize(id: string, width: number, height: number): Promise<void>;
+  /** Remember the log panel's height (CSS px of its lines). */
+  setLogPanelHeight(height: number): Promise<void>;
   /** `verify`: check every file's SHA-256 (slow); else a quick listing. */
   cacheInventory(verify: boolean): Promise<CacheView>;
   /** Bytes freed. */
@@ -107,6 +109,7 @@ export function tauriBackend(): Backend {
     getSettings: () => invoke("get_settings"),
     setSettings: (settings) => invoke("set_settings", { settings }),
     setDialogSize: (id, width, height) => invoke("set_dialog_size", { id, width, height }),
+    setLogPanelHeight: (height) => invoke("set_log_panel_height", { height }),
     cacheInventory: (verify) => invoke("cache_inventory", { verify }),
     deleteCached: (scope) => invoke("delete_cached", { scope }),
     exportLog: (text) => invoke("export_log", { text }),

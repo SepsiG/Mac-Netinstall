@@ -408,6 +408,7 @@ pub fn run() {
             commands::get_settings,
             commands::set_settings,
             commands::set_dialog_size,
+            commands::set_log_panel_height,
             commands::cache_inventory,
             commands::delete_cached,
             commands::export_log,

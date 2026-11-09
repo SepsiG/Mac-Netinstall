@@ -230,6 +230,8 @@ export interface Settings {
   window: WindowGeometry | null;
   /** Each dialog's size as the user left it, by dialog id. */
   dialog_sizes: Record<string, DialogSize>;
+  /** The log panel's height (CSS px of its lines); `null`: the default. */
+  log_panel_height: number | null;
 }
 
 export interface WindowGeometry {

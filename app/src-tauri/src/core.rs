@@ -224,6 +224,23 @@ impl AppCore {
         Ok(())
     }
 
+    /// Remember the log panel's height. Error: `invalid_setting` (`field`:
+    /// `log_panel_height`, `min`, `max`) outside
+    /// [`crate::settings::MIN_LOG_PANEL_HEIGHT`]..=[`crate::settings::MAX_SIDE`].
+    pub fn set_log_panel_height(&self, height: u32) -> Result<(), Failure> {
+        let mut s = lock(&self.settings);
+        let next = Settings {
+            log_panel_height: Some(height),
+            ..s.clone()
+        };
+        next.validate()?;
+        if let Err(f) = self.store.save(&next) {
+            tracing::warn!("cannot store settings: {f}");
+        }
+        *s = next;
+        Ok(())
+    }
+
     /// Change a few fields and store them; a failure to store is only
     /// logged (remembering the last interface must not fail a start).
     fn remember(&self, change: impl FnOnce(&mut Settings)) {

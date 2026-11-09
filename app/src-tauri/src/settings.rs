@@ -29,7 +29,10 @@ pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
 /// Version 4 adds `window` (the main window's position and size) and
 /// `dialog_sizes` (each dialog's size, by id); older files have neither and
 /// keep everything else.
-pub const SETTINGS_VERSION: u32 = 4;
+///
+/// Version 5 adds `log_panel_height` (the log's height as the user dragged
+/// it; `null`: the default); older files keep everything else.
+pub const SETTINGS_VERSION: u32 = 5;
 
 /// Smallest main window (also `minWidth` / `minHeight` in tauri.conf.json).
 pub const MIN_WINDOW_WIDTH: u32 = 820;
@@ -44,6 +47,15 @@ pub const MIN_DIALOG_SIDE: u32 = 120;
 pub const MAX_DIALOGS: usize = 16;
 /// Longest dialog id.
 pub const MAX_DIALOG_ID: usize = 32;
+/// Smallest stored log panel height (CSS px of its lines: about three;
+/// `MIN_LOG_HEIGHT` in the frontend's `logPanel.ts`). The largest is
+/// [`MAX_SIDE`].
+pub const MIN_LOG_PANEL_HEIGHT: u32 = 64;
+
+/// A storable log panel height.
+pub fn valid_log_panel_height(height: u32) -> bool {
+    (MIN_LOG_PANEL_HEIGHT..=MAX_SIDE).contains(&height)
+}
 
 /// The main window's position (top-left of its frame) and content size,
 /// in points.
@@ -128,6 +140,9 @@ pub struct Settings {
     pub window: Option<WindowGeometry>,
     /// Each dialog's size as the user left it, by dialog id.
     pub dialog_sizes: std::collections::BTreeMap<String, DialogSize>,
+    /// The log panel's height (CSS px of its lines) as the user left it;
+    /// `None`: the default.
+    pub log_panel_height: Option<u32>,
 }
 
 impl Default for Settings {
@@ -145,6 +160,7 @@ impl Default for Settings {
             download_timeout_secs: 30 * 60,
             window: None,
             dialog_sizes: Default::default(),
+            log_panel_height: None,
         }
     }
 }
@@ -185,6 +201,14 @@ impl Settings {
         if !sizes_ok {
             return Err(invalid("dialog_sizes"));
         }
+        if self
+            .log_panel_height
+            .is_some_and(|h| !valid_log_panel_height(h))
+        {
+            return Err(invalid("log_panel_height")
+                .with("min", MIN_LOG_PANEL_HEIGHT)
+                .with("max", MAX_SIDE));
+        }
         Ok(())
     }
 
@@ -194,7 +218,8 @@ impl Settings {
 
     /// `edit` (from the settings dialog) with what the app remembers by
     /// itself kept from `self`: the last interface, profile and
-    /// auto-repeat, the window and the dialog sizes. A dialog opened before
+    /// auto-repeat, the window, the dialog sizes and the log panel's
+    /// height. A dialog opened before
     /// a start must not undo what the start remembered.
     pub fn merged_edit(&self, edit: Settings) -> Settings {
         Settings {
@@ -203,6 +228,7 @@ impl Settings {
             auto_repeat: self.auto_repeat,
             window: self.window,
             dialog_sizes: self.dialog_sizes.clone(),
+            log_panel_height: self.log_panel_height,
             ..edit
         }
     }
@@ -221,6 +247,7 @@ const FIELDS: &[&str] = &[
     "download_timeout_secs",
     "window",
     "dialog_sizes",
+    "log_panel_height",
 ];
 
 /// Set `field` of `s` from the file's JSON `obj`; `false` if it has the
@@ -265,6 +292,7 @@ fn set_field(
         "download_timeout_secs" => get(obj, field, &mut s.download_timeout_secs),
         "window" => get(obj, field, &mut s.window),
         "dialog_sizes" => get(obj, field, &mut s.dialog_sizes),
+        "log_panel_height" => get(obj, field, &mut s.log_panel_height),
         _ => unreachable!("unknown settings field {field}"),
     }
 }
@@ -760,7 +788,7 @@ mod tests {
         assert_eq!(loaded.settings.max_parallel, 2);
         let stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(stored["version"], 4);
+        assert_eq!(stored["version"], SETTINGS_VERSION);
         assert_eq!(stored["window"], json!(null));
         assert_eq!(stored["dialog_sizes"], json!({}));
         // Invalid sizes fall back alone; the rest is kept.
@@ -777,6 +805,77 @@ mod tests {
         assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
         assert_eq!(loaded.settings.window, None);
         assert!(loaded.settings.dialog_sizes.is_empty());
+    }
+
+    #[test]
+    fn log_panel_height_is_validated() {
+        let with = |h: u32| Settings {
+            log_panel_height: Some(h),
+            ..Settings::default()
+        };
+        assert!(Settings::default().validate().is_ok(), "none: the default");
+        for ok in [MIN_LOG_PANEL_HEIGHT, 150, MAX_SIDE] {
+            assert!(with(ok).validate().is_ok(), "{ok}");
+        }
+        for bad in [0, MIN_LOG_PANEL_HEIGHT - 1, MAX_SIDE + 1] {
+            let err = with(bad).validate().unwrap_err();
+            assert_eq!(
+                (
+                    err.code.as_str(),
+                    err.param("field"),
+                    err.param("min"),
+                    err.param("max")
+                ),
+                (
+                    "invalid_setting",
+                    Some("log_panel_height"),
+                    Some(MIN_LOG_PANEL_HEIGHT.to_string().as_str()),
+                    Some(MAX_SIDE.to_string().as_str())
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn version_4_files_gain_log_panel_height() {
+        let dir = tempdir("settings-v4");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            json!({"version": 4, "language": "hu",
+                "dialog_sizes": {"profile": {"width": 640, "height": 480}}})
+            .to_string(),
+        )
+        .unwrap();
+        let store = SettingsStore::new(&path);
+        let loaded = store.load_checked();
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert_eq!(loaded.settings.log_panel_height, None);
+        assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+        assert_eq!(loaded.settings.dialog_sizes.len(), 1);
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["version"], 5);
+        assert_eq!(stored["log_panel_height"], json!(null));
+        assert_eq!(stored["dialog_sizes"]["profile"]["width"], 640);
+        // A stored height round-trips.
+        let mut s = loaded.settings.clone();
+        s.log_panel_height = Some(220);
+        store.save(&s).unwrap();
+        assert_eq!(store.load().log_panel_height, Some(220));
+        // A bad one falls back alone; the rest is kept.
+        for bad in [json!(10), json!(MAX_SIDE + 1), json!("tall"), json!(-5)] {
+            std::fs::write(
+                &path,
+                json!({"version": 5, "language": "hu", "log_panel_height": bad}).to_string(),
+            )
+            .unwrap();
+            let loaded = SettingsStore::new(&path).load_checked();
+            assert_eq!(loaded.problems, ["log_panel_height"], "{bad}");
+            assert_eq!(loaded.settings.log_panel_height, None);
+            assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+        }
     }
 
     #[test]
@@ -797,7 +896,9 @@ mod tests {
                 height: 500,
             },
         );
+        current.log_panel_height = Some(300);
         let merged = current.merged_edit(Settings::default());
+        assert_eq!(merged.log_panel_height, Some(300));
         assert_eq!(merged.window, current.window);
         assert_eq!(merged.dialog_sizes, current.dialog_sizes);
     }

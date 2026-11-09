@@ -88,7 +88,7 @@ describe("EngineState", () => {
     expect(s.busy).toBe(1);
     s.apply({ event: "device", mac: A, state: "done" });
     expect(s.busy).toBe(0);
-    expect(s.log.length).toBe(5); // started, bootp_seen, discovered, preparing, done
+    expect(s.log.lines.length).toBe(5); // started, bootp_seen, discovered, preparing, done
   });
 
   it("forgets the configuration of the previous round", () => {
@@ -121,12 +121,22 @@ describe("EngineState", () => {
     expect(s.kernels.state).toBe("idle");
   });
 
-  it("keeps the log bounded", () => {
+  it("keeps the log bounded, counting every line ever added", () => {
     const s = new EngineState();
+    const v0 = s.log.version;
     for (let i = 0; i < MAX_LOG + 5; i++) s.apply({ event: "ignored", mac: A, reason: "cooldown" }, i);
-    expect(s.log.length).toBe(MAX_LOG);
-    expect(s.log[0]!.at).toBe(5);
+    expect(s.log.lines.length).toBe(MAX_LOG);
+    expect(s.log.lines[0]!.at).toBe(5);
+    expect(s.log.added).toBe(MAX_LOG + 5);
+    expect(s.log.version).toBeGreaterThan(v0);
+    const v1 = s.log.version;
     s.clearLog();
-    expect(s.log).toEqual([]);
+    expect(s.log.lines).toEqual([]);
+    expect(s.log.added).toBe(MAX_LOG + 5);
+    expect(s.log.version).toBeGreaterThan(v1);
+  });
+
+  it("keeps far more lines than a burst of 5000 for the export", () => {
+    expect(MAX_LOG).toBeGreaterThanOrEqual(20_000);
   });
 });

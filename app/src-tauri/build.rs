@@ -29,6 +29,7 @@ const COMMANDS: &[&str] = &[
     "get_settings",
     "set_settings",
     "set_dialog_size",
+    "set_log_panel_height",
     "cache_inventory",
     "delete_cached",
     "export_log",

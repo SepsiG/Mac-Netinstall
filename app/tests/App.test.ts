@@ -365,4 +365,16 @@ describe("App", () => {
     expect(dialog).toHaveTextContent(B);
     expect(backend.stop).not.toHaveBeenCalled();
   });
+
+  it("restores the log height from the settings and stores a new one", async () => {
+    const backend = await start({
+      getSettings: vi.fn(async () => ({ ...SETTINGS, log_panel_height: 240 })),
+    });
+    const lines = screen.getByRole("list");
+    await waitFor(() => expect(lines.style.height).toBe("240px"));
+    const sep = screen.getByRole("separator");
+    sep.focus();
+    await userEvent.keyboard("{ArrowUp}");
+    await waitFor(() => expect(backend.setLogPanelHeight).toHaveBeenCalledWith(256));
+  });
 });

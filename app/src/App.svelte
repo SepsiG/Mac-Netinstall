@@ -47,6 +47,8 @@
   /** Start was pressed for the current choice (findings turn red). */
   let attempted = $state(false);
   let logOpen = $state(true);
+  /** The log's chosen height (from the settings; `null`: the default). */
+  let logHeight = $state<number | null>(null);
   let ready = $state(false);
   /** While stopped the adapter list and a quick local check follow
    *  changes in macOS (a cable, the adapter's TCP/IP settings). */
@@ -161,6 +163,7 @@
       unlisten.push(await backend.onCloseRequested((n) => (quitAsk = n)));
       settings = (await attempt(() => backend.getSettings())) ?? null;
       initDialogSizes(settings?.dialog_sizes, (id, s) => backend.setDialogSize(id, s.width, s.height));
+      logHeight = settings?.log_panel_height ?? null;
       preferred = (await attempt(() => backend.preferredLanguages())) ?? [];
       applyLanguage();
       iface = settings?.last_interface ?? null;
@@ -397,7 +400,13 @@
     onerror={(f) => (error = f)}
   />
 
-  <LogPanel entries={engine.log} bind:open={logOpen} onclear={() => engine.clearLog()} onerror={(f) => (error = f)} />
+  <LogPanel
+    log={engine.log}
+    bind:open={logOpen}
+    bind:height={logHeight}
+    onclear={() => engine.clearLog()}
+    onerror={(f) => (error = f)}
+  />
 </main>
 
 {#if editing}

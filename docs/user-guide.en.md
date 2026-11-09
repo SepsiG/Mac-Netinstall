@@ -301,9 +301,14 @@ Opened with the **Settings** button in the toolbar.
 
 ### Log
 
-The **Log** panel at the bottom of the window can be expanded. With the **All devices**
-selector you can filter to one device (MAC address); **Export…** saves the visible lines
-to a text file, **Clear** empties the panel.
+The **Log** panel at the bottom of the window can be expanded; the newest line is at the
+top. Drag the line above it to make it taller or shorter (or focus it and use the ↑/↓
+keys; double-click restores the default height); the app remembers the height. With the
+**All devices** selector you can filter to one device (MAC address). **Pause** holds the
+list still so you can read it (scrolling down in the list does the same); new lines are
+still collected, a badge counts them, and **Resume** (or scrolling back to the top) shows
+them. **Export…** saves every kept line (of the chosen device) to a text file, oldest
+first; **Clear** empties the panel.
 
 The app also writes a detailed log file to
 `~/Library/Logs/io.github.sepsig.mac-netinstall/` (`app.<date>.log`, and

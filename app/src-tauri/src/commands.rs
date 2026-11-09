@@ -167,6 +167,12 @@ pub fn set_dialog_size(core: State<'_, AppCore>, id: String, width: u32, height:
     core.set_dialog_size(&id, width, height)
 }
 
+/// Remember the log panel's height (CSS px of its lines).
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_log_panel_height(core: State<'_, AppCore>, height: u32) -> R<()> {
+    core.set_log_panel_height(height)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn set_settings(core: State<'_, AppCore>, settings: Settings) -> R<Settings> {
     core.set_settings(settings).await

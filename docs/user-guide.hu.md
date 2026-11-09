@@ -312,9 +312,15 @@ A **Mentés** gomb menti a beállításokat, a **Mégse** elveti a módosításo
 
 ### Napló
 
-Az ablak alján lévő **Napló** panel lenyitható. A **Minden eszköz** választóval egy
-eszköz (MAC-cím) bejegyzéseire szűrhetsz; az **Exportálás…** a látható sorokat
-szövegfájlba menti, a **Törlés** kiüríti a panelt.
+Az ablak alján lévő **Napló** panel lenyitható; a legújabb sor van felül. A fölötte lévő
+elválasztó vonal húzásával magasabbra vagy alacsonyabbra állíthatod (vagy jelöld ki, és
+használd a ↑/↓ billentyűket; dupla kattintásra visszaáll az alapméret); az alkalmazás
+megjegyzi a magasságot. A **Minden eszköz** választóval egy eszköz (MAC-cím)
+bejegyzéseire szűrhetsz. A **Szünet** megállítja a listát, hogy nyugodtan olvashasd (a
+listában lefelé görgetés ugyanezt teszi); az új sorokat közben is gyűjti, számukat egy
+jelvény mutatja, a **Folytatás** (vagy a lista tetejére görgetés) pedig megjeleníti őket.
+Az **Exportálás…** a napló minden megőrzött sorát (a kiválasztott eszközét) szövegfájlba
+menti, a legrégebbivel kezdve; a **Törlés** kiüríti a panelt.
 
 Az alkalmazás részletes naplófájlt is ír ide:
 `~/Library/Logs/io.github.sepsig.mac-netinstall/` (`app.<dátum>.log`, az `ni-cli`
