@@ -27,3 +27,9 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+    ignore:
+      # svelte-check 4.x accepts only TypeScript ^5 || ^6 as a peer; a
+      # TypeScript 7 bump breaks `npm ci` (ERESOLVE). Lift this once
+      # svelte-check supports TypeScript 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
