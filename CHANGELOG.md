@@ -25,8 +25,9 @@ the first time via System Settings → Privacy & Security → **Open Anyway**.
   consecutive lines shown once with a count; the export keeps every line,
   oldest first.
 - User guide in English and Hungarian
-  ([docs/user-guide.en.md](docs/user-guide.en.md),
-  [docs/user-guide.hu.md](docs/user-guide.hu.md)), linked from the README.
+  ([English](https://github.com/SepsiG/Mac-Netinstall/blob/main/docs/user-guide.en.md),
+  [Magyar](https://github.com/SepsiG/Mac-Netinstall/blob/main/docs/user-guide.hu.md)),
+  linked from the README.
 
 ### Changed
 
@@ -39,8 +40,8 @@ the first time via System Settings → Privacy & Security → **Open Anyway**.
 
 ### Fixed
 
-- A missing Local Network permission no longer floods the log with one
-  warning per BOOTP request (see above).
+- Frontend build: TypeScript pinned back to 6.0.3 (svelte-check does not
+  support TypeScript 7 yet); Dependabot no longer proposes TypeScript majors.
 
 ### Hardware validation
 
