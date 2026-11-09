@@ -14,6 +14,7 @@ pub const APP_FAILURES: &[&str] = &[
     "log_io",
     "no_home",
     "not_a_script",
+    "open_settings_failed",
     "packages_unavailable",
     "profile_exists",
     "script_failed",
@@ -53,6 +54,7 @@ mod tests {
         include_str!("commands.rs"),
         include_str!("settings.rs"),
         include_str!("lib.rs"),
+        include_str!("permissions.rs"),
     ];
 
     #[test]

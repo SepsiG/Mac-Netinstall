@@ -18,6 +18,8 @@
     checking,
     attempted = false,
     onretry,
+    localNetworkDenied = false,
+    onopensettings,
   }: {
     running: boolean;
     started: StartInfo | null;
@@ -30,6 +32,10 @@
     attempted?: boolean;
     /** Fetch unavailable kernels again. */
     onretry?: () => void;
+    /** Sends are refused: macOS's Local Network permission is missing. */
+    localNetworkDenied?: boolean;
+    /** Open System Settings at Local Network. */
+    onopensettings?: () => void;
   } = $props();
 
   function tone(f: { severity: "error" | "warning"; code: string }): string {
@@ -83,6 +89,18 @@
       <button class="small" onclick={onretry}>{$t("kernel.retry")}</button>
     {/if}
   </div>
+  {#if running && localNetworkDenied}
+    <div class="finding error denied">
+      <span class="icon">⛔</span>
+      <div>
+        <div>{describe($locale, { code: "local_network_denied" })}</div>
+        <div class="hint">{hint($locale, "local_network_denied")}</div>
+      </div>
+      {#if onopensettings}
+        <button class="small" onclick={onopensettings}>{$t("status.open_settings")}</button>
+      {/if}
+    </div>
+  {/if}
   {#each findings as f (f.code + JSON.stringify(f.params ?? {}))}
     {@const kind = tone(f)}
     {@const advice = kind === "info" ? null : hint($locale, f.code, f.params)}
@@ -133,6 +151,16 @@
   }
   .finding.error {
     color: var(--danger);
+  }
+  .finding.denied {
+    align-items: center;
+    font-weight: 600;
+  }
+  .finding.denied .hint {
+    font-weight: normal;
+  }
+  .finding.denied button {
+    margin-left: auto;
   }
   .finding.info {
     color: var(--secondary);

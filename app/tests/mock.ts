@@ -2,7 +2,7 @@
 // and `emit*` drive the event callbacks.
 import { vi } from "vitest";
 import type { Backend } from "../src/lib/api";
-import type { CacheView, EngineEvent, Profile, Settings, Snapshot } from "../src/lib/types";
+import type { CacheView, EngineEvent, Profile, SettingsPane, Settings, Snapshot } from "../src/lib/types";
 
 export const SETTINGS: Settings = {
   version: 1,
@@ -17,6 +17,8 @@ export const SETTINGS: Settings = {
   download_timeout_secs: 1800,
   window: null,
   dialog_sizes: {},
+  log_panel_height: null,
+  onboarding_done: true,
 };
 
 export const CACHE: CacheView = {
@@ -161,6 +163,10 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
     getSettings: vi.fn(async () => ({ ...SETTINGS })),
     setSettings: vi.fn(async (s: Settings) => s),
     setDialogSize: vi.fn(async (_id: string, _w: number, _h: number) => {}),
+    setLogPanelHeight: vi.fn(async (_height: number) => {}),
+    setOnboardingDone: vi.fn(async (_done: boolean) => {}),
+    requestPermissions: vi.fn(async () => ({ local_network: "granted" as const, firewall: "off" as const })),
+    openSystemSettings: vi.fn(async (_pane: SettingsPane) => {}),
     cacheInventory: vi.fn(async () => structuredClone(CACHE)),
     deleteCached: vi.fn(async () => 1_000_000),
     exportLog: vi.fn(async () => true),

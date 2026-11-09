@@ -76,6 +76,8 @@ export interface Snapshot {
   max_parallel: number;
   cooldown_secs: number;
   link_down: string | null;
+  /** Sends are refused: macOS's Local Network permission is missing. */
+  local_network_denied?: boolean;
   devices: DeviceView[];
 }
 
@@ -230,7 +232,24 @@ export interface Settings {
   window: WindowGeometry | null;
   /** Each dialog's size as the user left it, by dialog id. */
   dialog_sizes: Record<string, DialogSize>;
+  /** The log panel's height (CSS px of its lines); `null`: the default. */
+  log_panel_height: number | null;
+  /** The permissions sheet was gone through (else it opens at launch). */
+  onboarding_done: boolean;
 }
+
+/** macOS's Local Network permission, as a probe send saw it. */
+export type LocalNetworkAccess = "granted" | "denied" | "unknown";
+/** The Application Firewall, as far as this app is concerned. */
+export type FirewallAccess = "off" | "allowed" | "blocked" | "unknown";
+
+export interface PermissionsView {
+  local_network: LocalNetworkAccess;
+  firewall: FirewallAccess;
+}
+
+/** A System Settings pane the backend can open. */
+export type SettingsPane = "local_network" | "firewall";
 
 export interface WindowGeometry {
   x: number;

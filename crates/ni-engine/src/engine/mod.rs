@@ -94,6 +94,11 @@ pub struct Snapshot {
     /// Why the link is down (the last `link_down` reason), `None` while it
     /// is up or the engine is not running.
     pub link_down: Option<String>,
+    /// Sends are refused with `EHOSTUNREACH` (macOS's Local Network
+    /// permission is missing): `local_network_denied` was reported and no
+    /// send has worked since.
+    #[serde(default)]
+    pub local_network_denied: bool,
     /// Sorted by MAC.
     pub devices: Vec<DeviceView>,
 }

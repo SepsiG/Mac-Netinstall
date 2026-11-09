@@ -365,4 +365,65 @@ describe("App", () => {
     expect(dialog).toHaveTextContent(B);
     expect(backend.stop).not.toHaveBeenCalled();
   });
+
+  it("restores the log height from the settings and stores a new one", async () => {
+    const backend = await start({
+      getSettings: vi.fn(async () => ({ ...SETTINGS, log_panel_height: 240 })),
+    });
+    const lines = screen.getByRole("list");
+    await waitFor(() => expect(lines.style.height).toBe("240px"));
+    const sep = screen.getByRole("separator");
+    sep.focus();
+    await userEvent.keyboard("{ArrowUp}");
+    await waitFor(() => expect(backend.setLogPanelHeight).toHaveBeenCalledWith(256));
+  });
+
+  it("asks for the macOS permissions at the first launch, once", async () => {
+    const backend = await start({
+      getSettings: vi.fn(async () => ({ ...SETTINGS, onboarding_done: false })),
+    });
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Local network");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Request permissions" }));
+    await waitFor(() => expect(backend.setOnboardingDone).toHaveBeenCalledWith(true));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("does not ask again once done", async () => {
+    const backend = await start();
+    await waitFor(() => expect(backend.getSettings).toHaveBeenCalled());
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens the permission check from Settings", async () => {
+    const backend = await start();
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Check permissions" }));
+    const dialogs = await screen.findAllByRole("dialog");
+    const sheet = dialogs.find((d) => d.textContent?.includes("Incoming connections"))!;
+    await userEvent.click(within(sheet).getByRole("button", { name: "Request permissions" }));
+    await waitFor(() => expect(backend.requestPermissions).toHaveBeenCalled());
+  });
+
+  it("when macOS refuses to send: says so, offers System Settings and checks once", async () => {
+    const backend = await running({
+      requestPermissions: vi.fn(async () => ({ local_network: "denied" as const, firewall: "off" as const })),
+    });
+    backend.emit({ event: "warning", code: "local_network_denied", params: { service: "bootp" } });
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("macOS refused to send to the devices");
+    await waitFor(() => expect(backend.requestPermissions).toHaveBeenCalledOnce());
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const said = screen.getAllByText(/macOS blocks this app's local network access/);
+    expect(said.some((el) => el.closest(".status"))).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Open System Settings" }));
+    expect(backend.openSystemSettings).toHaveBeenCalledWith("local_network");
+    // Not again in this session.
+    backend.emit({ event: "warning", code: "local_network_allowed" });
+    backend.emit({ event: "warning", code: "local_network_denied", params: { service: "bootp" } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 });

@@ -47,6 +47,8 @@ pub const FAILURES: &[&str] = &[
     "kernels_unavailable",
     "link_down",
     "link_up",
+    "local_network_allowed",
+    "local_network_denied",
     "mode_script_with_keep",
     "no_ipv4",
     "min_os_newer",

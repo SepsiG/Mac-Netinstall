@@ -69,10 +69,17 @@ keeps them locally; it does not ship any MikroTik binaries.
      Security, scroll to the message about "Mac Netinstall", click **Open Anyway** and
      confirm.
    - **macOS 13–14:** Control-click the app → Open works as well.
-5. **Local Network permission.** The first time the app talks to a device, macOS asks
-   whether Mac Netinstall may find and connect to devices on your local network. **Allow
-   it.** If you denied it: System Settings → Privacy & Security → Local Network, and turn
-   Mac Netinstall on.
+5. **Permissions.** At the first launch the app opens the **macOS permissions** sheet. Click
+   **Request permissions**: macOS asks right away (not in the middle of an install)
+   - whether Mac Netinstall may find and connect to devices on your local network
+     (**Local network**) — **allow it**, the app cannot answer the devices without it;
+   - if the macOS firewall is on, whether it may accept incoming connections — **allow it**.
+
+   The sheet then shows what macOS answered (✓ / ✗) and, for anything not allowed, opens the
+   right page of System Settings (Privacy & Security → Local Network, or the firewall). After
+   changing a setting, click **Check again**. **Later** closes the sheet; it opens again at the
+   next launch until you have requested the permissions. You can open it any time from
+   **Settings → Check permissions**.
 
 While it runs, the app is in the Dock; the Dock icon's badge shows how many devices are
 being prepared or flashed.
@@ -267,6 +274,8 @@ sure you want to abort.
 Opened with the **Settings** button in the toolbar.
 
 - **Language** – **Same as macOS**, **English** or **Magyar**.
+- **Permissions** – **Check permissions** opens the macOS permissions sheet (see
+  [section 3](#3-installing-the-app)).
 - **Flashing** – **Devices at once** and the cooldown (see
   [section 7](#7-several-devices-and-auto-repeat)).
 - **Advanced**
@@ -301,9 +310,15 @@ Opened with the **Settings** button in the toolbar.
 
 ### Log
 
-The **Log** panel at the bottom of the window can be expanded. With the **All devices**
-selector you can filter to one device (MAC address); **Export…** saves the visible lines
-to a text file, **Clear** empties the panel.
+The **Log** panel at the bottom of the window can be expanded; the newest line is at the
+top. Drag the line above it to make it taller or shorter (or focus it and use the ↑/↓
+keys; double-click restores the default height); the app remembers the height. With the
+**All devices** selector you can filter to one device (MAC address). **Pause** holds the
+list still so you can read it (scrolling down in the list does the same); new lines are
+still collected, a badge counts them, and **Resume** (or scrolling back to the top) shows
+them. **Export…** saves every kept line (of the chosen device) to a text file, oldest
+first; **Clear** empties the panel. Identical lines in a row show once, with a count (e.g. ×93)
+and the latest time; the export has every line.
 
 The app also writes a detailed log file to
 `~/Library/Logs/io.github.sepsig.mac-netinstall/` (`app.<date>.log`, and
@@ -331,7 +346,8 @@ Errors also appear in a bar at the top of the window; close it with × (**Dismis
 | **The device stopped receiving with … still to send: the install is incomplete.** | Install it again. |
 | **… received every file but never confirmed it was ready; the install was finished anyway. Check that the device starts up.** | A warning: the install was closed, but the device did not confirm it. Check that it boots properly; if not, install again. Please send a log in this case. |
 | **This device booted the RouterOS … kernel, so it cannot install …. Power it off and on to netboot again.** | You changed the profile (version) after the device booted. Boot it into Etherboot mode again. |
-| **Sending failed (Netinstall, …×).** | Most likely the Local Network permission is missing: System Settings → Privacy & Security → Local Network, and allow Mac Netinstall. |
+| **macOS blocks this app's local network access: the devices get no answer.** (red, in the status line and in the device's row) | The Local Network permission is missing or the macOS question is still unanswered. Click **Open System Settings** (Privacy & Security → Local Network), turn Mac Netinstall on, then netboot the device again. The permissions sheet also opens once to check it. |
+| **Sending failed (Netinstall, …×).** | A send failed for another reason (e.g. the adapter went away). If it keeps happening, check the cable and the adapter, and the permissions (**Settings → Check permissions**). |
 | **The engine stopped unexpectedly. Restart Mac Netinstall.** | Restart the app and send the log file. |
 
 ## 10. Command line (ni-cli)

@@ -501,9 +501,11 @@ async fn stop_and_start_on_fixed_ports_never_finds_them_busy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn netinstall_send_failures_are_reported() {
-    // lo0 cannot broadcast: every Netinstall frame fails to send.
+    // A destination lo0 cannot reach: every Netinstall frame fails to send.
+    // (Not the limited broadcast: that now falls back to lo0's directed
+    // broadcast, which works; see `ni_net::BroadcastTarget`.)
     let mut rig = rig(|cfg| {
-        cfg.ports.netinstall_dest = "255.255.255.255:5000".parse().unwrap();
+        cfg.ports.netinstall_dest = "240.0.0.1:5000".parse().unwrap();
     })
     .await;
     let sim = boot(&rig, A, sim_config(A)).await;

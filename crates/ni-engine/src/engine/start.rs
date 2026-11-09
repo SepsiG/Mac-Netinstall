@@ -26,7 +26,7 @@ use crate::event::{Failure, KernelState, StartInfo};
 use crate::gate::Gate;
 use crate::preflight::{bind_failure, not_ethernet};
 use ni_bootp::{serve_shared, BootpConfig, BootpHandle, BootpResponder};
-use ni_net::{bind_udp, BindOptions};
+use ni_net::{bind_udp, BindOptions, BroadcastTarget};
 use ni_tftp::{serve_watched, FileMap, TftpConfig};
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -150,7 +150,7 @@ pub(crate) fn start(
             serve_shared(
                 bootp_sock,
                 bootp.clone(),
-                cfg.ports.bootp_reply_to,
+                BroadcastTarget::with_subnet(cfg.ports.bootp_reply_to, net.server_ip, net.netmask),
                 bootp_tx,
             ),
             internal.clone(),
@@ -186,10 +186,17 @@ pub(crate) fn start(
         local_ips,
         foreign_ip_checks: 0,
         send_errors: Default::default(),
+        local_network_denied: false,
         next_prune: Instant::now(),
     };
+    let netinstall_dest = BroadcastTarget::with_subnet(
+        running.cfg.ports.netinstall_dest,
+        running.net.server_ip,
+        running.net.netmask,
+    );
     let io = Io {
         socket,
+        netinstall_dest,
         bootp_rx,
         tftp_rx,
         recv_errors: Default::default(),

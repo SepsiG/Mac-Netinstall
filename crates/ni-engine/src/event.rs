@@ -325,7 +325,11 @@ pub enum EngineEvent {
     /// `interface_down`, `interface_missing`) once when the link is lost,
     /// `link_up` (`interface`) when it is back; `send_failed` (`service`,
     /// `count`, `detail`; at most once per second and service, not while
-    /// the link is down), `recv_error`, `bootp_send_failed`,
+    /// the link is down), `local_network_denied` (`service`; sends refused
+    /// with `EHOSTUNREACH`: macOS's Local Network permission is missing;
+    /// once per start and again only after a send worked) and
+    /// `local_network_allowed` (sends work again after that),
+    /// `recv_error`, `bootp_send_failed`,
     /// `tftp_rejected`, `kernels_offline_fallback` (`version`).
     Warning(Failure),
 }

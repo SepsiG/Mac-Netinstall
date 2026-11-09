@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EngineState, MAX_LOG } from "../src/lib/state.svelte";
 import type { Snapshot } from "../src/lib/types";
+import { IDLE } from "./mock";
 
 const A = "48:A9:8A:00:00:0A";
 const B = "48:A9:8A:00:00:0B";
@@ -88,7 +89,7 @@ describe("EngineState", () => {
     expect(s.busy).toBe(1);
     s.apply({ event: "device", mac: A, state: "done" });
     expect(s.busy).toBe(0);
-    expect(s.log.length).toBe(5); // started, bootp_seen, discovered, preparing, done
+    expect(s.log.lines.length).toBe(5); // started, bootp_seen, discovered, preparing, done
   });
 
   it("forgets the configuration of the previous round", () => {
@@ -121,12 +122,37 @@ describe("EngineState", () => {
     expect(s.kernels.state).toBe("idle");
   });
 
-  it("keeps the log bounded", () => {
+  it("keeps the log bounded, counting every line ever added", () => {
     const s = new EngineState();
+    const v0 = s.log.version;
     for (let i = 0; i < MAX_LOG + 5; i++) s.apply({ event: "ignored", mac: A, reason: "cooldown" }, i);
-    expect(s.log.length).toBe(MAX_LOG);
-    expect(s.log[0]!.at).toBe(5);
+    expect(s.log.lines.length).toBe(MAX_LOG);
+    expect(s.log.lines[0]!.at).toBe(5);
+    expect(s.log.added).toBe(MAX_LOG + 5);
+    expect(s.log.version).toBeGreaterThan(v0);
+    const v1 = s.log.version;
     s.clearLog();
-    expect(s.log).toEqual([]);
+    expect(s.log.lines).toEqual([]);
+    expect(s.log.added).toBe(MAX_LOG + 5);
+    expect(s.log.version).toBeGreaterThan(v1);
+  });
+
+  it("keeps far more lines than a burst of 5000 for the export", () => {
+    expect(MAX_LOG).toBeGreaterThanOrEqual(20_000);
+  });
+
+  it("knows when macOS blocks local network access", () => {
+    const s = new EngineState();
+    s.apply({ event: "started", interface: "en7", server_ip: "192.168.88.1", bootp: "", tftp: "", netinstall: "" });
+    expect(s.localNetworkDenied).toBe(false);
+    s.apply({ event: "warning", code: "local_network_denied", params: { service: "bootp" } });
+    expect(s.localNetworkDenied).toBe(true);
+    s.apply({ event: "warning", code: "local_network_allowed" });
+    expect(s.localNetworkDenied).toBe(false);
+    s.apply({ event: "warning", code: "local_network_denied", params: { service: "bootp" } });
+    s.apply({ event: "stopped" });
+    expect(s.localNetworkDenied).toBe(false);
+    s.applySnapshot({ ...IDLE, running: true, local_network_denied: true });
+    expect(s.localNetworkDenied).toBe(true);
   });
 });
