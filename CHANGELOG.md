@@ -7,11 +7,27 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+First successful hardware install: hEX RB750Gr3 (`mmips`, RouterOS 7.25.1).
+
 ### Added
 
 - User guide in English and Hungarian
   ([docs/user-guide.en.md](docs/user-guide.en.md),
   [docs/user-guide.hu.md](docs/user-guide.hu.md)), linked from the README.
+- Log panel: resizable (the height is remembered), newest line first, Pause /
+  Resume (new lines are collected and counted meanwhile), identical
+  consecutive lines shown once with a count; the export keeps every line,
+  oldest first.
+- macOS permissions sheet at first launch (and from Settings): asks for the
+  Local Network and incoming-connection permissions up front, shows what
+  macOS answered and opens System Settings at the right pane.
+
+### Changed
+
+- Sends refused by macOS (`EHOSTUNREACH`, Local Network permission missing)
+  are one clear `local_network_denied` message, in red in the status line and
+  in the device's row, instead of a warning per BOOTP request.
+- A refused limited broadcast is retried to the subnet's directed broadcast.
 
 ## [0.1.0] - 2026-11-06
 

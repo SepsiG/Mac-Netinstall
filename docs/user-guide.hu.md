@@ -75,10 +75,20 @@ mikrotik.com-ról, és helyben tárolja őket; MikroTik-binárisokat nem tartalm
      üzenetig, és kattints a mellette lévő megnyitás gombra (angol rendszeren
      **Open Anyway**), végül erősítsd meg.
    - **macOS 13–14:** Control-kattintás az alkalmazásra → Megnyitás is működik.
-5. **Helyi hálózat engedély.** Amikor az alkalmazás először kommunikál egy eszközzel, a
-   macOS megkérdezi, hogy a Mac Netinstall kereshet-e és csatlakozhat-e eszközökhöz a
-   helyi hálózaton. **Engedélyezd.** Ha korábban elutasítottad: Rendszerbeállítások →
-   Adatvédelem és biztonság → Helyi hálózat, és kapcsold be a Mac Netinstallt.
+5. **Engedélyek.** Az első indításkor megnyílik a **macOS-engedélyek** ablak. Kattints az
+   **Engedélyek kérése** gombra: a macOS azonnal rákérdez (nem telepítés közben)
+   - hogy a Mac Netinstall kereshet-e és csatlakozhat-e eszközökhöz a helyi hálózaton
+     (**Helyi hálózat**) – **engedélyezd**, enélkül az alkalmazás nem tud válaszolni az
+     eszközöknek;
+   - ha be van kapcsolva a macOS tűzfala, hogy fogadhat-e bejövő kapcsolatokat –
+     **engedélyezd**.
+
+   Az ablak ezután mutatja, mit válaszolt a macOS (✓ / ✗), és ami nincs engedélyezve,
+   ahhoz megnyitja a Rendszerbeállítások megfelelő oldalát (Adatvédelem és biztonság →
+   Helyi hálózat, illetve a tűzfal). Ha módosítottál egy beállítást, kattints az
+   **Újraellenőrzés** gombra. A **Később** bezárja az ablakot; a következő indításkor újra
+   megnyílik, amíg nem kérted az engedélyeket. Bármikor megnyithatod a **Beállítások →
+   Engedélyek ellenőrzése** gombbal is.
 
 Futás közben az alkalmazás a Dockban van; a Dock-ikon jelvénye mutatja, hány eszköz áll
 éppen előkészítés vagy telepítés alatt.
@@ -277,6 +287,8 @@ maradhat, és újra hálózatról kell indítani. Válaszd a **Folytatás** (ill
 Az eszköztár **Beállítások** gombjával nyílik.
 
 - **Nyelv** – **A macOS nyelve**, **English** vagy **Magyar**.
+- **Engedélyek** – az **Engedélyek ellenőrzése** megnyitja a macOS-engedélyek ablakát
+  (lásd a [3. fejezetet](#3-telepítés)).
 - **Telepítés** – **Egyszerre telepített eszközök** és a várakozási idő (lásd
   [7. fejezet](#7-több-eszköz-és-automatikus-ismétlés)).
 - **Haladó**
@@ -320,7 +332,9 @@ bejegyzéseire szűrhetsz. A **Szünet** megállítja a listát, hogy nyugodtan 
 listában lefelé görgetés ugyanezt teszi); az új sorokat közben is gyűjti, számukat egy
 jelvény mutatja, a **Folytatás** (vagy a lista tetejére görgetés) pedig megjeleníti őket.
 Az **Exportálás…** a napló minden megőrzött sorát (a kiválasztott eszközét) szövegfájlba
-menti, a legrégebbivel kezdve; a **Törlés** kiüríti a panelt.
+menti, a legrégebbivel kezdve; a **Törlés** kiüríti a panelt. Az egymás után ismétlődő
+azonos sorok egyszer jelennek meg, számlálóval (pl. ×93) és a legutóbbi időponttal; az
+exportban minden sor benne van.
 
 Az alkalmazás részletes naplófájlt is ír ide:
 `~/Library/Logs/io.github.sepsig.mac-netinstall/` (`app.<dátum>.log`, az `ni-cli`
@@ -348,7 +362,8 @@ A hibák az ablak tetején, sávban is megjelennek; a × (**Bezárás**) gombbal
 | **Az eszköz abbahagyta a fogadást, mielőtt minden fájlt megkapott volna (… fájl kimaradt): a telepítés nem teljes.** | Telepítsd újra. |
 | **… megkapta az összes fájlt, de nem erősítette meg, hogy készen áll; a telepítést ennek ellenére lezártuk. Ellenőrizd, hogy az eszköz rendben elindul-e.** | Figyelmeztetés: a telepítés lezárult, de az eszköz nem igazolta vissza. Nézd meg, elindul-e rendben; ha nem, telepítsd újra. Ilyenkor kérlek, küldj naplót. |
 | **Ez az eszköz a RouterOS … kernelével indult, ezért nem telepíthető rá ez a verzió: …. Kapcsold ki és be, hogy újra hálózatról induljon.** | Profilt (verziót) váltottál, miután az eszköz elindult. Indítsd újra Etherboot módban. |
-| **Sikertelen küldés (Netinstall, …×).** | Valószínűleg nincs meg a Helyi hálózat engedély: Rendszerbeállítások → Adatvédelem és biztonság → Helyi hálózat, és engedélyezd a Mac Netinstallt. |
+| **A macOS letiltja az alkalmazás helyi hálózati hozzáférését, ezért az eszközök nem kapnak választ.** (pirossal, az állapotsorban és az eszköz sorában) | Nincs meg a Helyi hálózat engedély, vagy még nem válaszoltál a macOS kérdésére. Kattints a **Rendszerbeállítások megnyitása** gombra (Adatvédelem és biztonság → Helyi hálózat), kapcsold be a Mac Netinstallt, majd indítsd újra az eszközt Etherboot módban. Ellenőrzésképp az engedélyek ablaka is megnyílik egyszer. |
+| **Sikertelen küldés (Netinstall, …×).** | A küldés más okból nem sikerült (pl. eltűnt az adapter). Ha ismétlődik, ellenőrizd a kábelt, az adaptert és az engedélyeket (**Beállítások → Engedélyek ellenőrzése**). |
 | **A motor váratlanul leállt. Indítsd újra a Mac Netinstallt.** | Indítsd újra az alkalmazást, és küldd el a naplófájlt. |
 
 ## 10. Parancssor (ni-cli)
