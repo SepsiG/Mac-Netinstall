@@ -5,8 +5,10 @@
 Native macOS (Apple Silicon) Netinstall for MikroTik RouterBOARD devices.
 Not affiliated with MikroTik.
 
-Status: early development, not yet validated on real hardware (see
-[CHANGELOG.md](CHANGELOG.md)). See `docs/superpowers/specs/` for the design.
+Status: validated on a MikroTik hEX RB750Gr3 (`mmips`) with all four
+configuration modes (default, empty, script, keep) and auto-repeat, and on a
+hAP ac² (`arm`) with an extra package; arm64, mipsbe, ppc and tile are not yet
+tested on hardware (see [CHANGELOG.md](CHANGELOG.md)). See `docs/superpowers/specs/` for the design.
 
 **User guide:** [English](docs/user-guide.en.md) · [Magyar](docs/user-guide.hu.md)
 — installing, preparing the Mac, profiles, flashing, troubleshooting.
@@ -20,9 +22,9 @@ Requires an Apple Silicon Mac with macOS 13 or later.
    [Releases](https://github.com/SepsiG/Mac-Netinstall/releases) page.
    Optionally check the download, in the folder that holds both:
 
-       shasum -a 256 -c Mac-Netinstall_0.1.0_aarch64.dmg.sha256
+       shasum -a 256 -c Mac-Netinstall_<version>_aarch64.dmg.sha256
 
-   It prints `Mac-Netinstall_0.1.0_aarch64.dmg: OK`.
+   It prints `Mac-Netinstall_<version>_aarch64.dmg: OK`.
 2. Open the `.dmg` and drag **Mac Netinstall** onto **Applications**.
 3. First launch: the app is ad-hoc signed, not notarized. On macOS 15 and
    later the first launch is blocked: open **System Settings → Privacy &
