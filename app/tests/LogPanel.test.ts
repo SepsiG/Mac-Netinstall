@@ -106,6 +106,42 @@ describe("LogPanel order", () => {
   });
 });
 
+describe("LogPanel repeats", () => {
+  const refused = (at: number) =>
+    logEntry({ event: "warning", code: "bootp_send_failed", params: { mac: A, detail: "No route to host" } }, at)!;
+
+  it("shows identical consecutive lines once, with a count and the latest time", async () => {
+    const log = buffer([numbered(0), refused(1000), refused(2000), refused(63_000)]);
+    const { backend } = show(log);
+    expect(items()).toHaveLength(2);
+    expect(items()[0]).toHaveTextContent("Could not send a BOOTP answer");
+    expect(items()[0]).toHaveTextContent("×3");
+    expect(items()[0]!.querySelector(".count")).toHaveAttribute("title", "repeated 3 times");
+    const latest = items()[0]!.textContent!;
+    // A different line in between starts a new group.
+    log.push(numbered(1));
+    log.push(refused(64_000));
+    await waitFor(() => expect(items()).toHaveLength(4));
+    expect(items()[0]).not.toHaveTextContent("×");
+    expect(items()[2]!.textContent).toBe(latest);
+    // The next identical one counts up in place.
+    log.push(refused(65_000));
+    await waitFor(() => expect(items()[0]).toHaveTextContent("×2"));
+    expect(items()).toHaveLength(4);
+    // The export keeps every line.
+    await userEvent.click(screen.getByRole("button", { name: "Export…" }));
+    const lines = vi.mocked(backend.exportLog).mock.calls[0]![0].trim().split("\n");
+    expect(lines).toHaveLength(7);
+    expect(lines.filter((l) => l.includes("Could not send"))).toHaveLength(5);
+  });
+
+  it("says the count in Hungarian too", () => {
+    locale.set("hu");
+    show(buffer([refused(1000), refused(2000)]));
+    expect(items()[0]!.querySelector(".count")).toHaveAttribute("title", "2 alkalommal ismétlődött");
+  });
+});
+
 describe("LogPanel pause", () => {
   it("freezes the list, counts new lines and merges them on resume", async () => {
     const log = buffer();

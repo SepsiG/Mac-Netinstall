@@ -4,12 +4,15 @@
 //!   and [`InterfaceKind`] (Ethernet, Wi-Fi, loopback, bridge, tunnel, ...).
 //! - [`bind_udp`]: UDP sockets bound to one interface with `IP_BOUND_IF`,
 //!   so broadcasts go out (and are received) on the selected Ethernet port only.
+//! - [`BroadcastTarget`]: the limited broadcast, falling back to the
+//!   subnet-directed one when macOS refuses it.
 //! - [`default_route_interfaces`]: interfaces with an IPv4 default route.
 //! - [`configured_ipv4`]: the IPv4 macOS is configured to use on an
 //!   interface (also while it has no link).
 //!
 //! No root and no BPF: everything here uses ordinary sockets.
 
+pub mod broadcast;
 pub mod error;
 pub mod iface;
 pub mod ipconfig;
@@ -20,6 +23,7 @@ pub mod udp;
 #[cfg(test)]
 mod test_env;
 
+pub use broadcast::{directed_broadcast, is_host_unreachable, is_unreachable, BroadcastTarget};
 pub use error::NetError;
 pub use iface::{classify, interface_index, list_interfaces, Interface, InterfaceKind};
 pub use ipconfig::{configured_ipv4, ConfiguredIpv4, Ipv4Method};

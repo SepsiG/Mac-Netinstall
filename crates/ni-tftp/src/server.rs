@@ -326,7 +326,11 @@ async fn drive(
         let now = Instant::now();
         while let Some(pkt) = t.poll_transmit(now) {
             if let Err(e) = sock.send_to(&pkt, peer).await {
-                t.abort(TransferError::Io(e.to_string()));
+                t.abort(if ni_net::is_host_unreachable(&e) {
+                    TransferError::HostUnreachable(e.to_string())
+                } else {
+                    TransferError::Io(e.to_string())
+                });
             }
         }
         let Some(deadline) = t.poll_timeout() else {

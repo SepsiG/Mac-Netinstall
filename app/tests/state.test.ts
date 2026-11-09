@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EngineState, MAX_LOG } from "../src/lib/state.svelte";
 import type { Snapshot } from "../src/lib/types";
+import { IDLE } from "./mock";
 
 const A = "48:A9:8A:00:00:0A";
 const B = "48:A9:8A:00:00:0B";
@@ -138,5 +139,20 @@ describe("EngineState", () => {
 
   it("keeps far more lines than a burst of 5000 for the export", () => {
     expect(MAX_LOG).toBeGreaterThanOrEqual(20_000);
+  });
+
+  it("knows when macOS blocks local network access", () => {
+    const s = new EngineState();
+    s.apply({ event: "started", interface: "en7", server_ip: "192.168.88.1", bootp: "", tftp: "", netinstall: "" });
+    expect(s.localNetworkDenied).toBe(false);
+    s.apply({ event: "warning", code: "local_network_denied", params: { service: "bootp" } });
+    expect(s.localNetworkDenied).toBe(true);
+    s.apply({ event: "warning", code: "local_network_allowed" });
+    expect(s.localNetworkDenied).toBe(false);
+    s.apply({ event: "warning", code: "local_network_denied", params: { service: "bootp" } });
+    s.apply({ event: "stopped" });
+    expect(s.localNetworkDenied).toBe(false);
+    s.applySnapshot({ ...IDLE, running: true, local_network_denied: true });
+    expect(s.localNetworkDenied).toBe(true);
   });
 });

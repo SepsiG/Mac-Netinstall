@@ -22,15 +22,59 @@ export function clampLogHeight(h: number, max: number = MAX_LOG_HEIGHT): number 
   return Math.round(Math.min(Math.max(h, MIN_LOG_HEIGHT), top));
 }
 
-/** The lines to show, newest first: of `lines` (line `i` is number
- *  `first + i`), those numbered below `upto`, of device `mac` if given,
- *  at most `max`. */
-export function newestFirst(lines: readonly LogEntry[], first: number, upto: number, mac: string, max = MAX_SHOWN): LogEntry[] {
-  const out: LogEntry[] = [];
-  const end = Math.min(lines.length, Math.max(0, upto - first));
-  for (let i = end - 1; i >= 0 && out.length < max; i--) {
-    const e = lines[i]!;
-    if (!mac || e.mac === mac) out.push(e);
+/** One shown row: `count` identical consecutive lines, `last` the
+ *  newest of them (its time is shown), `first` the oldest (the row's key:
+ *  it stays the same while the row counts up). */
+export interface LogRow {
+  first: LogEntry;
+  last: LogEntry;
+  count: number;
+}
+
+const signatures = new WeakMap<LogEntry, string>();
+
+/** What makes two lines the same (all but the time). */
+function signature(e: LogEntry): string {
+  let s = signatures.get(e);
+  if (s === undefined) {
+    s = JSON.stringify([e.level, e.mac ?? "", e.key ?? "", e.values ?? null, e.failure ?? null, e.state ?? null]);
+    signatures.set(e, s);
   }
+  return s;
+}
+
+/** The last row made for each `first`: reused while unchanged, so the
+ *  list does not redraw rows that did not change. */
+const rows = new WeakMap<LogEntry, LogRow>();
+
+function row(first: LogEntry, last: LogEntry, count: number): LogRow {
+  const had = rows.get(first);
+  if (had && had.last === last && had.count === count) return had;
+  const r = { first, last, count };
+  rows.set(first, r);
+  return r;
+}
+
+/** The rows to show, newest first: of `lines` (line `i` is number
+ *  `first + i`), those numbered below `upto`, of device `mac` if given,
+ *  identical consecutive ones as one row; at most `max` rows. */
+export function newestFirst(lines: readonly LogEntry[], first: number, upto: number, mac: string, max = MAX_SHOWN): LogRow[] {
+  const out: LogRow[] = [];
+  const end = Math.min(lines.length, Math.max(0, upto - first));
+  let group: { last: LogEntry; first: LogEntry; count: number; sig: string } | null = null;
+  for (let i = end - 1; i >= 0; i--) {
+    const e = lines[i]!;
+    if (mac && e.mac !== mac) continue;
+    const sig = signature(e);
+    if (group && group.sig === sig) {
+      group.first = e;
+      group.count++;
+      continue;
+    }
+    if (group) out.push(row(group.first, group.last, group.count));
+    if (out.length >= max) return out;
+    group = { last: e, first: e, count: 1, sig };
+  }
+  if (group && out.length < max) out.push(row(group.first, group.last, group.count));
   return out;
 }

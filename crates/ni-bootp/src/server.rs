@@ -7,7 +7,7 @@
 use crate::arch::BootArch;
 use crate::packet::{PacketError, ReplyKind};
 use crate::responder::{BootpResponder, ConfigError, IgnoreReason, Outcome};
-use ni_net::{RecvErrorAction, RecvErrorGuard};
+use ni_net::{BroadcastTarget, RecvErrorAction, RecvErrorGuard};
 use ni_proto::Mac;
 use std::collections::HashMap;
 use std::io;
@@ -103,9 +103,18 @@ pub enum BootpEvent {
         ip: Ipv4Addr,
     },
     /// Sending a reply failed (e.g. the interface went down).
+    /// `host_unreachable`: it failed with `EHOSTUNREACH`, which on macOS
+    /// means the Local Network permission is missing (see
+    /// [`ni_net::is_host_unreachable`]).
     SendFailed {
         mac: Mac,
         error: String,
+        host_unreachable: bool,
+    },
+    /// The limited broadcast was refused, the directed broadcast `to`
+    /// worked: replies go there from now on (reported once).
+    BroadcastFallback {
+        to: SocketAddr,
     },
     /// `recv_from` failed with a transient error (see
     /// [`ni_net::RecvErrorGuard`]); the server keeps running. Coalesced:
@@ -127,7 +136,9 @@ pub enum BootpEvent {
 /// Replies go to `reply_to`: `255.255.255.255:68` in production (the
 /// client has no address yet, and unicasting to `yiaddr` would need an ARP
 /// entry we cannot add without root; `socket` then needs `SO_BROADCAST`
-/// and `IP_BOUND_IF`). Tests pass a loopback address. Events are dropped
+/// and `IP_BOUND_IF`), falling back to the subnet's directed broadcast if
+/// macOS refuses it (see [`ni_net::BroadcastTarget`]). Tests pass a
+/// loopback address. Events are dropped
 /// silently if the receiver is gone; abort the task to stop the server.
 pub async fn serve(
     socket: UdpSocket,
@@ -136,7 +147,7 @@ pub async fn serve(
     events: UnboundedSender<BootpEvent>,
 ) -> io::Result<()> {
     let handle = BootpHandle::new(responder);
-    run(socket, &handle, reply_to, |e| {
+    run(socket, &handle, reply_to.into(), |e| {
         let _ = events.send(e);
     })
     .await
@@ -149,10 +160,10 @@ pub async fn serve(
 pub async fn serve_shared(
     socket: UdpSocket,
     handle: BootpHandle,
-    reply_to: SocketAddr,
+    reply_to: impl Into<BroadcastTarget>,
     events: Sender<BootpEvent>,
 ) -> io::Result<()> {
-    run(socket, &handle, reply_to, |e| {
+    run(socket, &handle, reply_to.into(), |e| {
         let _ = events.try_send(e);
     })
     .await
@@ -161,7 +172,7 @@ pub async fn serve_shared(
 async fn run(
     socket: UdpSocket,
     handle: &BootpHandle,
-    reply_to: SocketAddr,
+    mut reply_to: BroadcastTarget,
     emit: impl Fn(BootpEvent),
 ) -> io::Result<()> {
     let mut buf = vec![0u8; 1500];
@@ -188,19 +199,29 @@ async fn run(
         };
         let outcome = handle.handle(&buf[..n]);
         let event = match outcome {
-            Ok(Outcome::Reply(reply)) => match socket.send_to(&reply.bytes, reply_to).await {
-                Ok(_) => BootpEvent::Replied {
-                    mac: reply.client_mac,
-                    arch: reply.arch,
-                    ip: reply.assigned_ip,
-                    kind: reply.kind,
-                    file: reply.file,
-                },
-                Err(e) => BootpEvent::SendFailed {
-                    mac: reply.client_mac,
-                    error: e.to_string(),
-                },
-            },
+            Ok(Outcome::Reply(reply)) => {
+                match reply_to.send(|to| socket.send_to(&reply.bytes, to)).await {
+                    Ok(_) => {
+                        if reply_to.take_switched() {
+                            emit(BootpEvent::BroadcastFallback {
+                                to: reply_to.current(),
+                            });
+                        }
+                        BootpEvent::Replied {
+                            mac: reply.client_mac,
+                            arch: reply.arch,
+                            ip: reply.assigned_ip,
+                            kind: reply.kind,
+                            file: reply.file,
+                        }
+                    }
+                    Err(e) => BootpEvent::SendFailed {
+                        mac: reply.client_mac,
+                        error: e.to_string(),
+                        host_unreachable: ni_net::is_host_unreachable(&e),
+                    },
+                }
+            }
             Ok(Outcome::Ignored { mac, reason }) => BootpEvent::Ignored { mac, reason },
             Ok(Outcome::Declined { mac, ip }) => BootpEvent::Declined { mac, ip },
             Err(error) => BootpEvent::Malformed { from, error },

@@ -21,6 +21,10 @@ pub enum TransferError {
     ClientError { code: u16, message: String },
     #[error("socket error: {0}")]
     Io(String),
+    /// Sending failed with `EHOSTUNREACH`: on macOS, the Local Network
+    /// permission is missing (see [`ni_net::is_host_unreachable`]).
+    #[error("no route to host: {0}")]
+    HostUnreachable(String),
 }
 
 /// Current state of a [`Transfer`].

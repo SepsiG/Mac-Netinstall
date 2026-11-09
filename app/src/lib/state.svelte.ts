@@ -83,6 +83,8 @@ export class EngineState {
   profile = $state<string | null>(null);
   onlyMac = $state<string | null>(null);
   linkDown = $state<string | null>(null);
+  /** Sends are refused: macOS's Local Network permission is missing. */
+  localNetworkDenied = $state(false);
   /** Post-flash cooldown of the running engine (seconds, 0 if unknown). */
   cooldownSecs = $state(0);
   /** The rows are from an engine that has stopped since. */
@@ -113,6 +115,7 @@ export class EngineState {
     this.profile = s.profile;
     this.onlyMac = s.only_mac;
     this.linkDown = s.link_down;
+    this.localNetworkDenied = s.running && (s.local_network_denied ?? false);
     if (s.running) this.cooldownSecs = s.cooldown_secs;
     if (keepRows) {
       this.stale = true;
@@ -153,6 +156,7 @@ export class EngineState {
         this.started = info;
         this.devices = {};
         this.linkDown = null;
+        this.localNetworkDenied = false;
         this.onlyMac = null;
         this.stale = false;
         break;
@@ -163,6 +167,7 @@ export class EngineState {
         this.onlyMac = null;
         this.kernels = { state: "idle" };
         this.linkDown = null;
+        this.localNetworkDenied = false;
         break;
       case "kernels": {
         const { event: _e, ...state } = e;
@@ -204,6 +209,8 @@ export class EngineState {
       case "warning":
         if (e.code === "link_down") this.linkDown = e.params?.reason ?? "no_ip";
         if (e.code === "link_up") this.linkDown = null;
+        if (e.code === "local_network_denied") this.localNetworkDenied = true;
+        if (e.code === "local_network_allowed") this.localNetworkDenied = false;
         break;
       default:
         break;

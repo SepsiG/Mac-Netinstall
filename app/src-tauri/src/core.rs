@@ -241,6 +241,13 @@ impl AppCore {
         Ok(())
     }
 
+    /// Remember that the permissions sheet was gone through (or not).
+    pub fn set_onboarding_done(&self, done: bool) {
+        if self.settings().onboarding_done != done {
+            self.remember(|s| s.onboarding_done = done);
+        }
+    }
+
     /// Change a few fields and store them; a failure to store is only
     /// logged (remembering the last interface must not fail a start).
     fn remember(&self, change: impl FnOnce(&mut Settings)) {

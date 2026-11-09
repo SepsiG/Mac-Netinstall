@@ -4,8 +4,10 @@
   // current language, oldest first).
   //
   // Lines arrive in a plain buffer; the view catches up at most once a
-  // frame and renders only the newest MAX_SHOWN, so a burst of events does
-  // not redraw the list for every line. While paused the list stays as it
+  // frame and renders only the newest MAX_SHOWN rows, so a burst of events
+  // does not redraw the list for every line. Identical consecutive lines
+  // show as one row with a count (×93) and the latest time; the export
+  // keeps every line. While paused the list stays as it
   // was; the buffer (and the export) keeps everything.
   import { onDestroy, untrack } from "svelte";
   import { toFailure } from "../lib/api";
@@ -286,8 +288,12 @@
   </header>
   {#if open}
     <ol class="lines mono" id={listId} bind:this={list} style:height="{lines}px" onscroll={scrolled}>
-      {#each shown as e (e)}
-        <li class={e.level}>{line($locale, e)}</li>
+      {#each shown as r (r.first)}
+        <li class={r.last.level}>
+          {line($locale, r.last)}{#if r.count > 1}<span class="count" title={$t("log.repeated", { count: r.count })}
+              >×{r.count}</span
+            >{/if}
+        </li>
       {:else}
         <li class="secondary">{$t("log.empty")}</li>
       {/each}
@@ -357,6 +363,15 @@
   }
   .lines li {
     white-space: pre-wrap;
+  }
+  .count {
+    margin-left: 8px;
+    padding: 0 5px;
+    border-radius: 7px;
+    font-size: 11px;
+    color: var(--secondary);
+    background: var(--panel-alt);
+    border: 1px solid var(--separator);
   }
   .error {
     color: var(--danger);

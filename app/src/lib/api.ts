@@ -10,11 +10,13 @@ import type {
   InterfaceView,
   LicenseKeyView,
   PackagesView,
+  PermissionsView,
   PreflightReport,
   Profile,
   ProfilesView,
   ScriptView,
   Settings,
+  SettingsPane,
   Snapshot,
   StartInfo,
   StartRequest,
@@ -54,6 +56,12 @@ export interface Backend {
   setDialogSize(id: string, width: number, height: number): Promise<void>;
   /** Remember the log panel's height (CSS px of its lines). */
   setLogPanelHeight(height: number): Promise<void>;
+  /** Remember that the permissions sheet was gone through. */
+  setOnboardingDone(done: boolean): Promise<void>;
+  /** Make macOS ask for its permissions now (if it has not), and check them. */
+  requestPermissions(): Promise<PermissionsView>;
+  /** Open System Settings at a permission's pane. */
+  openSystemSettings(pane: SettingsPane): Promise<void>;
   /** `verify`: check every file's SHA-256 (slow); else a quick listing. */
   cacheInventory(verify: boolean): Promise<CacheView>;
   /** Bytes freed. */
@@ -110,6 +118,9 @@ export function tauriBackend(): Backend {
     setSettings: (settings) => invoke("set_settings", { settings }),
     setDialogSize: (id, width, height) => invoke("set_dialog_size", { id, width, height }),
     setLogPanelHeight: (height) => invoke("set_log_panel_height", { height }),
+    setOnboardingDone: (done) => invoke("set_onboarding_done", { done }),
+    requestPermissions: () => invoke("request_permissions"),
+    openSystemSettings: (pane) => invoke("open_system_settings", { pane }),
     cacheInventory: (verify) => invoke("cache_inventory", { verify }),
     deleteCached: (scope) => invoke("delete_cached", { scope }),
     exportLog: (text) => invoke("export_log", { text }),

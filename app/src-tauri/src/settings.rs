@@ -32,7 +32,11 @@ pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
 ///
 /// Version 5 adds `log_panel_height` (the log's height as the user dragged
 /// it; `null`: the default); older files keep everything else.
-pub const SETTINGS_VERSION: u32 = 5;
+///
+/// Version 6 adds `onboarding_done` (the permissions sheet was gone
+/// through); older files get `false`, so it is shown once after the
+/// update too (those users were never asked up front either).
+pub const SETTINGS_VERSION: u32 = 6;
 
 /// Smallest main window (also `minWidth` / `minHeight` in tauri.conf.json).
 pub const MIN_WINDOW_WIDTH: u32 = 820;
@@ -143,6 +147,9 @@ pub struct Settings {
     /// The log panel's height (CSS px of its lines) as the user left it;
     /// `None`: the default.
     pub log_panel_height: Option<u32>,
+    /// The permissions sheet (Local Network, firewall) was gone through
+    /// at least once; until then it opens at launch.
+    pub onboarding_done: bool,
 }
 
 impl Default for Settings {
@@ -161,6 +168,7 @@ impl Default for Settings {
             window: None,
             dialog_sizes: Default::default(),
             log_panel_height: None,
+            onboarding_done: false,
         }
     }
 }
@@ -218,8 +226,8 @@ impl Settings {
 
     /// `edit` (from the settings dialog) with what the app remembers by
     /// itself kept from `self`: the last interface, profile and
-    /// auto-repeat, the window, the dialog sizes and the log panel's
-    /// height. A dialog opened before
+    /// auto-repeat, the window, the dialog sizes, the log panel's height
+    /// and whether onboarding was done. A dialog opened before
     /// a start must not undo what the start remembered.
     pub fn merged_edit(&self, edit: Settings) -> Settings {
         Settings {
@@ -229,6 +237,7 @@ impl Settings {
             window: self.window,
             dialog_sizes: self.dialog_sizes.clone(),
             log_panel_height: self.log_panel_height,
+            onboarding_done: self.onboarding_done,
             ..edit
         }
     }
@@ -248,6 +257,7 @@ const FIELDS: &[&str] = &[
     "window",
     "dialog_sizes",
     "log_panel_height",
+    "onboarding_done",
 ];
 
 /// Set `field` of `s` from the file's JSON `obj`; `false` if it has the
@@ -293,6 +303,7 @@ fn set_field(
         "window" => get(obj, field, &mut s.window),
         "dialog_sizes" => get(obj, field, &mut s.dialog_sizes),
         "log_panel_height" => get(obj, field, &mut s.log_panel_height),
+        "onboarding_done" => get(obj, field, &mut s.onboarding_done),
         _ => unreachable!("unknown settings field {field}"),
     }
 }
@@ -856,7 +867,7 @@ mod tests {
         assert_eq!(loaded.settings.dialog_sizes.len(), 1);
         let stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(stored["version"], 5);
+        assert_eq!(stored["version"], SETTINGS_VERSION);
         assert_eq!(stored["log_panel_height"], json!(null));
         assert_eq!(stored["dialog_sizes"]["profile"]["width"], 640);
         // A stored height round-trips.
@@ -879,6 +890,40 @@ mod tests {
     }
 
     #[test]
+    fn version_5_files_gain_onboarding_done() {
+        let dir = tempdir("settings-v5");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            json!({"version": 5, "language": "hu", "log_panel_height": 200}).to_string(),
+        )
+        .unwrap();
+        let store = SettingsStore::new(&path);
+        let loaded = store.load_checked();
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert!(!loaded.settings.onboarding_done, "not asked yet");
+        assert_eq!(loaded.settings.log_panel_height, Some(200));
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["version"], 6);
+        assert_eq!(stored["onboarding_done"], json!(false));
+        // Done round-trips; a wrong type falls back alone.
+        let mut s = loaded.settings.clone();
+        s.onboarding_done = true;
+        store.save(&s).unwrap();
+        assert!(store.load().onboarding_done);
+        std::fs::write(
+            &path,
+            json!({"version": 6, "language": "hu", "onboarding_done": "yes"}).to_string(),
+        )
+        .unwrap();
+        let loaded = SettingsStore::new(&path).load_checked();
+        assert_eq!(loaded.problems, ["onboarding_done"]);
+        assert!(!loaded.settings.onboarding_done);
+        assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+    }
+
+    #[test]
     fn the_settings_dialog_keeps_the_window_and_dialog_sizes() {
         let mut current = Settings {
             window: Some(WindowGeometry {
@@ -897,8 +942,10 @@ mod tests {
             },
         );
         current.log_panel_height = Some(300);
+        current.onboarding_done = true;
         let merged = current.merged_edit(Settings::default());
         assert_eq!(merged.log_panel_height, Some(300));
+        assert!(merged.onboarding_done);
         assert_eq!(merged.window, current.window);
         assert_eq!(merged.dialog_sizes, current.dialog_sizes);
     }

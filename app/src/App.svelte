@@ -6,6 +6,7 @@
   import DeviceTable from "./components/DeviceTable.svelte";
   import InterfacePicker from "./components/InterfacePicker.svelte";
   import LogPanel from "./components/LogPanel.svelte";
+  import PermissionsDialog from "./components/PermissionsDialog.svelte";
   import ProfileEditor from "./components/ProfileEditor.svelte";
   import SettingsDialog from "./components/SettingsDialog.svelte";
   import { initDialogSizes } from "./lib/dialogSizes";
@@ -49,6 +50,10 @@
   let logOpen = $state(true);
   /** The log's chosen height (from the settings; `null`: the default). */
   let logHeight = $state<number | null>(null);
+  /** The permissions sheet: `refused` when opened because sends failed. */
+  let permissions = $state<{ refused: boolean } | null>(null);
+  /** It was opened for refused sends already (once per session). */
+  let refusalShown = false;
   let ready = $state(false);
   /** While stopped the adapter list and a quick local check follow
    *  changes in macOS (a cable, the adapter's TCP/IP settings). */
@@ -164,6 +169,7 @@
       settings = (await attempt(() => backend.getSettings())) ?? null;
       initDialogSizes(settings?.dialog_sizes, (id, s) => backend.setDialogSize(id, s.width, s.height));
       logHeight = settings?.log_panel_height ?? null;
+      if (settings && !settings.onboarding_done) permissions = { refused: false };
       preferred = (await attempt(() => backend.preferredLanguages())) ?? [];
       applyLanguage();
       iface = settings?.last_interface ?? null;
@@ -328,6 +334,23 @@
   }
 
   const current = $derived(profiles.find((p) => p.name === profile) ?? null);
+
+  // macOS refused to send (Local Network permission): check it, once.
+  $effect(() => {
+    if (engine.localNetworkDenied && !refusalShown) {
+      refusalShown = true;
+      permissions = { refused: true };
+    }
+  });
+
+  function permissionsRequested() {
+    if (settings && !settings.onboarding_done) settings.onboarding_done = true;
+    void backend.setOnboardingDone(true).catch(() => {});
+  }
+
+  function openPrivacySettings() {
+    void attempt(() => backend.openSystemSettings("local_network"));
+  }
 </script>
 
 <main>
@@ -378,6 +401,8 @@
     {checking}
     {attempted}
     onretry={retryKernels}
+    localNetworkDenied={engine.localNetworkDenied}
+    onopensettings={openPrivacySettings}
   />
 
   {#if error}
@@ -414,7 +439,20 @@
 {/if}
 
 {#if settingsOpen && settings}
-  <SettingsDialog {settings} iface={interfaces.find((i) => i.name === iface) ?? null} onclose={settingsClosed} />
+  <SettingsDialog
+    {settings}
+    iface={interfaces.find((i) => i.name === iface) ?? null}
+    onclose={settingsClosed}
+    onpermissions={() => (permissions = { refused: false })}
+  />
+{/if}
+
+{#if permissions}
+  <PermissionsDialog
+    refused={permissions.refused}
+    onrequested={permissionsRequested}
+    onclose={() => (permissions = null)}
+  />
 {/if}
 
 {#if stopAsk !== null}

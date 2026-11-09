@@ -405,6 +405,7 @@ mod tests {
             max_parallel: 4,
             cooldown_secs: 300,
             link_down: None,
+            local_network_denied: false,
             devices,
         }
     }

@@ -5,6 +5,7 @@
 //! The file dialogs run here, in Rust: the web view never sees a path.
 
 use crate::core::{self, AppCore};
+use crate::permissions::{self, PermissionsView, SettingsPane};
 use crate::settings::Settings;
 use crate::views::{
     CacheView, InterfaceView, LicenseKeyView, PackagesView, ProfilesView, ScriptView, StartRequest,
@@ -171,6 +172,25 @@ pub fn set_dialog_size(core: State<'_, AppCore>, id: String, width: u32, height:
 #[tauri::command(rename_all = "snake_case")]
 pub fn set_log_panel_height(core: State<'_, AppCore>, height: u32) -> R<()> {
     core.set_log_panel_height(height)
+}
+
+/// Remember that the permissions sheet was gone through.
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_onboarding_done(core: State<'_, AppCore>, done: bool) {
+    core.set_onboarding_done(done);
+}
+
+/// Make macOS ask for the Local Network and incoming-connection
+/// permissions now (if it has not yet), and report what it says.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn request_permissions() -> PermissionsView {
+    permissions::request().await
+}
+
+/// Open System Settings at a permission's pane (a pane name, not a URL).
+#[tauri::command(rename_all = "snake_case")]
+pub fn open_system_settings(pane: SettingsPane) -> R<()> {
+    permissions::open_settings(pane)
 }
 
 #[tauri::command(rename_all = "snake_case")]

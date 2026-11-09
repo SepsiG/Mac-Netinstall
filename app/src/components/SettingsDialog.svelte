@@ -13,12 +13,15 @@
     settings,
     iface = null,
     onclose,
+    onpermissions,
   }: {
     settings: Settings;
     /** The selected adapter: its configured subnet and automatic pool. */
     iface?: InterfaceView | null;
     /** The stored settings, or `null` if cancelled. */
     onclose: (saved: Settings | null) => void;
+    /** Open the macOS permissions sheet (on top of this one). */
+    onpermissions?: () => void;
   } = $props();
 
   const backend = useBackend();
@@ -69,6 +72,14 @@
       <input id="s-cool" type="text" inputmode="numeric" size="6" bind:value={form.cooldown_secs} />
       {@render fieldError(errors.cooldown_secs)}
     </div>
+
+    {#if onpermissions}
+      <span class="label-cell">{$t("settings.permissions")}</span>
+      <div>
+        <button type="button" class="small" onclick={onpermissions}>{$t("settings.check_permissions")}</button>
+        <div class="help">{$t("settings.permissions_help")}</div>
+      </div>
+    {/if}
 
     <details class="advanced" open={advancedOpen}>
       <summary>{$t("settings.advanced")}</summary>
@@ -125,7 +136,8 @@
     gap: 8px 10px;
     align-items: start;
   }
-  .grid > label {
+  .grid > label,
+  .grid > .label-cell {
     text-align: right;
     color: var(--secondary);
     padding-top: 3px;

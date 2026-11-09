@@ -18,6 +18,7 @@ pub mod locale;
 pub mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod permissions;
 pub mod settings;
 pub mod views;
 pub mod window;
@@ -409,6 +410,9 @@ pub fn run() {
             commands::set_settings,
             commands::set_dialog_size,
             commands::set_log_panel_height,
+            commands::set_onboarding_done,
+            commands::request_permissions,
+            commands::open_system_settings,
             commands::cache_inventory,
             commands::delete_cached,
             commands::export_log,

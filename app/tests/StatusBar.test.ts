@@ -61,6 +61,37 @@ describe("StatusBar", () => {
     expect(screen.getByText(/Serving only 48:A9:8A:00:00:0A/)).toBeInTheDocument();
   });
 
+  it("says loudly when macOS blocks local network access, with a way to fix it", async () => {
+    const onopensettings = vi.fn();
+    render(StatusBar, {
+      props: {
+        ...base,
+        running: true,
+        started: { interface: "en7", server_ip: "192.168.88.1", bootp: "", tftp: "", netinstall: "" },
+        localNetworkDenied: true,
+        onopensettings,
+      },
+    });
+    expect(screen.getByText(/macOS blocks this app's local network access/)).toBeInTheDocument();
+    expect(screen.getByText(/Privacy & Security → Local Network/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open System Settings" }));
+    expect(onopensettings).toHaveBeenCalledOnce();
+  });
+
+  it("names the System Settings button in Hungarian", () => {
+    locale.set("hu");
+    render(StatusBar, {
+      props: {
+        ...base,
+        running: true,
+        started: { interface: "en7", server_ip: "192.168.88.1", bootp: "", tftp: "", netinstall: "" },
+        localNetworkDenied: true,
+        onopensettings: () => {},
+      },
+    });
+    expect(screen.getByRole("button", { name: "Rendszerbeállítások megnyitása" })).toBeInTheDocument();
+  });
+
   it("offers to fetch unavailable kernels again", async () => {
     const onretry = vi.fn();
     render(StatusBar, {

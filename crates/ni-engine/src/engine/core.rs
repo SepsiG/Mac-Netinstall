@@ -17,7 +17,7 @@ use crate::profile::spec_to_string;
 use crate::profile::Profile;
 use ni_assets::{Assets, Channel, KernelSet, Version, VersionSpec};
 use ni_bootp::{BootpEvent, BootpHandle, IgnoreReason};
-use ni_net::{RecvErrorAction, RecvErrorGuard};
+use ni_net::{BroadcastTarget, RecvErrorAction, RecvErrorGuard};
 use ni_proto::{DeviceInfo, FailReason, Frame, InstallPlan, Mac, ServerSession};
 use ni_tftp::{FileMap, TftpEvent};
 use std::collections::{BTreeMap, HashMap};
@@ -90,6 +90,9 @@ pub(crate) enum Internal {
 /// Sockets and channels the loop polls while running.
 pub(crate) struct Io {
     pub socket: UdpSocket,
+    /// Where Netinstall frames go (the limited broadcast, or the directed
+    /// one if macOS refuses that).
+    pub netinstall_dest: BroadcastTarget,
     pub bootp_rx: mpsc::Receiver<BootpEvent>,
     pub tftp_rx: mpsc::Receiver<TftpEvent>,
     pub recv_errors: RecvErrorGuard,
@@ -145,6 +148,8 @@ pub(crate) struct Running {
     /// Consecutive checks that saw other addresses but not the server IP.
     pub foreign_ip_checks: u32,
     pub send_errors: SendErrors,
+    /// `local_network_denied` was reported and no send has worked since.
+    pub local_network_denied: bool,
     pub next_prune: Instant,
 }
 
@@ -695,6 +700,7 @@ impl Core {
                 max_parallel: 0,
                 cooldown_secs: 0,
                 link_down: None,
+                local_network_denied: false,
                 devices: Vec::new(),
             },
             Some(run) => Snapshot {
@@ -713,6 +719,7 @@ impl Core {
                     Link::Down(reason) => Some(reason.to_string()),
                     Link::Missing(_) => Some("interface_missing".to_string()),
                 },
+                local_network_denied: run.local_network_denied,
                 devices: run.devices.values().filter_map(Device::view).collect(),
             },
         }
@@ -1054,6 +1061,8 @@ impl Core {
                 file,
                 ..
             } => {
+                self.sends_work();
+                let Some(run) = self.run.as_mut() else { return };
                 let dev = device::entry(&mut run.devices, mac, MAX_DEVICES);
                 if dev.is_active() {
                     debug!(%mac, "BOOTP from a device being flashed");
@@ -1095,11 +1104,22 @@ impl Core {
                 IgnoreReason::UnsupportedDevice(_) => self.ignored(mac, "unsupported_device", now),
                 other => debug!(%mac, ?other, "BOOTP request ignored"),
             },
-            BootpEvent::SendFailed { mac, error } => self.warning(
+            BootpEvent::SendFailed {
+                mac,
+                error,
+                host_unreachable: true,
+            } => {
+                debug!(%mac, "BOOTP reply refused: {error}");
+                self.local_network_denied("bootp", Some(mac));
+            }
+            BootpEvent::SendFailed { mac, error, .. } => self.warning(
                 Failure::new("bootp_send_failed")
                     .with("mac", mac)
                     .with("detail", error),
             ),
+            BootpEvent::BroadcastFallback { to } => {
+                info!(%to, "BOOTP replies go to the directed broadcast (the limited one is refused)");
+            }
             BootpEvent::RecvError { error, count } => self.warning(
                 Failure::new("recv_error")
                     .with("service", "bootp")
@@ -1143,6 +1163,7 @@ impl Core {
             TftpEvent::Progress {
                 peer, acked, size, ..
             } => {
+                self.sends_work();
                 if let Some(mac) = self.tftp_device(peer) {
                     let state = DeviceState::KernelServing {
                         sent: acked,
@@ -1152,6 +1173,7 @@ impl Core {
                 }
             }
             TftpEvent::Completed { peer, size, .. } => {
+                self.sends_work();
                 if let Some(mac) = self.tftp_device(peer) {
                     let state = DeviceState::KernelServing {
                         sent: size,
@@ -1159,6 +1181,15 @@ impl Core {
                     };
                     self.set_state(mac, state);
                 }
+            }
+            TftpEvent::Failed {
+                peer,
+                error: ni_tftp::TransferError::HostUnreachable(error),
+                ..
+            } => {
+                debug!(%peer, "TFTP send refused: {error}");
+                let mac = self.tftp_device(peer);
+                self.local_network_denied("tftp", mac);
             }
             TftpEvent::Failed { peer, error, .. } => {
                 if let Some(mac) = self.tftp_device(peer) {
@@ -1298,18 +1329,39 @@ impl Core {
             }
         }
         run.prune(now);
-        let dest = run.cfg.ports.netinstall_dest;
         let mut send_error = None;
-        if let Some(io) = io.as_ref() {
+        let mut sent = false;
+        if let Some(io) = io.as_mut() {
+            let socket = &io.socket;
             for frame in &frames {
-                if let Err(e) = io.socket.send_to(frame, dest).await {
-                    debug!("netinstall send failed: {e}");
-                    send_error = Some(e);
+                match io
+                    .netinstall_dest
+                    .send(|to| socket.send_to(frame, to))
+                    .await
+                {
+                    Ok(_) => sent = true,
+                    Err(e) => {
+                        debug!("netinstall send failed: {e}");
+                        send_error = Some(e);
+                    }
                 }
             }
+            if io.netinstall_dest.take_switched() {
+                info!(
+                    to = %io.netinstall_dest.current(),
+                    "Netinstall frames go to the directed broadcast (the limited one is refused)"
+                );
+            }
         }
-        if let Some(e) = send_error {
-            self.send_failed("netinstall", &e, now);
+        if sent {
+            self.sends_work();
+        }
+        match send_error {
+            Some(e) if ni_net::is_host_unreachable(&e) => {
+                self.local_network_denied("netinstall", None)
+            }
+            Some(e) => self.send_failed("netinstall", &e, now),
+            None => {}
         }
         for (mac, ev) in events {
             self.session_event(mac, ev, now);
@@ -1318,11 +1370,43 @@ impl Core {
         self.check_link(now, io);
     }
 
+    /// A send refused with `EHOSTUNREACH`: on macOS, the app's Local
+    /// Network permission is missing (or not answered yet).
+    /// `local_network_denied` (`service`) is reported once per start, and
+    /// again only after a send worked in between ([`Self::sends_work`]);
+    /// the device it was for (if known and not being flashed) fails with
+    /// the same code, so its row says why. Each refused packet is only
+    /// logged at debug level.
+    fn local_network_denied(&mut self, service: &'static str, mac: Option<Mac>) {
+        let Some(run) = self.run.as_mut() else { return };
+        if let Some(mac) = mac {
+            let dev = device::entry(&mut run.devices, mac, MAX_DEVICES);
+            if !dev.is_active() {
+                let f = Failure::new("local_network_denied").with("mac", mac);
+                self.set_state(mac, DeviceState::failed(f));
+            }
+        }
+        let Some(run) = self.run.as_mut() else { return };
+        if std::mem::replace(&mut run.local_network_denied, true) {
+            return;
+        }
+        self.warning(Failure::new("local_network_denied").with("service", service));
+    }
+
+    /// A send worked: after `local_network_denied`, `local_network_allowed`
+    /// (once).
+    fn sends_work(&mut self) {
+        let Some(run) = self.run.as_mut() else { return };
+        if std::mem::take(&mut run.local_network_denied) {
+            self.warning(Failure::new("local_network_allowed"));
+        }
+    }
+
     /// A failed send: `send_failed` (`service`, `count` failures since the
     /// last report, `detail`), at most once per [`SEND_WARNING_INTERVAL`],
     /// and not while the link is known to be down (`link_down` says it).
-    /// Before macOS's Local Network permission is granted, sends fail too
-    /// (`EHOSTUNREACH`); this is how that shows up.
+    /// `EHOSTUNREACH` is not one of these: see
+    /// [`Self::local_network_denied`].
     fn send_failed(&mut self, service: &str, e: &io::Error, now: Instant) {
         let Some(run) = self.run.as_mut() else { return };
         let errors = &mut run.send_errors;
@@ -1619,6 +1703,113 @@ mod tests {
             &mut io,
             SocketAddr::from((alias, port.wrapping_add(1)))
         ));
+        core.stop(&mut io);
+    }
+
+    /// The events sent so far.
+    fn drain(rx: &mut broadcast::Receiver<EngineEvent>) -> Vec<EngineEvent> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn warnings(events: &[EngineEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::Warning(f) => Some(f.code.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn unreachable() -> BootpEvent {
+        BootpEvent::SendFailed {
+            mac: DEV,
+            error: "No route to host (os error 65)".into(),
+            host_unreachable: true,
+        }
+    }
+
+    fn replied() -> BootpEvent {
+        BootpEvent::Replied {
+            mac: DEV,
+            arch: ni_bootp::BootArch::MMips,
+            ip: Ipv4Addr::new(10, 9, 9, 20),
+            kind: ni_bootp::ReplyKind::Offer,
+            file: "x".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn host_unreachable_sends_are_one_local_network_warning() {
+        let (mut core, mut io, _dir) = started_core(Ipv4Addr::new(10, 9, 9, 8));
+        let mut rx = core.events.subscribe();
+        for _ in 0..50 {
+            core.on_bootp(unreachable());
+        }
+        let events = drain(&mut rx);
+        assert_eq!(warnings(&events), ["local_network_denied"]);
+        let EngineEvent::Warning(w) = events
+            .iter()
+            .find(|e| matches!(e, EngineEvent::Warning(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(w.param("service"), Some("bootp"));
+        // The device's row says it too (once).
+        let failed: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::Device {
+                    mac,
+                    state: DeviceState::Failed { code, .. },
+                } if *mac == DEV => Some(code.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failed, ["local_network_denied"]);
+        assert!(core.snapshot().local_network_denied);
+
+        // A reply that went out: allowed again (said once), and a new
+        // refusal is reported again.
+        core.on_bootp(replied());
+        core.on_bootp(replied());
+        assert_eq!(warnings(&drain(&mut rx)), ["local_network_allowed"]);
+        assert!(!core.snapshot().local_network_denied);
+        core.on_bootp(unreachable());
+        core.on_bootp(unreachable());
+        assert_eq!(warnings(&drain(&mut rx)), ["local_network_denied"]);
+
+        // Other send errors keep their own code.
+        core.on_bootp(BootpEvent::SendFailed {
+            mac: DEV,
+            error: "Network is down".into(),
+            host_unreachable: false,
+        });
+        assert_eq!(warnings(&drain(&mut rx)), ["bootp_send_failed"]);
+
+        // A new start reports it again.
+        let cfg = core.run.as_ref().unwrap().cfg.clone();
+        core.stop(&mut io);
+        core.reap().await;
+        drain(&mut rx);
+        core.start(cfg, &mut io).unwrap();
+        core.on_bootp(unreachable());
+        assert!(warnings(&drain(&mut rx)).contains(&"local_network_denied".to_string()));
+        core.stop(&mut io);
+    }
+
+    #[tokio::test]
+    async fn a_tftp_transfer_refused_as_unreachable_is_local_network_denied() {
+        let (mut core, mut io, _dir) = started_core(Ipv4Addr::new(10, 9, 9, 7));
+        let mut rx = core.events.subscribe();
+        core.on_tftp(TftpEvent::Failed {
+            peer: SocketAddr::from((Ipv4Addr::new(10, 9, 9, 20), 1234)),
+            file: "x".into(),
+            error: ni_tftp::TransferError::HostUnreachable("No route to host".into()),
+        });
+        assert_eq!(warnings(&drain(&mut rx)), ["local_network_denied"]);
+        assert!(core.snapshot().local_network_denied);
         core.stop(&mut io);
     }
 }
