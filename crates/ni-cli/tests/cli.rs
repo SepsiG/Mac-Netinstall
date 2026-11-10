@@ -726,3 +726,77 @@ async fn reaching_the_count_waits_for_devices_still_flashing() {
     assert_eq!(status.code(), Some(0));
     assert!(lan.wait_terminated(SLOW, WAIT).await.is_some());
 }
+
+#[tokio::test]
+async fn version_check_compares_with_the_latest_release() {
+    let srv = TestServer::start().await;
+    let api = "/repos/SepsiG/Mac-Netinstall/releases/latest";
+    let release = |tag: &str| {
+        let v = tag.trim_start_matches('v');
+        let dmg = format!("Mac-Netinstall_{v}_aarch64.dmg");
+        let url = |f: &str| {
+            format!(
+                "{}/SepsiG/Mac-Netinstall/releases/download/{tag}/{f}",
+                srv.base
+            )
+        };
+        serde_json::json!({
+            "tag_name": tag,
+            "html_url": format!("https://github.com/SepsiG/Mac-Netinstall/releases/tag/{tag}"),
+            "assets": [
+                {"name": dmg, "size": 1, "browser_download_url": url(&dmg)},
+                {"name": format!("{dmg}.sha256"), "size": 1, "browser_download_url": url(&format!("{dmg}.sha256"))},
+            ],
+        })
+    };
+    let env = Env::new("cli-version");
+    let current = env!("CARGO_PKG_VERSION");
+    // Without --check: no network.
+    let (code, out, _) = env.run(&["version"]).await;
+    assert_eq!(
+        (code, out.trim()),
+        (0, format!("ni-cli {current}").as_str())
+    );
+    srv.route(
+        api,
+        ni_assets::testutil::Reply::Body(serde_json::to_vec(&release("v99.0.0")).unwrap()),
+    );
+    let (code, out, err) = env
+        .run(&["--json", "version", "--check", "--update-base", &srv.base])
+        .await;
+    assert_eq!(code, 0, "{err}");
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["current"], current);
+    assert_eq!(v["latest"], "99.0.0");
+    assert_eq!(v["newer"], true);
+    assert_eq!(
+        v["page"],
+        "https://github.com/SepsiG/Mac-Netinstall/releases/tag/v99.0.0"
+    );
+    srv.route(
+        api,
+        ni_assets::testutil::Reply::Body(
+            serde_json::to_vec(&release(&format!("v{current}"))).unwrap(),
+        ),
+    );
+    let (code, out, _) = env
+        .run(&["version", "--check", "--update-base", &srv.base])
+        .await;
+    assert_eq!(code, 0);
+    assert!(out.contains("up to date"), "{out}");
+    srv.route(api, ni_assets::testutil::Reply::Status(403));
+    let (code, _, err) = env
+        .run(&["version", "--check", "--update-base", &srv.base])
+        .await;
+    assert_eq!(code, 1);
+    assert!(err.contains("update_check_failed"), "{err}");
+    assert!(err.contains("rate_limited"), "{err}");
+    // The testing flag needs the environment variable.
+    let mut cmd = env.cmd(&["version", "--check", "--update-base", &srv.base]);
+    cmd.env_remove("NI_CLI_TESTING");
+    let out = tokio::time::timeout(WAIT, cmd.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
