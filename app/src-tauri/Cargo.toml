@@ -26,6 +26,7 @@ ni-assets.workspace = true
 ni-engine.workspace = true
 ni-net.workspace = true
 ni-proto.workspace = true
+ni-update.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { workspace = true, features = [] }
@@ -42,3 +43,4 @@ objc2 = "0.6.5"
 [dev-dependencies]
 ni-assets = { workspace = true, features = ["testing"] }
 ni-sim = { workspace = true, features = ["lan"] }
+sha2.workspace = true

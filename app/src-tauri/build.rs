@@ -43,6 +43,12 @@ const COMMANDS: &[&str] = &[
     "export_log",
     "preferred_languages",
     "quit",
+    "update_status",
+    "check_for_updates",
+    "skip_update",
+    "clear_skipped_update",
+    "download_update",
+    "open_release_page",
 ];
 
 fn main() {

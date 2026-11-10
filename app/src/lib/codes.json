@@ -198,7 +198,30 @@
     "profile_exists",
     "script_failed",
     "settings_io",
-    "settings_newer"
+    "settings_newer",
+    "update_busy",
+    "update_check_failed",
+    "update_download_failed",
+    "update_not_available",
+    "update_open_failed"
+  ],
+  "update_problems": [
+    "rate_limited",
+    "no_release",
+    "http_status",
+    "http_client",
+    "network",
+    "timeout",
+    "redirect_refused",
+    "bad_response",
+    "missing_asset",
+    "url_refused",
+    "too_large",
+    "truncated",
+    "checksum_invalid",
+    "checksum_mismatch",
+    "name_taken",
+    "io"
   ],
   "disclaimer_version": "1"
 }

@@ -4,6 +4,7 @@
 //! this is tested directly (see `tests/bridge.rs`).
 
 use crate::settings::{Settings, SettingsStore};
+use crate::update::{self, UpdateState, UpdateView, CURRENT_VERSION};
 use crate::views::{
     without_paths, BrokenProfile, CacheView, ChannelView, InterfaceView, LicenseKeyView,
     PackageFileView, PackagesView, ProfilesView, ScriptView, StartRequest, VersionsView,
@@ -18,6 +19,7 @@ use ni_engine::{
 };
 use ni_proto::Mac;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -36,6 +38,11 @@ pub struct Paths {
     pub profiles: PathBuf,
     /// `~/Library/Application Support/<bundle id>/settings.json`.
     pub settings: PathBuf,
+    /// What the last update check found (`update-check.json` next to the
+    /// settings).
+    pub update_state: PathBuf,
+    /// Where a new version's DMG is downloaded (`~/Downloads`).
+    pub downloads: PathBuf,
 }
 
 impl Paths {
@@ -44,14 +51,16 @@ impl Paths {
         let (Some(cache), Some(profiles)) = (default_cache_root(), default_profiles_root()) else {
             return Err(Failure::new("no_home"));
         };
-        let settings = profiles.parent().map_or_else(
-            || PathBuf::from("settings.json"),
-            |p| p.join("settings.json"),
-        );
+        let support = profiles.parent().map(Path::to_path_buf).unwrap_or_default();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| Failure::new("no_home"))?;
         Ok(Paths {
             cache,
             profiles,
-            settings,
+            settings: support.join("settings.json"),
+            update_state: support.join("update-check.json"),
+            downloads: home.join("Downloads"),
         })
     }
 
@@ -61,6 +70,8 @@ impl Paths {
             cache: root.join("cache"),
             profiles: root.join("profiles"),
             settings: root.join("settings.json"),
+            update_state: root.join("update-check.json"),
+            downloads: root.join("downloads"),
         }
     }
 }
@@ -114,6 +125,12 @@ pub struct AppCore {
     /// engine a start is starting.
     engine_swap: tokio::sync::Mutex<()>,
     hook: Option<ConfigHook>,
+    /// Where updates are looked for (GitHub; tests use a local server).
+    update_cfg: ni_update::UpdateConfig,
+    /// What the last update check found.
+    update_state: Mutex<UpdateState>,
+    /// A new version is being downloaded.
+    update_downloading: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -128,6 +145,7 @@ impl AppCore {
         let store = SettingsStore::new(&paths.settings);
         let settings = store.load();
         let timeout = settings.download_timeout();
+        let update_state = UpdateState::load(&paths.update_state);
         let engine = EngineHandle::spawn(
             &paths.cache,
             HttpConfig {
@@ -145,7 +163,16 @@ impl AppCore {
             settings: Mutex::new(settings),
             engine_swap: tokio::sync::Mutex::new(()),
             hook: None,
+            update_cfg: ni_update::UpdateConfig::default(),
+            update_state: Mutex::new(update_state),
+            update_downloading: AtomicBool::new(false),
         })
+    }
+
+    /// Look for updates at `cfg` instead of GitHub (tests).
+    pub fn with_update_config(mut self, cfg: ni_update::UpdateConfig) -> Self {
+        self.update_cfg = cfg;
+        self
     }
 
     /// Apply `hook` to every engine configuration (tests).
@@ -750,6 +777,130 @@ impl AppCore {
             .delete_cached(scope)
             .await
             .map_err(|e| asset_cause("cache_failed", &e))
+    }
+
+    // ------------------------------------------------------------- updates
+
+    /// What the last update check found, for the running version.
+    pub fn update_status(&self) -> UpdateView {
+        let s = self.settings();
+        update::view(
+            &lock(&self.update_state),
+            CURRENT_VERSION,
+            s.check_updates,
+            s.skipped_update_version.as_deref(),
+        )
+    }
+
+    fn updater(&self) -> Result<ni_update::Updater, ni_update::UpdateError> {
+        ni_update::Updater::new(self.update_cfg.clone())
+    }
+
+    /// Ask GitHub for the latest release. Automatic checks (`manual` false)
+    /// ask only if turned on and at most once a day
+    /// ([`ni_update::check_due`]), and fail quietly (the last known state
+    /// is returned). A manual check always asks. Error (manual only):
+    /// `update_check_failed` (`problem`: an [`ni_update::PROBLEMS`] code).
+    pub async fn check_for_updates(&self, manual: bool) -> Result<UpdateView, Failure> {
+        let last = lock(&self.update_state).last_check_unix;
+        let now = update::now_unix();
+        if !manual && (!self.settings().check_updates || !ni_update::check_due(last, now)) {
+            return Ok(self.update_status());
+        }
+        let result = match self.updater() {
+            Ok(u) => u.latest().await,
+            Err(e) => Err(e),
+        };
+        let found = match result {
+            Ok(latest) => Some(latest),
+            Err(e) => {
+                tracing::info!(problem = e.code(), "update check failed: {e}");
+                if let ni_update::UpdateError::RateLimited { .. } = e {
+                    // Not again today (automatically).
+                    let mut st = lock(&self.update_state);
+                    st.last_check_unix = Some(now);
+                    st.save(&self.paths.update_state);
+                }
+                if manual {
+                    return Err(Failure::new("update_check_failed").with("problem", e.code()));
+                }
+                None
+            }
+        };
+        if let Some(latest) = found {
+            tracing::info!(
+                latest = latest.as_ref().map(|r| r.version.as_str()),
+                "checked for updates"
+            );
+            let mut st = lock(&self.update_state);
+            st.last_check_unix = Some(now);
+            st.latest = latest;
+            st.save(&self.paths.update_state);
+        }
+        Ok(self.update_status())
+    }
+
+    /// Do not announce `version` (`X.Y.Z`) again, only newer ones. Error:
+    /// `invalid_setting` (`field`: `skipped_update_version`).
+    pub fn skip_update(&self, version: &str) -> Result<UpdateView, Failure> {
+        let next = Settings {
+            skipped_update_version: Some(version.to_string()),
+            ..self.settings()
+        };
+        next.validate()?;
+        self.remember(|s| s.skipped_update_version = Some(version.to_string()));
+        Ok(self.update_status())
+    }
+
+    /// Announce the skipped release again.
+    pub fn clear_skipped_update(&self) -> Result<UpdateView, Failure> {
+        self.remember(|s| s.skipped_update_version = None);
+        Ok(self.update_status())
+    }
+
+    /// Download the announced release's DMG into the Downloads folder and
+    /// check it against its published SHA-256 (`progress`: bytes done,
+    /// total). Returns the DMG's path. Errors: `update_not_available` (no
+    /// newer release known), `update_busy` (already downloading),
+    /// `update_download_failed` (`problem`; the partial file is deleted).
+    pub async fn download_update(
+        &self,
+        progress: &(dyn Fn(u64, Option<u64>) + Sync),
+    ) -> Result<PathBuf, Failure> {
+        let release = lock(&self.update_state)
+            .latest
+            .clone()
+            .filter(|r| ni_update::is_newer(&r.version, CURRENT_VERSION))
+            .ok_or_else(|| Failure::new("update_not_available"))?;
+        if self.update_downloading.swap(true, Ordering::SeqCst) {
+            return Err(Failure::new("update_busy"));
+        }
+        let result = async {
+            std::fs::create_dir_all(&self.paths.downloads)
+                .map_err(|e| ni_update::UpdateError::Io(e.to_string()))?;
+            self.updater()?
+                .download(&release, &self.paths.downloads, progress)
+                .await
+        }
+        .await;
+        self.update_downloading.store(false, Ordering::SeqCst);
+        result
+            .inspect(|p| tracing::info!(path = %p.display(), "update downloaded and verified"))
+            .map_err(|e| {
+                tracing::warn!(problem = e.code(), "update download failed: {e}");
+                Failure::new("update_download_failed").with("problem", e.code())
+            })
+    }
+
+    /// The release page to open: the latest release's, if it is one of the
+    /// project's ([`ni_update::release_page_allowed`]), else the releases'.
+    pub fn release_page_url(&self) -> String {
+        lock(&self.update_state)
+            .latest
+            .as_ref()
+            .map(|r| r.page_url.clone())
+            .filter(|u| ni_update::release_page_allowed(u))
+            .unwrap_or_else(update::fallback_page)
     }
 
     /// Write the log text the window collected. Error: `log_io`.

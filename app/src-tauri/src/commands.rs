@@ -7,13 +7,14 @@
 use crate::core::{self, AppCore};
 use crate::permissions::{self, PermissionsView, SettingsPane};
 use crate::settings::Settings;
+use crate::update::{DownloadedView, UpdateProgress, UpdateView, UPDATE_PROGRESS};
 use crate::views::{
     CacheView, InterfaceView, LicenseKeyView, PackageFileView, PackagesView, ProfilesView,
     ScriptView, StartRequest, VersionsView,
 };
 use ni_assets::DeleteScope;
 use ni_engine::{Failure, PreflightReport, Profile, Snapshot, StartInfo};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
 
@@ -185,6 +186,76 @@ pub fn open_link(link: Link) -> R<()> {
     let failed = |d: String| Failure::new("open_link_failed").with("detail", d);
     let status = std::process::Command::new("/usr/bin/open")
         .arg(link.url())
+        .status()
+        .map_err(|e| failed(e.to_string()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(failed(status.to_string()))
+    }
+}
+
+/// What the last update check found (no network).
+#[tauri::command(rename_all = "snake_case")]
+pub fn update_status(core: State<'_, AppCore>) -> UpdateView {
+    core.update_status()
+}
+
+/// Ask GitHub for a new release: `manual` from the About section (always
+/// asks, reports failures), otherwise the automatic check at launch (at
+/// most once a day, if turned on; quiet).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn check_for_updates(core: State<'_, AppCore>, manual: bool) -> R<UpdateView> {
+    core.check_for_updates(manual).await
+}
+
+/// Do not announce this release again (only newer ones).
+#[tauri::command(rename_all = "snake_case")]
+pub fn skip_update(core: State<'_, AppCore>, version: String) -> R<UpdateView> {
+    core.skip_update(&version)
+}
+
+/// Announce the skipped release again.
+#[tauri::command(rename_all = "snake_case")]
+pub fn clear_skipped_update(core: State<'_, AppCore>) -> R<UpdateView> {
+    core.clear_skipped_update()
+}
+
+/// Download the announced release's DMG into Downloads, verify its SHA-256
+/// (`update-progress` events on the way) and open it in Finder. The app
+/// keeps running: the user replaces it in Applications.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn download_update(app: AppHandle, core: State<'_, AppCore>) -> R<DownloadedView> {
+    let emit = |done, total| {
+        let _ = app.emit(UPDATE_PROGRESS, UpdateProgress { done, total });
+    };
+    let path = core.download_update(&emit).await?;
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // A constant program and a path this app just created.
+    let opened = std::process::Command::new("/usr/bin/open")
+        .arg(&path)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !opened {
+        tracing::warn!(path = %path.display(), "cannot open the downloaded DMG");
+    }
+    Ok(DownloadedView { file_name, opened })
+}
+
+/// Open the latest release's page on GitHub (only the project's release
+/// pages; the window never passes a URL).
+#[tauri::command(rename_all = "snake_case")]
+pub fn open_release_page(core: State<'_, AppCore>) -> R<()> {
+    let url = core.release_page_url();
+    let failed = |d: String| Failure::new("update_open_failed").with("detail", d);
+    if !ni_update::release_page_allowed(&url) {
+        return Err(failed("not a release page".into()));
+    }
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(&url)
         .status()
         .map_err(|e| failed(e.to_string()))?;
     if status.success() {

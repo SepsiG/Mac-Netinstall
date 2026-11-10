@@ -8,6 +8,7 @@
 //! - [`codes`]: the code catalog the UI's translations are checked against.
 //! - [`window`]: the main window's size and position across launches.
 //! - [`dock`]: the Dock badge (devices being prepared or flashed).
+//! - [`update`]: the update notice (new releases on GitHub).
 
 pub mod codes;
 pub mod commands;
@@ -20,6 +21,7 @@ pub mod logging;
 mod macos;
 pub mod permissions;
 pub mod settings;
+pub mod update;
 pub mod views;
 pub mod window;
 
@@ -452,6 +454,12 @@ pub fn run() {
             commands::export_log,
             commands::preferred_languages,
             commands::quit,
+            commands::update_status,
+            commands::check_for_updates,
+            commands::skip_update,
+            commands::clear_skipped_update,
+            commands::download_update,
+            commands::open_release_page,
         ])
         .build(tauri::generate_context!())
         .expect("cannot build the Tauri app");

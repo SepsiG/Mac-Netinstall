@@ -42,7 +42,11 @@ pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
 /// older files, and any existing file whose value is unusable, get `true`,
 /// so an upgrade never wipes an offline cache) and `disclaimer_accepted_version` (the disclaimer text
 /// version the user accepted; older files get `null`, so it is asked once).
-pub const SETTINGS_VERSION: u32 = 7;
+///
+/// Version 8 adds `check_updates` (look for a new Mac Netinstall release at
+/// most once a day; older files get `true`, the default) and
+/// `skipped_update_version` (a release the user chose to skip; `null`).
+pub const SETTINGS_VERSION: u32 = 8;
 
 /// Smallest main window (also `minWidth` / `minHeight` in tauri.conf.json).
 pub const MIN_WINDOW_WIDTH: u32 = 820;
@@ -164,6 +168,11 @@ pub struct Settings {
     /// The version of the disclaimer the user accepted
     /// ([`ni_engine::DISCLAIMER_VERSION`]); starting needs the current one.
     pub disclaimer_accepted_version: Option<String>,
+    /// Look for a new Mac Netinstall release (GitHub) at most once a day.
+    pub check_updates: bool,
+    /// A release (`X.Y.Z`) the user chose to skip: only a newer one is
+    /// announced.
+    pub skipped_update_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -185,6 +194,8 @@ impl Default for Settings {
             onboarding_done: false,
             keep_downloads: false,
             disclaimer_accepted_version: None,
+            check_updates: true,
+            skipped_update_version: None,
         }
     }
 }
@@ -233,6 +244,13 @@ impl Settings {
             return Err(invalid("disclaimer_accepted_version"));
         }
         if self
+            .skipped_update_version
+            .as_deref()
+            .is_some_and(|v| ni_update::SemVer::parse(v).is_none() || v.starts_with('v'))
+        {
+            return Err(invalid("skipped_update_version"));
+        }
+        if self
             .log_panel_height
             .is_some_and(|h| !valid_log_panel_height(h))
         {
@@ -250,7 +268,8 @@ impl Settings {
     /// `edit` (from the settings dialog) with what the app remembers by
     /// itself kept from `self`: the last interface, profile and
     /// auto-repeat, the window, the dialog sizes, the log panel's height
-    /// whether onboarding was done and the accepted disclaimer. A dialog
+    /// whether onboarding was done, the accepted disclaimer and the skipped
+    /// update (set from the update notice). A dialog
     /// opened before
     /// a start must not undo what the start remembered.
     pub fn merged_edit(&self, edit: Settings) -> Settings {
@@ -263,6 +282,7 @@ impl Settings {
             log_panel_height: self.log_panel_height,
             onboarding_done: self.onboarding_done,
             disclaimer_accepted_version: self.disclaimer_accepted_version.clone(),
+            skipped_update_version: self.skipped_update_version.clone(),
             ..edit
         }
     }
@@ -285,6 +305,8 @@ const FIELDS: &[&str] = &[
     "onboarding_done",
     "keep_downloads",
     "disclaimer_accepted_version",
+    "check_updates",
+    "skipped_update_version",
 ];
 
 /// Set `field` of `s` from the file's JSON `obj`; `false` if it has the
@@ -333,6 +355,8 @@ fn set_field(
         "onboarding_done" => get(obj, field, &mut s.onboarding_done),
         "keep_downloads" => get(obj, field, &mut s.keep_downloads),
         "disclaimer_accepted_version" => get(obj, field, &mut s.disclaimer_accepted_version),
+        "check_updates" => get(obj, field, &mut s.check_updates),
+        "skipped_update_version" => get(obj, field, &mut s.skipped_update_version),
         _ => unreachable!("unknown settings field {field}"),
     }
 }
@@ -975,7 +999,7 @@ mod tests {
         assert!(loaded.settings.onboarding_done);
         let stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(stored["version"], 7);
+        assert_eq!(stored["version"], SETTINGS_VERSION);
         assert_eq!(stored["keep_downloads"], json!(true));
         assert_eq!(stored["disclaimer_accepted_version"], json!(null));
         let mut s = loaded.settings.clone();
@@ -1023,6 +1047,64 @@ mod tests {
         });
         assert!(merged.keep_downloads);
         assert_eq!(merged.disclaimer_accepted_version.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn version_7_files_gain_the_update_settings() {
+        let dir = tempdir("settings-v7");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            json!({"version": 7, "language": "hu", "keep_downloads": false}).to_string(),
+        )
+        .unwrap();
+        let store = SettingsStore::new(&path);
+        let loaded = store.load_checked();
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert!(loaded.settings.check_updates, "on by default");
+        assert_eq!(loaded.settings.skipped_update_version, None);
+        assert!(!loaded.settings.keep_downloads);
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["version"], 8);
+        assert_eq!(stored["check_updates"], json!(true));
+        assert_eq!(stored["skipped_update_version"], json!(null));
+        let mut s = loaded.settings.clone();
+        s.check_updates = false;
+        s.skipped_update_version = Some("0.1.3".into());
+        store.save(&s).unwrap();
+        let back = store.load();
+        assert!(!back.check_updates);
+        assert_eq!(back.skipped_update_version.as_deref(), Some("0.1.3"));
+        // Bad values fall back alone.
+        for bad in [json!("v0.1.3"), json!("0.1.3-rc1"), json!(""), json!(3)] {
+            std::fs::write(
+                &path,
+                json!({"version": 8, "check_updates": "no", "skipped_update_version": bad})
+                    .to_string(),
+            )
+            .unwrap();
+            let loaded = SettingsStore::new(&path).load_checked();
+            assert_eq!(
+                loaded.problems,
+                ["check_updates", "skipped_update_version"],
+                "{bad}"
+            );
+            assert!(loaded.settings.check_updates);
+            assert_eq!(loaded.settings.skipped_update_version, None);
+        }
+        // The settings dialog turns checking off, but cannot skip a release.
+        let current = Settings {
+            skipped_update_version: Some("0.1.3".into()),
+            ..Settings::default()
+        };
+        let merged = current.merged_edit(Settings {
+            check_updates: false,
+            skipped_update_version: None,
+            ..Settings::default()
+        });
+        assert!(!merged.check_updates);
+        assert_eq!(merged.skipped_update_version.as_deref(), Some("0.1.3"));
     }
 
     #[test]
