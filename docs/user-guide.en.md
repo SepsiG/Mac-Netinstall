@@ -5,7 +5,8 @@
 > **Status:** validated on real hardware with a **hEX RB750Gr3** (`mmips`, RouterOS 7.25.1):
 > all four configuration modes (default, empty, custom script, keep existing) and auto-repeat
 > work; a **hAP ac²** (`arm`) was also installed with an extra package, and a
-> **CRS125-24G-1S-2HnD** (`mipsbe`). Other architectures
+> **CRS125-24G-1S-2HnD** (`mipsbe`). RouterOS **6.49.23** from the archive was installed on
+> the hEX as well. Other architectures
 > (arm64, smips, ppc, tile), the mode script, remove
 > branding, the license key and the shutdown variant have **not yet been tested** on
 > hardware. For such models keep a fallback: a device you can recover with MikroTik's
@@ -175,8 +176,9 @@ RouterOS 6 (6.30 to 6.49.x) can be installed too. Things to know:
   device or a configuration that needs v6).
 - **Never install a version older than the device's minimum (factory) version.** That can
   leave the device unusable. The device reports its minimum version in its Netinstall hello
-  when it is discovered (the log line and the model's tooltip show it; how real devices fill
-  this field is still being verified on hardware); the app **refuses** an older version
+  when it is discovered (the log line and the model's tooltip show it; e.g. a hEX RB750Gr3
+  reports 6.36.1, a hAP ac² with LTE (D53G-5HacD2HnD&FG621-EA) reports 7.11); the app
+  **refuses** an older version
   before anything is erased: **“RouterOS … is older than this device's minimum version …”**.
   If either version cannot be read (e.g. a local package of an unknown version), the install
   is refused too. Some newer devices do not support v6 at all.
@@ -479,7 +481,8 @@ seconds aborts. All options: `ni-cli --help` and `ni-cli <command> --help`.
 
 - **Only partly validated on real hardware.** Tested so far: a hEX RB750Gr3 (`mmips`) with
   the default, empty, script and keep configuration modes and auto-repeat, a hAP ac²
-  (`arm`) with an extra package, and a CRS125-24G-1S-2HnD (`mipsbe`). Not yet tested: arm64,
+  (`arm`) with an extra package, a CRS125-24G-1S-2HnD (`mipsbe`), and RouterOS 6.49.23 on
+  the hEX. Not yet tested: arm64,
   smips, ppc and tile (whether their
   boot kernels boot), the mode script, remove
   branding, the license key and the shutdown variant. Keep the official Netinstall as a
@@ -490,8 +493,8 @@ seconds aborts. All options: `ni-cli --help` and `ni-cli <command> --help`.
   `--retransmits 0` turns it off.
 - Apple Silicon Macs only, macOS 13 or later.
 - x86 (PXE) and ARM64 UEFI devices are not supported. RouterOS 7 and RouterOS 6 from
-  6.30 on; installing v6 with the RouterOS 7 netinstall kernels has not been tested on
-  hardware yet, nor the oldest PowerPC boards or arm64 with v6.
+  6.30 on; installing v6 with the RouterOS 7 netinstall kernels works (6.49.23 on a hEX),
+  but the oldest PowerPC boards and arm64 with v6 are not tested yet.
 - Ad-hoc signed, not notarized: the first launch has to be allowed (see
   [section 3](#3-installing-the-app)).
 - Without the Local Network permission the app cannot reach devices.

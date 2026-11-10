@@ -100,6 +100,12 @@ start with it off).
 
 - MikroTik CRS125-24G-1S-2HnD (`mipsbe`, hello architecture `mips`),
   RouterOS 7.25.1: installed and rebooted with the fixed build. ✓
+- **RouterOS 6 from the archive:** 6.49.23 installed on the hEX RB750Gr3
+  (`routeros-mmips-6.49.23.npk`) with the RouterOS 7.25.1 netinstall boot
+  kernel; checked in WinBox. ✓
+- **Minimum version from the device's hello:** hEX RB750Gr3 reports 6.36.1
+  (so 6.49.23 is allowed), hAP ac² D53G-5HacD2HnD&FG621-EA reports 7.11 (so v6
+  is refused on it). ✓
 
 ## [0.1.1] - 2026-11-09
 
