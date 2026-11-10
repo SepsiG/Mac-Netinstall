@@ -19,6 +19,8 @@ export interface SettingsForm {
   download_timeout_min: string;
   /** Keep downloaded RouterOS files after quitting. */
   keep_downloads: boolean;
+  /** Look for a new Mac Netinstall release automatically. */
+  check_updates: boolean;
 }
 
 export type FieldError = { key: string; values?: Record<string, number | string> };
@@ -33,6 +35,7 @@ export function toSettingsForm(s: Settings): SettingsForm {
     cooldown_secs: String(s.cooldown_secs),
     download_timeout_min: String(Math.round(s.download_timeout_secs / 60)),
     keep_downloads: s.keep_downloads ?? false,
+    check_updates: s.check_updates ?? true,
   };
 }
 
@@ -101,5 +104,6 @@ export function fromSettingsForm(f: SettingsForm, base: Settings): Settings {
     cooldown_secs: Number(f.cooldown_secs.trim()),
     download_timeout_secs: Number(f.download_timeout_min.trim()) * 60,
     keep_downloads: f.keep_downloads,
+    check_updates: f.check_updates,
   };
 }

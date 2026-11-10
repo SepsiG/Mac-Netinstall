@@ -13,15 +13,23 @@
   import SettingsDialog from "./components/SettingsDialog.svelte";
   import { initDialogSizes } from "./lib/dialogSizes";
   import StatusBar from "./components/StatusBar.svelte";
+  import UpdateBanner from "./components/UpdateBanner.svelte";
   import { toFailure, type Backend, type Unlisten } from "./lib/api";
   import { setBackend } from "./lib/context";
   import { locale, pickLanguage, t } from "./lib/i18n";
   import { defaultInterface } from "./lib/interfaces";
   import { describe, hint } from "./lib/messages";
   import { EngineState } from "./lib/state.svelte";
-  import type { Failure, InterfaceView, PreflightReport, Profile, Settings, StartRequest } from "./lib/types";
+  import type { Failure, InterfaceView, PreflightReport, Profile, Settings, StartRequest, UpdateView } from "./lib/types";
 
-  let { backend }: { backend: Backend } = $props();
+  let {
+    backend,
+    updateCheckDelayMs = 10_000,
+  }: {
+    backend: Backend;
+    /** The automatic update check runs this long after start-up. */
+    updateCheckDelayMs?: number;
+  } = $props();
   setBackend(untrack(() => backend));
 
   const engine = new EngineState();
@@ -59,6 +67,10 @@
   /** It was opened for refused sends already (once per session). */
   let refusalShown = false;
   let ready = $state(false);
+  /** What the update check found; the notice shows if `available`. */
+  let update = $state<UpdateView | null>(null);
+  /** "Later" was chosen: no notice until the next start. */
+  let updateLater = $state(false);
   /** While stopped the adapter list and a quick local check follow
    *  changes in macOS (a cable, the adapter's TCP/IP settings). */
   const REFRESH_MS = 5_000;
@@ -166,6 +178,7 @@
 
   onMount(() => {
     const unlisten: Unlisten[] = [];
+    let updateTimer: ReturnType<typeof setTimeout> | undefined;
     (async () => {
       unlisten.push(await backend.onEvent((e) => engine.apply(e)));
       unlisten.push(await backend.onLagged(() => void resync()));
@@ -181,6 +194,9 @@
       autoRepeat = settings?.auto_repeat ?? false;
       await Promise.all([loadInterfaces(), loadProfiles(), resync()]);
       ready = true;
+      // Never in the way of starting up: the automatic check (at most
+      // once a day, if turned on; quiet on failure) runs a bit later.
+      updateTimer = setTimeout(() => void autoCheckUpdates(), untrack(() => updateCheckDelayMs));
     })();
     const timer = setInterval(() => {
       if (ready && !engine.running) {
@@ -189,9 +205,24 @@
     }, REFRESH_MS);
     return () => {
       clearInterval(timer);
+      clearTimeout(updateTimer);
       unlisten.forEach((u) => u());
     };
   });
+
+  async function autoCheckUpdates() {
+    try {
+      update = await backend.checkForUpdates(false);
+    } catch {
+      // automatic checks are quiet
+    }
+  }
+
+  /** A new update state from Settings (a manual check, a reset skip). */
+  function updateChanged(v: UpdateView) {
+    if (v.available) updateLater = false;
+    update = v;
+  }
 
   function request(): StartRequest | null {
     return iface ? { interface: iface, profile, auto_repeat: autoRepeat && profile !== null } : null;
@@ -372,6 +403,10 @@
 </script>
 
 <main>
+  {#if update?.available && !updateLater}
+    <!-- Not while devices are being prepared or flashed. -->
+    <UpdateBanner {update} hidden={engine.busy > 0} onlater={() => (updateLater = true)} onupdate={(v) => (update = v)} />
+  {/if}
   <header class="toolbar">
     <div class="row">
       <InterfacePicker {interfaces} bind:selected={iface} disabled={engine.running} onrefresh={refresh} />
@@ -462,6 +497,7 @@
     iface={interfaces.find((i) => i.name === iface) ?? null}
     onclose={settingsClosed}
     onpermissions={() => (permissions = { refused: false })}
+    onupdate={updateChanged}
   />
 {/if}
 

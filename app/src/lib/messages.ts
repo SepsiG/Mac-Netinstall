@@ -9,6 +9,7 @@ const PARAM_DOMAINS: Record<string, string> = {
   field: "field",
   kind: "kind",
   phase: "phase",
+  problem: "update_problem",
   reason: "link",
   service: "service",
   state: "state",

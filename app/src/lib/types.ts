@@ -286,6 +286,46 @@ export interface Settings {
   keep_downloads: boolean;
   /** The disclaimer version accepted (starting needs the current one). */
   disclaimer_accepted_version: string | null;
+  /** Look for a new Mac Netinstall release at most once a day. */
+  check_updates: boolean;
+  /** A release the user skipped: only a newer one is announced. */
+  skipped_update_version: string | null;
+}
+
+/** A release found by the update check (no URLs: Rust opens them). */
+export interface ReleaseView {
+  version: string;
+  /** Markdown source, shown as text. */
+  notes: string;
+  published_at: string | null;
+  /** The DMG's size in bytes. */
+  size: number;
+}
+
+/** What the update check knows (`ni_update` via the bridge). */
+export interface UpdateView {
+  /** The running version. */
+  current: string;
+  latest: ReleaseView | null;
+  /** `latest` is newer and not skipped: announce it. */
+  available: boolean;
+  last_checked_unix: number | null;
+  skipped: string | null;
+  /** Automatic checks are on. */
+  auto: boolean;
+}
+
+/** A downloaded and verified DMG (in Downloads). */
+export interface DownloadedView {
+  file_name: string;
+  /** Finder opened it. */
+  opened: boolean;
+}
+
+/** The `update-progress` event. */
+export interface UpdateProgress {
+  done: number;
+  total: number | null;
 }
 
 /** Pages the About section can open (constant URLs in Rust). */

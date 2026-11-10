@@ -2,7 +2,17 @@
 // and `emit*` drive the event callbacks.
 import { vi } from "vitest";
 import type { Backend } from "../src/lib/api";
-import type { CacheView, EngineEvent, Profile, SettingsPane, Settings, Snapshot, VersionsView } from "../src/lib/types";
+import type {
+  CacheView,
+  EngineEvent,
+  Profile,
+  SettingsPane,
+  Settings,
+  Snapshot,
+  UpdateProgress,
+  UpdateView,
+  VersionsView,
+} from "../src/lib/types";
 
 export const SETTINGS: Settings = {
   version: 1,
@@ -21,6 +31,25 @@ export const SETTINGS: Settings = {
   onboarding_done: true,
   keep_downloads: false,
   disclaimer_accepted_version: "1",
+  check_updates: true,
+  skipped_update_version: null,
+};
+
+/** A newer release found by the update check. */
+export const AVAILABLE: UpdateView = {
+  current: "0.1.2",
+  latest: { version: "0.1.3", notes: "## Added\n- Update check", published_at: "2026-11-20T10:00:00Z", size: 12_000_000 },
+  available: true,
+  last_checked_unix: 1_793_600_000,
+  skipped: null,
+  auto: true,
+};
+
+/** The update check found nothing newer. */
+export const UP_TO_DATE: UpdateView = {
+  ...AVAILABLE,
+  latest: { ...AVAILABLE.latest!, version: "0.1.2" },
+  available: false,
 };
 
 export const VERSIONS: VersionsView = {
@@ -116,12 +145,14 @@ export interface MockBackend extends Backend {
   emit(e: EngineEvent): void;
   emitLagged(): void;
   emitCloseRequested(busy: number): void;
+  emitUpdateProgress(p: UpdateProgress): void;
 }
 
 export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
   const events: ((e: EngineEvent) => void)[] = [];
   const lagged: (() => void)[] = [];
   const close: ((n: number) => void)[] = [];
+  const progress: ((p: UpdateProgress) => void)[] = [];
   const ok = () => vi.fn(async () => {});
   const base: Backend = {
     listInterfaces: vi.fn(async () => [
@@ -204,6 +235,16 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
     exportLog: vi.fn(async () => true),
     preferredLanguages: vi.fn(async () => ["en-US"]),
     quit: ok(),
+    updateStatus: vi.fn(async () => structuredClone(UP_TO_DATE)),
+    checkForUpdates: vi.fn(async (_manual: boolean) => structuredClone(UP_TO_DATE)),
+    skipUpdate: vi.fn(async (version: string) => ({ ...structuredClone(AVAILABLE), available: false, skipped: version })),
+    clearSkippedUpdate: vi.fn(async () => ({ ...structuredClone(UP_TO_DATE), skipped: null })),
+    downloadUpdate: vi.fn(async () => ({ file_name: "Mac-Netinstall_0.1.3_aarch64.dmg", opened: true })),
+    openReleasePage: vi.fn(async () => {}),
+    onUpdateProgress: vi.fn(async (cb) => {
+      progress.push(cb);
+      return () => {};
+    }),
     onEvent: vi.fn(async (cb) => {
       events.push(cb);
       return () => {};
@@ -223,5 +264,6 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
     emit: (e) => events.forEach((cb) => cb(e)),
     emitLagged: () => lagged.forEach((cb) => cb()),
     emitCloseRequested: (n) => close.forEach((cb) => cb(n)),
+    emitUpdateProgress: (p) => progress.forEach((cb) => cb(p)),
   };
 }
