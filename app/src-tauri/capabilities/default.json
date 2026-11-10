@@ -51,6 +51,7 @@
     "allow-skip-update",
     "allow-clear-skipped-update",
     "allow-download-update",
-    "allow-open-release-page"
+    "allow-open-release-page",
+    "allow-open-downloaded-update"
   ]
 }

@@ -28,6 +28,7 @@ pub const APP_FAILURES: &[&str] = &[
     "update_check_failed",
     "update_download_failed",
     "update_not_available",
+    "update_open_busy",
     "update_open_failed",
 ];
 

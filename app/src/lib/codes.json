@@ -203,6 +203,7 @@
     "update_check_failed",
     "update_download_failed",
     "update_not_available",
+    "update_open_busy",
     "update_open_failed"
   ],
   "update_problems": [
