@@ -2360,6 +2360,7 @@ name = "ni-update"
 version = "0.1.2"
 dependencies = [
  "ni-assets",
+ "nix",
  "reqwest",
  "serde",
  "serde_json",

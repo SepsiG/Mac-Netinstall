@@ -5,12 +5,18 @@
 //!   fixed `User-Agent` and `Accept` headers). Drafts and prereleases are
 //!   ignored.
 //! - [`is_newer`]: plain `X.Y.Z` comparison with the running version.
-//! - [`Updater::download`]: the release's DMG into a folder, checked
-//!   against the published `.sha256` file, never overwriting a file
+//! - [`Updater::download`]: the release's DMG, streamed into a staging
+//!   folder (the app's cache), checked against the published `.sha256`
+//!   file, marked as downloaded from the Internet (`com.apple.quarantine`,
+//!   so Gatekeeper checks the new app like a browser download), then
+//!   placed in the target folder without overwriting a file
 //!   (`name (1).dmg`, …).
 //!
-//! Asset URLs must lie under the project's release downloads
-//! ([`DOWNLOAD_PREFIX`]); redirects are followed only over `https` to
+//! The checksum protects against corrupted or incomplete downloads, not
+//! against a compromised release (it is published next to the DMG).
+//!
+//! Asset URLs must be exactly `<prefix><tag>/<name>` under the project's
+//! release downloads ([`DOWNLOAD_PREFIX`]); redirects are followed only over `https` to
 //! GitHub's download hosts ([`DOWNLOAD_HOSTS`]) or within the same origin.
 //! Errors carry stable codes ([`UpdateError::code`], [`PROBLEMS`]).
 
@@ -190,6 +196,17 @@ fn url_under(url: &str, prefix: &str) -> bool {
     Url::parse(url).is_ok_and(|u| u.as_str() == url && url.starts_with(prefix))
 }
 
+/// Whether `url` is exactly the release asset `name` of `tag` under
+/// `prefix` (no query, fragment or other path).
+pub fn asset_url_allowed(url: &str, prefix: &str, tag: &str, name: &str) -> bool {
+    let ok_part = |p: &str| !p.is_empty() && !p.contains(['/', '?', '#', '%', '\\']) && p != "..";
+    ok_part(tag)
+        && ok_part(name)
+        && url == format!("{prefix}{tag}/{name}")
+        && url_under(url, prefix)
+        && Url::parse(url).is_ok_and(|u| u.query().is_none() && u.fragment().is_none())
+}
+
 /// Whether `url` is one of the project's release pages (what the app may
 /// open in the browser).
 pub fn release_page_allowed(url: &str) -> bool {
@@ -329,7 +346,7 @@ fn parse_latest(json: &[u8], download_prefix: &str) -> Result<Option<Release>, U
             .iter()
             .find(|a| a.name == name)
             .ok_or(UpdateError::MissingAsset(what))?;
-        if !url_under(&a.browser_download_url, download_prefix) {
+        if !asset_url_allowed(&a.browser_download_url, download_prefix, &gh.tag_name, name) {
             return Err(UpdateError::UrlRefused);
         }
         Ok(Asset {
@@ -388,6 +405,162 @@ fn free_path(dir: &Path, name: &str) -> Result<PathBuf, UpdateError> {
         })
         .find(|p| std::fs::symlink_metadata(p).is_err())
         .ok_or(UpdateError::NameTaken)
+}
+
+/// The `com.apple.quarantine` value of a file this app downloaded:
+/// `0083;<hex Unix seconds>;Mac Netinstall;<UUID>` (flags 0x83: downloaded,
+/// to be checked by Gatekeeper; the same form browsers write).
+pub fn quarantine_value(unix_secs: u64, uuid: &str) -> String {
+    format!("0083;{unix_secs:08x};Mac Netinstall;{uuid}")
+}
+
+/// A random (version 4) UUID, upper case.
+fn random_uuid() -> String {
+    use std::io::Read;
+    let mut b = [0u8; 16];
+    let random = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b));
+    if random.is_err() {
+        // Unique enough for a quarantine event id.
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        b[..8].copy_from_slice(&(t as u64).to_le_bytes());
+        b[8..12].copy_from_slice(&std::process::id().to_le_bytes());
+        b[12..].copy_from_slice(&PART_COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+    }
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h = hex(&b).to_ascii_uppercase();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
+}
+
+/// Mark `path` as downloaded from the Internet (see [`quarantine_value`]).
+pub fn quarantine(path: &Path) -> Result<(), UpdateError> {
+    use std::os::unix::ffi::OsStrExt;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let value = quarantine_value(now, &random_uuid());
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| UpdateError::Io("path contains NUL".into()))?;
+    let name = c"com.apple.quarantine";
+    // SAFETY: valid NUL-terminated strings and a buffer of the given
+    // length; macOS's setxattr takes a position (0) and options (0).
+    let rc = unsafe {
+        nix::libc::setxattr(
+            c_path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(UpdateError::io(std::io::Error::last_os_error()))
+    }
+}
+
+/// Remove partial downloads (`*.part`) older than `older_than` from
+/// `staging` (leftovers of a run that did not finish). Returns how many.
+pub fn sweep_partials(staging: &Path, older_than: Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(staging) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    entries
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+        .filter(|e| {
+            e.metadata()
+                .ok()
+                .filter(|m| m.is_file())
+                .and_then(|m| m.modified().ok())
+                .is_some_and(|t| now.duration_since(t).unwrap_or_default() >= older_than)
+        })
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
+}
+
+/// SHA-256 of a file, as lower-case hex.
+fn file_sha256(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            return Ok(hex(&h.finalize()));
+        }
+        h.update(&buf[..n]);
+    }
+}
+
+/// Copy `part` to `dest` (which must not exist), check the copy against
+/// `expected` and quarantine it; `dest` is removed on failure.
+fn copy_verified(
+    part: &Path,
+    dest: &Path,
+    expected: &str,
+) -> std::io::Result<Result<(), UpdateError>> {
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)?;
+    let result = (|| -> Result<(), UpdateError> {
+        let mut src = std::fs::File::open(part).map_err(UpdateError::io)?;
+        std::io::copy(&mut src, &mut out).map_err(UpdateError::io)?;
+        out.sync_all().map_err(UpdateError::io)?;
+        if file_sha256(dest).map_err(UpdateError::io)? != expected {
+            return Err(UpdateError::ChecksumMismatch);
+        }
+        quarantine(dest)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(dest);
+    }
+    Ok(result)
+}
+
+/// Give the verified (and quarantined) `part` its final name in `dir`: a
+/// hard link (same volume) fails instead of replacing a file that appeared
+/// meanwhile; without hard links (another volume) the file is copied with
+/// `create_new` and checked again.
+fn place_with(
+    part: &Path,
+    dir: &Path,
+    name: &str,
+    expected: &str,
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<PathBuf, UpdateError> {
+    let mut can_link = true;
+    for _ in 0..8 {
+        let dest = free_path(dir, name)?;
+        if can_link {
+            match link(part, &dest) {
+                Ok(()) => return Ok(dest),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                // No hard links here (e.g. another volume): copy instead.
+                Err(_) => can_link = false,
+            }
+        }
+        match copy_verified(part, &dest, expected) {
+            Ok(r) => return r.map(|()| dest),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(UpdateError::io(e)),
+        }
+    }
+    Err(UpdateError::NameTaken)
 }
 
 /// Where to ask and what to accept. Bases have no trailing `/`.
@@ -504,18 +677,24 @@ impl Updater {
         parse_latest(&body, &self.cfg.download_prefix)
     }
 
-    /// Download `release`'s DMG into `dir` (never overwriting: `name (1).dmg`
-    /// if taken) after fetching its `.sha256`, and check it. `progress`
-    /// gets bytes done and the total (if known). Nothing is left in `dir`
-    /// on failure. Returns the DMG's path.
+    /// Download `release`'s DMG after fetching its `.sha256`: streamed into
+    /// `staging` (created if needed; the app's cache), checked, quarantined
+    /// ([`quarantine`]), then placed in `dir` (never overwriting:
+    /// `name (1).dmg` if taken). `progress` gets bytes done and the total
+    /// (if known). Nothing is left in `staging` or `dir` on failure.
+    /// Returns the DMG's path.
     pub async fn download(
         &self,
         release: &Release,
+        staging: &Path,
         dir: &Path,
         progress: &(dyn Fn(u64, Option<u64>) + Sync),
     ) -> Result<PathBuf, UpdateError> {
         let prefix = &self.cfg.download_prefix;
-        if !url_under(&release.dmg.url, prefix) || !url_under(&release.checksum.url, prefix) {
+        let pinned = |a: &Asset| asset_url_allowed(&a.url, prefix, &release.tag, &a.name);
+        let names_ok = release.dmg.name == Release::dmg_name(&release.version)
+            && release.checksum.name == format!("{}.sha256", release.dmg.name);
+        if !names_ok || !pinned(&release.dmg) || !pinned(&release.checksum) {
             return Err(UpdateError::UrlRefused);
         }
         let max = self.cfg.max_download_bytes;
@@ -532,7 +711,8 @@ impl Updater {
         let sum = Self::body(sum, MAX_SUM_BYTES).await?;
         let expected = parse_checksum(&String::from_utf8_lossy(&sum), &release.dmg.name)
             .ok_or(UpdateError::ChecksumInvalid)?;
-        let part = dir.join(format!(
+        std::fs::create_dir_all(staging).map_err(UpdateError::io)?;
+        let part = staging.join(format!(
             ".{}.{}-{}.part",
             release.dmg.name,
             std::process::id(),
@@ -547,7 +727,12 @@ impl Updater {
         let result = self
             .stream(&release.dmg.url, out, &expected, progress)
             .await
-            .and_then(|()| Self::place(&part, dir, &release.dmg.name));
+            .and_then(|()| quarantine(&part))
+            .and_then(|()| {
+                place_with(&part, dir, &release.dmg.name, &expected, |a, b| {
+                    std::fs::hard_link(a, b)
+                })
+            });
         let _ = std::fs::remove_file(&part);
         result
     }
@@ -597,20 +782,6 @@ impl Updater {
         }
         Ok(())
     }
-
-    /// Give the verified `part` its final name: a hard link fails instead
-    /// of replacing a file that appeared meanwhile.
-    fn place(part: &Path, dir: &Path, name: &str) -> Result<PathBuf, UpdateError> {
-        for _ in 0..8 {
-            let dest = free_path(dir, name)?;
-            match std::fs::hard_link(part, &dest) {
-                Ok(()) => return Ok(dest),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(UpdateError::io(e)),
-            }
-        }
-        Err(UpdateError::NameTaken)
-    }
 }
 
 #[cfg(test)]
@@ -635,6 +806,72 @@ mod tests {
         assert_eq!(parse_checksum(&format!("{h}  y.dmg"), "x.dmg"), None);
         assert_eq!(parse_checksum(&format!("{h}x  x.dmg"), "x.dmg"), None);
         assert_eq!(parse_checksum("", "x.dmg"), None);
+    }
+
+    #[test]
+    fn without_hard_links_the_file_is_copied_checked_and_quarantined() {
+        let dir = std::env::temp_dir().join(format!("ni-update-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("st")).unwrap();
+        let part = dir.join("st/.a.dmg.part");
+        std::fs::write(&part, b"dmg").unwrap();
+        let good = hex(&Sha256::digest(b"dmg"));
+        let cross = |_: &Path, _: &Path| Err(std::io::Error::from_raw_os_error(nix::libc::EXDEV));
+        let dest = place_with(&part, &dir, "a.dmg", &good, cross).unwrap();
+        assert_eq!(dest, dir.join("a.dmg"));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"dmg");
+        assert!(xattr(&dest).unwrap().starts_with("0083;"));
+        // A copy that does not match is removed.
+        let err = place_with(&part, &dir, "a.dmg", &"0".repeat(64), cross).unwrap_err();
+        assert_eq!(err.code(), "checksum_mismatch");
+        assert!(!dir.join("a (1).dmg").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn xattr(path: &Path) -> Option<String> {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let mut buf = vec![0u8; 256];
+        // SAFETY: valid C strings and a buffer of the given length.
+        let n = unsafe {
+            nix::libc::getxattr(
+                c.as_ptr(),
+                c"com.apple.quarantine".as_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                0,
+                0,
+            )
+        };
+        (n >= 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    }
+
+    #[test]
+    fn quarantine_values_look_like_a_browsers() {
+        assert_eq!(
+            quarantine_value(0x6543_2100, "ABC"),
+            "0083;65432100;Mac Netinstall;ABC"
+        );
+        let u = random_uuid();
+        assert_eq!(u.len(), 36);
+        assert_eq!(&u[14..15], "4");
+        assert_ne!(u, random_uuid());
+    }
+
+    #[test]
+    fn asset_urls_are_pinned() {
+        let p = "https://github.com/SepsiG/Mac-Netinstall/releases/download/";
+        let ok = |u: &str| asset_url_allowed(u, p, "v0.1.3", "a.dmg");
+        assert!(ok(&format!("{p}v0.1.3/a.dmg")));
+        assert!(!ok(&format!("{p}v0.1.3/a.dmg?x")));
+        assert!(!ok(&format!("{p}v0.1.3/x/a.dmg")));
+        assert!(!ok(&format!("{p}v0.1.2/a.dmg")));
+        assert!(!asset_url_allowed(
+            &format!("{p}../a.dmg"),
+            p,
+            "..",
+            "a.dmg"
+        ));
     }
 
     #[test]

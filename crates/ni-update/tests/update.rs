@@ -82,6 +82,31 @@ fn serve_assets(srv: &TestServer, v: &str, body: &[u8], sum: &str) {
     );
 }
 
+/// A fresh staging directory (the app's cache) for one download.
+fn staging() -> ni_assets::testutil::TempDir {
+    tempdir("update-staging")
+}
+
+/// The `com.apple.quarantine` attribute of `path`, if any.
+fn quarantine(path: &Path) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let name = c"com.apple.quarantine";
+    let mut buf = vec![0u8; 512];
+    // SAFETY: valid C strings and a buffer of the given length.
+    let n = unsafe {
+        nix::libc::getxattr(
+            c.as_ptr(),
+            name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            0,
+            0,
+        )
+    };
+    (n >= 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
 fn files(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
@@ -187,6 +212,22 @@ async fn malformed_answers_and_missing_assets_are_errors() {
     j["assets"].as_array_mut().unwrap().remove(0);
     serve_json(&srv, &j);
     assert_eq!(u.latest().await.unwrap_err().code(), "missing_asset");
+    // Asset URLs are pinned: exactly `<prefix><tag>/<name>`.
+    for bad in [
+        format!("{}{}?x=1", srv.base, dl_path("0.1.3", &dmg_name("0.1.3"))),
+        format!("{}{}#x", srv.base, dl_path("0.1.3", &dmg_name("0.1.3"))),
+        format!(
+            "{}{}",
+            srv.base,
+            dl_path("0.1.3", &format!("extra/{}", dmg_name("0.1.3")))
+        ),
+        format!("{}{}", srv.base, dl_path("0.1.4", &dmg_name("0.1.3"))),
+    ] {
+        let mut j = release_json(&srv, "v0.1.3");
+        j["assets"][0]["browser_download_url"] = bad.clone().into();
+        serve_json(&srv, &j);
+        assert_eq!(u.latest().await.unwrap_err().code(), "url_refused", "{bad}");
+    }
     // An asset somewhere else than the project's release downloads.
     let mut j = release_json(&srv, "v0.1.3");
     j["assets"][0]["browser_download_url"] = "https://evil.example/x.dmg".into();
@@ -249,11 +290,12 @@ async fn a_verified_download_lands_in_the_folder_without_overwriting() {
     let u = updater(&srv);
     let r = u.latest().await.unwrap().unwrap();
     let dir = tempdir("update-dl");
+    let st = staging();
     std::fs::write(dir.join(&dmg), b"an older download").unwrap();
     let progress: Arc<Mutex<Vec<Progress>>> = Arc::default();
     let p = progress.clone();
     let path = u
-        .download(&r, &dir, &move |done, total| {
+        .download(&r, &st, &dir, &move |done, total| {
             p.lock().unwrap().push((done, total))
         })
         .await
@@ -276,17 +318,33 @@ async fn a_verified_download_lands_in_the_folder_without_overwriting() {
         ],
         "no partial or checksum file left"
     );
+    assert!(files(&st).is_empty(), "the partial file is gone");
+    // Quarantined like a browser download, so Gatekeeper checks the app.
+    let q = quarantine(&path).expect("quarantined");
+    let parts: Vec<&str> = q.split(';').collect();
+    assert_eq!(parts.len(), 4, "{q}");
+    assert_eq!(parts[0], "0083");
+    let secs = u64::from_str_radix(parts[1], 16).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(now.abs_diff(secs) < 600, "{q}");
+    assert_eq!(parts[2], "Mac Netinstall");
+    assert_eq!(parts[3].len(), 36, "{q}");
+    assert_eq!(parts[3], parts[3].to_ascii_uppercase(), "{q}");
+    assert_eq!(parts[3].matches('-').count(), 4, "{q}");
     let progress = progress.lock().unwrap().clone();
     assert_eq!(progress.last(), Some(&(700_000, Some(700_000))));
     assert!(progress.len() >= 2, "{progress:?}");
     // `*name` (binary mode, as `shasum -b` writes) is accepted too.
-    let again = u.download(&r, &dir, &|_, _| {}).await.unwrap();
+    let again = u.download(&r, &staging(), &dir, &|_, _| {}).await.unwrap();
     assert_eq!(
         again.file_name().unwrap(),
         "Mac-Netinstall_0.1.3_aarch64 (2).dmg"
     );
     serve_assets(&srv, "0.1.3", &body, &format!("{} *{dmg}", sha_hex(&body)));
-    u.download(&r, &dir, &|_, _| {}).await.unwrap();
+    u.download(&r, &staging(), &dir, &|_, _| {}).await.unwrap();
 }
 
 #[tokio::test]
@@ -303,7 +361,10 @@ async fn a_checksum_mismatch_leaves_nothing_behind() {
         b"tampered",
         &format!("{}  {dmg}\n", sha_hex(b"original")),
     );
-    let err = u.download(&r, &dir, &|_, _| {}).await.unwrap_err();
+    let err = u
+        .download(&r, &staging(), &dir, &|_, _| {})
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "checksum_mismatch");
     assert!(files(&dir).is_empty(), "{:?}", files(&dir));
     // A checksum file for another file, or not a checksum at all.
@@ -313,7 +374,10 @@ async fn a_checksum_mismatch_leaves_nothing_behind() {
         format!("{}\n", sha_hex(b"tampered")),
     ] {
         serve_assets(&srv, "0.1.3", b"tampered", &sum);
-        let err = u.download(&r, &dir, &|_, _| {}).await.unwrap_err();
+        let err = u
+            .download(&r, &staging(), &dir, &|_, _| {})
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), "checksum_invalid", "{sum:?}");
         assert!(files(&dir).is_empty());
     }
@@ -334,7 +398,7 @@ async fn redirects_only_to_allowed_hosts() {
     srv.route("/blob", Reply::Body(body.clone()));
     srv.route(&dl_path("0.1.3", &dmg), Reply::Redirect("/blob".into()));
     let dir = tempdir("update-redirect");
-    u.download(&r, &dir, &|_, _| {}).await.unwrap();
+    u.download(&r, &staging(), &dir, &|_, _| {}).await.unwrap();
     // To another host (`localhost` is not `127.0.0.1`), or plain http
     // elsewhere: refused.
     srv.route(
@@ -342,7 +406,10 @@ async fn redirects_only_to_allowed_hosts() {
         Reply::Redirect(format!("http://localhost:{port}/blob")),
     );
     let dir = tempdir("update-redirect-refused");
-    let err = u.download(&r, &dir, &|_, _| {}).await.unwrap_err();
+    let err = u
+        .download(&r, &staging(), &dir, &|_, _| {})
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "redirect_refused");
     assert!(files(&dir).is_empty());
     assert!(ni_update::redirect_allowed(
@@ -379,7 +446,10 @@ async fn downloads_are_capped() {
     .unwrap();
     let r = u.latest().await.unwrap().unwrap();
     let dir = tempdir("update-cap");
-    let err = u.download(&r, &dir, &|_, _| {}).await.unwrap_err();
+    let err = u
+        .download(&r, &staging(), &dir, &|_, _| {})
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "too_large");
     assert!(files(&dir).is_empty());
     assert_eq!(UpdateConfig::default().max_download_bytes, 200 << 20);
@@ -420,5 +490,25 @@ fn checks_are_due_once_a_day() {
     assert!(
         ni_update::check_due(Some(5000), 1000),
         "the clock went back"
+    );
+}
+
+#[test]
+fn stale_partial_downloads_are_swept() {
+    let dir = tempdir("update-sweep");
+    std::fs::write(dir.join(".Mac-Netinstall_0.1.3_aarch64.dmg.1-0.part"), b"x").unwrap();
+    std::fs::write(dir.join("keep.txt"), b"x").unwrap();
+    assert_eq!(ni_update::sweep_partials(&dir, Duration::ZERO), 1);
+    assert_eq!(files(&dir), ["keep.txt"]);
+    // Young ones (another download running) stay.
+    std::fs::write(dir.join(".a.dmg.2-0.part"), b"x").unwrap();
+    assert_eq!(
+        ni_update::sweep_partials(&dir, Duration::from_secs(3600)),
+        0
+    );
+    // A missing directory is nothing to sweep.
+    assert_eq!(
+        ni_update::sweep_partials(&dir.join("none"), Duration::ZERO),
+        0
     );
 }
