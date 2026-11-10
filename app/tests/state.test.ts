@@ -92,6 +92,21 @@ describe("EngineState", () => {
     expect(s.log.lines.length).toBe(5); // started, bootp_seen, discovered, preparing, done
   });
 
+  it("keeps where the packages come from, and the version of local packages", () => {
+    const s = new EngineState();
+    s.apply({ event: "started", interface: "en7", server_ip: "192.168.88.1", bootp: "", tftp: "", netinstall: "" });
+    s.apply({ event: "device", mac: A, state: "preparing", config: "default", source: "local" });
+    expect(s.devices[A]!.source).toBe("local");
+    s.apply({ event: "device", mac: A, state: "flashing", version: "7.24.6", phase: "offering", sent: 0, total: 9 });
+    expect(s.devices[A]!.version).toBe("7.24.6");
+    s.apply({ event: "device", mac: A, state: "bootp_seen", boot_arch: "arm64", ip: "192.168.88.2" });
+    expect(s.devices[A]!.source).toBeNull();
+    const snap = snapshot();
+    snap.devices = [{ ...snap.devices[0]!, source: "download" }];
+    s.applySnapshot(snap);
+    expect(s.devices[B]!.source).toBe("download");
+  });
+
   it("forgets the configuration of the previous round", () => {
     for (const next of ["bootp_seen", "discovered"] as const) {
       const s = new EngineState();

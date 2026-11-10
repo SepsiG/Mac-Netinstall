@@ -56,6 +56,8 @@ export interface DeviceRow {
   version: string | null;
   /** The configuration mode of its profile (keep, default, empty, script). */
   config: string | null;
+  /** Where its profile's packages come from (download, local). */
+  source: string | null;
   attempt: number;
   updated_ms: number;
   state: DeviceState;
@@ -69,6 +71,7 @@ function row(d: DeviceView): DeviceRow {
     info: d.info,
     version: d.version,
     config: d.config,
+    source: d.source ?? null,
     attempt: d.attempt,
     updated_ms: d.updated_ms,
     state: d.state,
@@ -137,6 +140,7 @@ export class EngineState {
         info: null,
         version: null,
         config: null,
+        source: null,
         attempt: 0,
         updated_ms: Date.now(),
         state: { state: "discovered" },
@@ -184,11 +188,15 @@ export class EngineState {
           d.boot_arch = s.boot_arch;
         }
         // A new round: the previous install's configuration no longer applies.
-        if (s.state === "bootp_seen" || s.state === "discovered") d.config = null;
+        if (s.state === "bootp_seen" || s.state === "discovered") {
+          d.config = null;
+          d.source = null;
+        }
         if ((s.state === "preparing" && s.version) || s.state === "flashing") {
           d.version = s.version ?? d.version;
         }
         if (s.state === "preparing" && s.config) d.config = s.config;
+        if (s.state === "preparing" && s.source) d.source = s.source;
         d.state = s;
         d.updated_ms = now;
         break;

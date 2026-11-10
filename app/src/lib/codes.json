@@ -196,5 +196,6 @@
     "script_failed",
     "settings_io",
     "settings_newer"
-  ]
+  ],
+  "disclaimer_version": "1"
 }

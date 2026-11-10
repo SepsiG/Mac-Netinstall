@@ -16,7 +16,7 @@ export type DeviceState =
   | { state: "kernel_serving"; sent: number; total: number }
   | { state: "discovered" }
   | { state: "waiting"; reason: WaitReason }
-  | { state: "preparing"; version?: string; config?: string }
+  | { state: "preparing"; version?: string; config?: string; source?: PackageSource }
   | { state: "flashing"; version: string; phase: string; sent: number; total: number }
   | { state: "done" }
   | { state: "failed"; code: string; params?: Params };
@@ -58,6 +58,8 @@ export interface DeviceView {
   /** The profile's configuration mode: keep, default, empty or script. */
   config: string | null;
   version: string | null;
+  /** Where the profile's packages come from. */
+  source?: PackageSource | null;
   attempt: number;
   first_seen_ms: number;
   updated_ms: number;
@@ -137,9 +139,13 @@ export type ConfigMode =
 export const AFTER_INSTALL = ["reboot", "reboot_message", "shutdown"] as const;
 export type AfterInstall = (typeof AFTER_INSTALL)[number];
 
+/** Where a profile's packages come from. */
+export type PackageSource = "download" | "local";
+
 export interface Profile {
   name: string;
-  /** A channel (`stable`, `long-term`, `testing`, `development`) or a version. */
+  /** A channel (`stable`, `long-term`, `testing`, `development`,
+   *  `v6-long-term`) or a version (`7.25.1`, `6.49.23`). */
   version: string;
   extra_packages: string[];
   config: ConfigMode;
@@ -149,6 +155,45 @@ export interface Profile {
   /** Key file contents without line breaks. */
   license_key: string | null;
   after_install: AfterInstall;
+  /** Download from MikroTik (default) or the registered local files. */
+  package_source: PackageSource;
+  /** Registered `.npk` files (with `package_source: "local"`). */
+  local_packages: string[];
+  /** Install even below the device's minimum version (risky). */
+  allow_below_minimum: boolean;
+}
+
+/** A registered `.npk` file and what its header says. */
+export interface PackageFileView {
+  name: string;
+  size: number;
+  /** `system` for a main package. */
+  package: string;
+  arch: string;
+  version: string | null;
+}
+
+export interface ChannelView {
+  channel: string;
+  version: string | null;
+}
+
+export interface ListedVersion {
+  version: string;
+  /** `stable`, `long-term`. */
+  channels: string[];
+  /** `YYYY-MM-DD`. */
+  date: string | null;
+}
+
+export interface VersionsView {
+  channels: ChannelView[];
+  /** Newest first. */
+  versions: ListedVersion[];
+  /** Unix seconds; 0 for the built-in list. */
+  fetched_unix: number;
+  source: "fresh" | "cached" | "seed";
+  error: string | null;
 }
 
 export interface ProfilesView {
@@ -237,7 +282,14 @@ export interface Settings {
   log_panel_height: number | null;
   /** The permissions sheet was gone through (else it opens at launch). */
   onboarding_done: boolean;
+  /** Keep downloaded RouterOS files after quitting (default: deleted). */
+  keep_downloads: boolean;
+  /** The disclaimer version accepted (starting needs the current one). */
+  disclaimer_accepted_version: string | null;
 }
+
+/** Pages the About section can open (constant URLs in Rust). */
+export type Link = "repository" | "disclaimer" | "license";
 
 /** macOS's Local Network permission, as a probe send saw it. */
 export type LocalNetworkAccess = "granted" | "denied" | "unknown";
@@ -264,7 +316,7 @@ export interface DialogSize {
   height: number;
 }
 
-export const CHANNELS = ["stable", "long-term", "testing", "development"] as const;
+export const CHANNELS = ["stable", "long-term", "testing", "development", "v6-long-term"] as const;
 export const ACTIVE_STATES = ["preparing", "flashing"] as const;
 
 export function isActive(s: DeviceState): boolean {

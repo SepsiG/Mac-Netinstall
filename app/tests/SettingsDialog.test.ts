@@ -58,6 +58,30 @@ describe("SettingsDialog", () => {
     expect(onclose).toHaveBeenCalledWith(saved);
   });
 
+  it("keeps downloads only when asked, and says what that is for", async () => {
+    const { backend } = open();
+    const keep = screen.getByLabelText("Keep downloaded files after quitting");
+    expect(keep).not.toBeChecked();
+    const help = document.getElementById(keep.getAttribute("aria-describedby") ?? "");
+    expect(help?.textContent).toMatch(/offline/);
+    expect(help?.textContent).toMatch(/last used version/);
+    await userEvent.click(keep);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(backend.setSettings).toHaveBeenCalledWith({ ...SETTINGS, keep_downloads: true });
+  });
+
+  it("shows the about section with the disclaimer and fixed links", async () => {
+    const { backend } = open();
+    const about = screen.getByRole("region", { name: "About" });
+    expect(about).toHaveTextContent("GNU GPL v3");
+    expect(about).toHaveTextContent("without any warranty");
+    expect(about).toHaveTextContent("Not affiliated with");
+    await userEvent.click(within(about).getByRole("button", { name: "Full disclaimer" }));
+    expect(backend.openLink).toHaveBeenCalledWith("disclaimer");
+    await userEvent.click(within(about).getByRole("button", { name: "License" }));
+    expect(backend.openLink).toHaveBeenCalledWith("license");
+  });
+
   it("shows field errors and does not save", async () => {
     const { backend } = open();
     await userEvent.click(screen.getByText("Advanced"));
@@ -79,7 +103,7 @@ describe("SettingsDialog", () => {
     open();
     expect(await screen.findByText("RouterOS 7.25.1")).toBeInTheDocument();
     const section = screen.getByRole("region", { name: "Downloaded RouterOS files" });
-    expect(section).toHaveTextContent("kept on this Mac, so they are not downloaded again for every flash");
+    expect(section).toHaveTextContent("they are deleted when the app quits");
     expect(section).toHaveTextContent("1.5 MB in ~/Library/Caches/x");
     const row = (name: string) => within(section).getByText(name).closest("tr")!;
     expect(row("Boot kernels (8)")).toHaveTextContent("1 MB");

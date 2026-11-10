@@ -31,12 +31,16 @@ pub struct AppCatalog {
     #[serde(flatten)]
     pub engine: ni_engine::codes::Catalog,
     pub app_failures: Vec<&'static str>,
+    /// The disclaimer text version the window asks to accept
+    /// ([`ni_engine::DISCLAIMER_VERSION`]).
+    pub disclaimer_version: &'static str,
 }
 
 pub fn catalog() -> AppCatalog {
     AppCatalog {
         engine: ni_engine::codes::catalog(),
         app_failures: APP_FAILURES.to_vec(),
+        disclaimer_version: ni_engine::DISCLAIMER_VERSION,
     }
 }
 

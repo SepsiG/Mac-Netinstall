@@ -7,6 +7,8 @@
   import InterfacePicker from "./components/InterfacePicker.svelte";
   import LogPanel from "./components/LogPanel.svelte";
   import PermissionsDialog from "./components/PermissionsDialog.svelte";
+  import DisclaimerDialog from "./components/DisclaimerDialog.svelte";
+  import codes from "./lib/codes.json";
   import ProfileEditor from "./components/ProfileEditor.svelte";
   import SettingsDialog from "./components/SettingsDialog.svelte";
   import { initDialogSizes } from "./lib/dialogSizes";
@@ -43,6 +45,8 @@
   let editing = $state<{ profile: Profile | null } | null>(null);
   let settingsOpen = $state(false);
   let quitAsk = $state<number | null>(null);
+  /** The disclaimer is shown (Start waits for it). */
+  let disclaimerAsk = $state(false);
   /** Devices being prepared or flashed when Stop was pressed. */
   let stopAsk = $state<string[] | null>(null);
   /** Start was pressed for the current choice (findings turn red). */
@@ -250,6 +254,12 @@
     attempted = true;
     const req = request();
     if (!req) return;
+    // Nothing is started (or sent to a device) before the disclaimer of
+    // this version is accepted; the backend refuses too.
+    if (settings?.disclaimer_accepted_version !== codes.disclaimer_version) {
+      disclaimerAsk = true;
+      return;
+    }
     busy = true;
     // The full check again right before starting (ports, downloads).
     const mine = ++checkSeq;
@@ -265,6 +275,14 @@
     const info = await attempt(() => backend.start(req));
     if (info && settings) engine.cooldownSecs = settings.cooldown_secs;
     busy = false;
+  }
+
+  async function disclaimerAccepted() {
+    disclaimerAsk = false;
+    const stored = await attempt(() => backend.acceptDisclaimer());
+    if (!stored) return;
+    settings = stored;
+    await startStop();
   }
 
   async function stop() {
@@ -445,6 +463,10 @@
     onclose={settingsClosed}
     onpermissions={() => (permissions = { refused: false })}
   />
+{/if}
+
+{#if disclaimerAsk}
+  <DisclaimerDialog onaccept={disclaimerAccepted} oncancel={() => (disclaimerAsk = false)} />
 {/if}
 
 {#if permissions}

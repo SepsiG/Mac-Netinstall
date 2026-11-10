@@ -17,6 +17,8 @@ export interface SettingsForm {
   max_parallel: string;
   cooldown_secs: string;
   download_timeout_min: string;
+  /** Keep downloaded RouterOS files after quitting. */
+  keep_downloads: boolean;
 }
 
 export type FieldError = { key: string; values?: Record<string, number | string> };
@@ -30,6 +32,7 @@ export function toSettingsForm(s: Settings): SettingsForm {
     max_parallel: String(s.max_parallel),
     cooldown_secs: String(s.cooldown_secs),
     download_timeout_min: String(Math.round(s.download_timeout_secs / 60)),
+    keep_downloads: s.keep_downloads ?? false,
   };
 }
 
@@ -97,5 +100,6 @@ export function fromSettingsForm(f: SettingsForm, base: Settings): Settings {
     max_parallel: Number(f.max_parallel.trim()),
     cooldown_secs: Number(f.cooldown_secs.trim()),
     download_timeout_secs: Number(f.download_timeout_min.trim()) * 60,
+    keep_downloads: f.keep_downloads,
   };
 }

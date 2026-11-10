@@ -1,15 +1,18 @@
 <script lang="ts">
-  // Create or edit a profile: version (channel or exact), extra packages
+  // Create or edit a profile: where the packages come from (downloaded
+  // for a version from the picker, or local .npk files), extra packages
   // from the published list, configuration (keep, default, empty or a
-  // picked script), what to do afterwards, and the advanced options of
-  // the official tool (mode script, remove branding, license key).
+  // picked script), what to do afterwards, and the advanced options
+  // (mode script, remove branding, license key, below-minimum installs).
   import { untrack } from "svelte";
   import { toFailure } from "../lib/api";
   import { useBackend } from "../lib/context";
   import { locale, t } from "../lib/i18n";
   import { describe, hint } from "../lib/messages";
-  import { ARCHES, CONFIG_CHOICES, formErrors, fromForm, toForm } from "../lib/profile";
-  import { AFTER_INSTALL, CHANNELS, type Failure, type Profile } from "../lib/types";
+  import { ARCHES, CONFIG_CHOICES, formErrors, formSpec, fromForm, toForm } from "../lib/profile";
+  import { AFTER_INSTALL, type Failure, type PackageFileView, type Profile } from "../lib/types";
+  import { supportsModeScript } from "../lib/versions";
+  import VersionPicker from "./VersionPicker.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import Modal from "./Modal.svelte";
 
@@ -42,7 +45,9 @@
   const TYPING_PAUSE_MS = 300;
 
   const errors = $derived(formErrors(form));
-  const spec = $derived(form.useChannel ? form.channel : form.exact.trim());
+  const spec = $derived(formSpec(form));
+  const local = $derived(form.source === "local");
+  const modeScriptAllowed = $derived(local || supportsModeScript(spec));
   // Selected packages stay listed even if this version/arch lacks them.
   const choices = $derived([...new Set([...(available ?? []), ...form.packages])].sort());
 
@@ -51,8 +56,8 @@
   $effect(() => {
     const version = spec;
     const a = arch;
-    const typed = !form.useChannel;
-    if (typed && errors.version) return;
+    const typed = form.custom;
+    if (local || (typed && errors.version)) return;
     const mine = ++request;
     available = null;
     listError = null;
@@ -109,6 +114,22 @@
     }
   }
 
+  async function pickPackages() {
+    try {
+      const files: PackageFileView[] = await backend.pickPackages();
+      for (const f of files) {
+        form.localInfo[f.name] = f;
+        if (!form.localPackages.includes(f.name)) form.localPackages = [...form.localPackages, f.name];
+      }
+    } catch (e) {
+      saveError = toFailure(e);
+    }
+  }
+
+  function removePackage(name: string) {
+    form.localPackages = form.localPackages.filter((n) => n !== name);
+  }
+
   async function pickKey() {
     try {
       const k = await backend.pickLicenseKey();
@@ -157,54 +178,80 @@
       {#if tried && errors.name}<div class="field-error" role="alert">{$t(errors.name)}</div>{/if}
     </div>
 
-    <span class="label">{$t("profile.version")}</span>
+    <span class="label">{$t("profile.source")}</span>
     <div class="stack">
       <label class="row">
-        <input type="radio" name="vmode" checked={form.useChannel} onchange={() => (form.useChannel = true)} />
-        {$t("profile.channel")}
-        <select bind:value={form.channel} disabled={!form.useChannel} aria-label={$t("profile.channel")}>
-          {#each CHANNELS as c (c)}<option value={c}>{$t(`channel.${c}`)}</option>{/each}
-        </select>
+        <input type="radio" name="source" checked={!local} onchange={() => (form.source = "download")} />
+        {$t("profile.source_download")}
       </label>
       <label class="row">
-        <input type="radio" name="vmode" checked={!form.useChannel} onchange={() => (form.useChannel = false)} />
-        {$t("profile.exact")}
-        <input
-          type="text"
-          bind:value={form.exact}
-          disabled={form.useChannel}
-          placeholder={$t("profile.exact_placeholder")}
-          aria-label={$t("profile.exact")}
-          size="12"
-        />
+        <input type="radio" name="source" checked={local} onchange={() => (form.source = "local")} />
+        {$t("profile.source_local")}
       </label>
-      {#if tried && errors.version}<div class="field-error" role="alert">{$t(errors.version)}</div>{/if}
     </div>
 
-    <span class="label">{$t("profile.packages")}</span>
-    <div class="stack">
-      <label class="row secondary">
-        {$t("profile.packages_for")}
-        <select bind:value={arch} aria-label={$t("profile.packages_for")} aria-describedby="packages-for-hint">
-          {#each ARCHES as a (a)}<option value={a}>{a}</option>{/each}
-        </select>
-      </label>
-      <span id="packages-for-hint" class="secondary hint">{$t("profile.packages_for_hint")}</span>
-      <div class="packages">
-        {#if available === null}
-          <span class="secondary">{$t("profile.packages_loading")}</span>
-        {:else if choices.length === 0}
-          <span class="secondary">{$t("profile.packages_none")}</span>
-        {/if}
-        {#each choices as name (name)}
-          <label class="row">
-            <input type="checkbox" checked={form.packages.includes(name)} onchange={(e) => toggle(name, e.currentTarget.checked)} />
-            {name}
-          </label>
-        {/each}
+    {#if !local}
+      <span class="label">{$t("profile.version")}</span>
+      <VersionPicker
+        bind:value={form.version}
+        bind:custom={form.custom}
+        bind:exact={form.exact}
+        error={tried || form.exact.trim() !== "" ? errors.version : undefined}
+      />
+
+      <span class="label">{$t("profile.packages")}</span>
+      <div class="stack">
+        <label class="row secondary">
+          {$t("profile.packages_for")}
+          <select bind:value={arch} aria-label={$t("profile.packages_for")} aria-describedby="packages-for-hint">
+            {#each ARCHES as a (a)}<option value={a}>{a}</option>{/each}
+          </select>
+        </label>
+        <span id="packages-for-hint" class="secondary hint">{$t("profile.packages_for_hint")}</span>
+        <div class="packages">
+          {#if available === null}
+            <span class="secondary">{$t("profile.packages_loading")}</span>
+          {:else if choices.length === 0}
+            <span class="secondary">{$t("profile.packages_none")}</span>
+          {/if}
+          {#each choices as name (name)}
+            <label class="row">
+              <input type="checkbox" checked={form.packages.includes(name)} onchange={(e) => toggle(name, e.currentTarget.checked)} />
+              {name}
+            </label>
+          {/each}
+        </div>
+        {#if listError}<div class="field-error">{describe($locale, listError)}</div>{/if}
       </div>
-      {#if listError}<div class="field-error">{describe($locale, listError)}</div>{/if}
-    </div>
+    {:else}
+      <span class="label">{$t("profile.local_files")}</span>
+      <div class="stack">
+        <div class="row">
+          <button type="button" class="small" onclick={pickPackages}>{$t("profile.local_choose")}</button>
+        </div>
+        {#if form.localPackages.length === 0}
+          <span class="secondary">{$t("profile.local_none")}</span>
+        {/if}
+        <ul class="local-list">
+          {#each form.localPackages as name (name)}
+            {@const info = form.localInfo[name]}
+            <li class="row">
+              <span class="mono">{name}</span>
+              {#if info}
+                <span class="secondary">
+                  {info.package} · {info.arch} · {info.version ?? $t("profile.local_version_unknown")}
+                </span>
+              {/if}
+              <button type="button" class="small" aria-label={$t("profile.local_remove", { name })} onclick={() => removePackage(name)}
+                >×</button
+              >
+            </li>
+          {/each}
+        </ul>
+        {#if tried && errors.local}<div class="field-error" role="alert">{$t(errors.local)}</div>{/if}
+        <div class="help">{$t("profile.local_help")}</div>
+      </div>
+    {/if}
 
     <span class="label">{$t("profile.config")}</span>
     <div class="stack">
@@ -238,7 +285,11 @@
     <span class="label">{$t("profile.advanced")}</span>
     <div class="stack">
       <label class="row">
-        <input type="checkbox" bind:checked={form.useModeScript} disabled={form.config === "keep" && !form.useModeScript} />
+        <input
+          type="checkbox"
+          bind:checked={form.useModeScript}
+          disabled={(form.config === "keep" || !modeScriptAllowed) && !form.useModeScript}
+        />
         {$t("profile.mode_script")}
       </label>
       <div class="help indent">{$t("profile.mode_script_help")}</div>
@@ -248,7 +299,7 @@
           <span class={form.modeScript ? "mono" : "secondary"}>{form.modeScript ?? $t("profile.no_script")}</span>
         </div>
       {/if}
-      {#if errors.modeScript && (tried || errors.modeScript === "profile.err_mode_keep")}
+      {#if errors.modeScript && (tried || errors.modeScript !== "profile.err_mode_script")}
         <div class="field-error" role="alert">{$t(errors.modeScript)}</div>
       {/if}
       <label class="row">
@@ -267,6 +318,11 @@
         {/if}
       </div>
       <div class="help">{$t("profile.license_key_help")}</div>
+      <label class="row">
+        <input type="checkbox" bind:checked={form.allowBelowMinimum} />
+        {$t("profile.allow_below_minimum")}
+      </label>
+      <div class="help indent">{$t("profile.allow_below_minimum_help")}</div>
     </div>
   </form>
   {#if saveError}
@@ -352,6 +408,14 @@
     border-radius: 6px;
     background: var(--panel-alt);
   }
+  .local-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
   .field-error,
   .save-error {
     color: var(--danger);
@@ -362,9 +426,6 @@
   }
   input[type="text"] {
     width: 100%;
-  }
-  .row input[type="text"] {
-    width: auto;
   }
   .spacer {
     flex: 1;

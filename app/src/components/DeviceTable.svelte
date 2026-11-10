@@ -115,6 +115,7 @@
           </td>
           <td>
             {d.version ?? ""}
+            {#if d.source}<div class="config secondary">{$t(`devices.source_${d.source}`)}</div>{/if}
             {#if d.config}<div class="config secondary">{$t(`devices.config_${d.config}`)}</div>{/if}
           </td>
           <td class="actions-col">

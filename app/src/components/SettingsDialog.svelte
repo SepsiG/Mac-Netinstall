@@ -5,7 +5,8 @@
   import { LANGS, locale, t } from "../lib/i18n";
   import { describe, hint } from "../lib/messages";
   import { fromSettingsForm, settingsErrors, toSettingsForm, type FieldError } from "../lib/settingsForm";
-  import type { Failure, InterfaceView, Settings } from "../lib/types";
+  import type { Failure, InterfaceView, Link, Settings } from "../lib/types";
+  import { APP_VERSION } from "../lib/version";
   import CachePanel from "./CachePanel.svelte";
   import Modal from "./Modal.svelte";
 
@@ -37,6 +38,14 @@
   const errors = $derived(settingsErrors(form, subnet));
   // Open when a value in it was changed from the default.
   const advancedOpen = base.pool_start !== null || base.download_timeout_secs !== 30 * 60;
+
+  async function open(link: Link) {
+    try {
+      await backend.openLink(link);
+    } catch (e) {
+      error = toFailure(e);
+    }
+  }
 
   async function save() {
     tried = true;
@@ -115,7 +124,19 @@
       </div>
     </details>
 
-    <CachePanel />
+    <CachePanel bind:keepDownloads={form.keep_downloads} />
+
+    <section class="about" aria-labelledby="about-title">
+      <h3 id="about-title">{$t("about.title")}</h3>
+      <p>{$t("about.version", { version: APP_VERSION })} · {$t("about.license")}</p>
+      <p class="help">{$t("disclaimer.text")}</p>
+      <p class="help">{$t("disclaimer.trademarks")}</p>
+      <div class="row">
+        <button type="button" class="small" onclick={() => open("repository")}>{$t("about.repository")}</button>
+        <button type="button" class="small" onclick={() => open("disclaimer")}>{$t("about.disclaimer")}</button>
+        <button type="button" class="small" onclick={() => open("license")}>{$t("about.license_link")}</button>
+      </div>
+    </section>
   </form>
   {#if error}
     <div class="save-error" role="alert">
@@ -142,8 +163,13 @@
     color: var(--secondary);
     padding-top: 3px;
   }
-  .advanced {
+  .advanced,
+  .about {
     grid-column: 1 / -1;
+  }
+  .about p {
+    margin: 4px 0;
+    white-space: normal;
   }
   .advanced summary {
     cursor: default;

@@ -20,6 +20,18 @@ describe("messages", () => {
     expect(text("en", { code: "brand_new" })).toBe("Error: brand_new");
   });
 
+  it("explains the new safety refusals", () => {
+    expect(text("en", { code: "version_below_minimum", params: { version: "6.49.23", min_os: "7.1" } })).toMatch(
+      /6\.49\.23 is older than this device's minimum version 7\.1/,
+    );
+    expect(text("hu", { code: "package_not_published", params: { version: "6.30.4", arch: "mmips" } })).toBe(
+      "A RouterOS 6.30.4 nem jelent meg mmips architektúrára. Válassz újabb verziót. Semmi sem települt.",
+    );
+    expect(text("en", { code: "disclaimer_not_accepted", params: { version: "1" } })).toBe(
+      "Accept the disclaimer before starting.",
+    );
+  });
+
   it("has hints for actionable codes only", () => {
     expect(hint("en", "port_in_use")).toContain("Internet Sharing");
     expect(hint("hu", "no_ipv4")).toContain("Rendszerbeállítások");
