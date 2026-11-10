@@ -98,7 +98,7 @@ pub type Releases = Vec<(Version, Option<String>)>;
 
 /// The releases on one changelog page, in page order (newest first), with
 /// their dates: every `data-changelog-version="X"` whose `X` is a release
-/// ([`release_shape`]) this app accepts (v6 from 6.30, v7+). Never panics;
+/// (see `release_shape`) this app accepts (v6 from 6.30, v7+). Never panics;
 /// duplicates and anything past [`MAX_VERSIONS`] are dropped.
 pub fn parse_changelogs(html: &str) -> Releases {
     const MARK: &str = "data-changelog-version=\"";
