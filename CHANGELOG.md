@@ -7,6 +7,23 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+### Added
+
+- Package architecture check before formatting: every package of an install
+  is checked against the architecture the device reports in its Netinstall
+  hello (the RouterOS package names the architecture it is built for inside
+  the file). A package built for another architecture fails the device with
+  a clear message before anything is offered to it, so the device is never
+  formatted for packages it cannot run.
+- Automatic architecture resolution: when a device reports an architecture
+  name the app does not know (or its usual choice does not fit), the app
+  looks at the `routeros` package of each candidate architecture (those of
+  the boot kernel the device asked for) and installs the one built for it,
+  logging the choice. If none fits, the device fails with the details needed
+  to report the model on GitHub Issues.
+- The application log records every field of a device's Netinstall hello, so
+  an unknown model can be diagnosed from the log.
+
 ### Fixed
 
 - Devices that report plain `mips` in their Netinstall hello (seen on a
@@ -18,6 +35,11 @@ The release workflow takes a version's notes from its section below.
 - Profile editor: the architecture next to the extra-package list now says it
   only selects which list is shown; packages are installed for the device's
   own architecture.
+
+### Hardware validation
+
+- MikroTik CRS125-24G-1S-2HnD (`mipsbe`, hello architecture `mips`),
+  RouterOS 7.25.1: installed and rebooted with the fixed build. ✓
 
 ## [0.1.1] - 2026-11-09
 

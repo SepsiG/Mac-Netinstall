@@ -5,7 +5,7 @@
 > **Állapot:** valódi hardveren, egy **hEX RB750Gr3**-on (`mmips`, RouterOS 7.25.1)
 > kipróbálva: mind a négy konfigurációs mód (alapértelmezett, üres, egyéni szkript,
 > meglévő megtartása) és az automatikus ismétlés működik; egy **hAP ac²** (`arm`) is
-> felment egy extra csomaggal. A többi architektúrán (arm64, mipsbe, ppc, tile), a módszkripttel, a márkajelzés eltávolításával, a licenckulccsal és a
+> felment egy extra csomaggal, és egy **CRS125-24G-1S-2HnD** (`mipsbe`) is. A többi architektúrán (arm64, smips, ppc, tile), a módszkripttel, a márkajelzés eltávolításával, a licenckulccsal és a
 > telepítés utáni leállítással **még nem tesztelt** hardveren. Ilyen típusoknál tarts kéznél
 > tartalékot: olyan eszközt, amelyet szükség esetén a MikroTik hivatalos Netinstalljával
 > (Windows/Linux) helyre tudsz állítani.
@@ -364,6 +364,8 @@ A hibák az ablak tetején, sávban is megjelennek; a × (**Bezárás**) gombbal
 | **Az eszköz abbahagyta a fogadást, mielőtt minden fájlt megkapott volna (… fájl kimaradt): a telepítés nem teljes.** | Telepítsd újra. |
 | **… megkapta az összes fájlt, de nem erősítette meg, hogy készen áll; a telepítést ennek ellenére lezártuk. Ellenőrizd, hogy az eszköz rendben elindul-e.** | Figyelmeztetés: a telepítés lezárult, de az eszköz nem igazolta vissza. Nézd meg, elindul-e rendben; ha nem, telepítsd újra. Ilyenkor kérlek, küldj naplót. |
 | **Ez az eszköz a RouterOS … kernelével indult, ezért nem telepíthető rá ez a verzió: …. Kapcsold ki és be, hogy újra hálózatról induljon.** | Profilt (verziót) váltottál, miután az eszköz elindult. Indítsd újra Etherboot módban. |
+| **A(z) … csomag „…” architektúrára készült, de ez az eszköz „…” architektúrát jelez. Semmi sem települt, és az eszköz formázása sem történt meg.** | Egy csomag nem illik az eszköz architektúrájához (minden csomag tartalmazza, milyen architektúrára készült; az alkalmazás a telepítés előtt mindet ellenőrzi). Az eszközhöz nem nyúlt. Nézd meg, hogy a megfelelő eszköz van-e csatlakoztatva; ha ismétlődik, jelezd (lásd [Visszajelzés](#12-visszajelzés)). |
+| **Ennek az eszköznek az architektúrájához („…”) nem található RouterOS-csomag … Kérlek, jelezd a hibát …** | Az eszköz olyan architektúrát jelez, amelyhez az alkalmazás egyik RouterOS-letöltést sem tudta hozzárendelni. Semmi sem települt. Nyiss egy [GitHub-hibajegyet](https://github.com/SepsiG/Mac-Netinstall/issues) a teljes üzenettel (benne van a típus és az eszköz bejelentkező üzenete) és az exportált naplóval. |
 | **A macOS letiltja az alkalmazás helyi hálózati hozzáférését, ezért az eszközök nem kapnak választ.** (pirossal, az állapotsorban és az eszköz sorában) | Nincs meg a Helyi hálózat engedély, vagy még nem válaszoltál a macOS kérdésére. Kattints a **Rendszerbeállítások megnyitása** gombra (Adatvédelem és biztonság → Helyi hálózat), kapcsold be a Mac Netinstallt, majd indítsd újra az eszközt Etherboot módban. Ellenőrzésképp az engedélyek ablaka is megnyílik egyszer. |
 | **Sikertelen küldés (Netinstall, …×).** | A küldés más okból nem sikerült (pl. eltűnt az adapter). Ha ismétlődik, ellenőrizd a kábelt, az adaptert és az engedélyeket (**Beállítások → Engedélyek ellenőrzése**). |
 | **A motor váratlanul leállt. Indítsd újra a Mac Netinstallt.** | Indítsd újra az alkalmazást, és küldd el a naplófájlt. |
@@ -408,8 +410,8 @@ megszakít. Minden opció: `ni-cli --help` és `ni-cli <parancs> --help`.
 
 - **Valódi hardveren csak részben kipróbálva.** Eddig egy hEX RB750Gr3-on (`mmips`)
   működött az alapértelmezett, az üres, a szkriptes és a megtartó konfigurációs mód, valamint
-  az automatikus ismétlés, valamint egy hAP ac²-n (`arm`) egy extra csomaggal is. Még nem
-  tesztelt: az arm64, mipsbe, ppc és tile (elindul-e a boot kernelük), a módszkript, a márkajelzés eltávolítása, a licenckulcs és a telepítés utáni
+  az automatikus ismétlés, egy hAP ac²-n (`arm`) egy extra csomaggal, és egy
+  CRS125-24G-1S-2HnD-n (`mipsbe`) is. Még nem tesztelt: az arm64, smips, ppc és tile (elindul-e a boot kernelük), a módszkript, a márkajelzés eltávolítása, a licenckulcs és a telepítés utáni
   leállítás. Nem tesztelt típusoknál tartsd kéznél a hivatalos Netinstallt tartalékként.
   A nyitott pontok listája:
   [roadmap](superpowers/plans/2026-11-06-00-roadmap.md).

@@ -4,8 +4,9 @@
 
 > **Status:** validated on real hardware with a **hEX RB750Gr3** (`mmips`, RouterOS 7.25.1):
 > all four configuration modes (default, empty, custom script, keep existing) and auto-repeat
-> work; a **hAP ac²** (`arm`) was also installed with an extra package. Other architectures
-> (arm64, mipsbe, ppc, tile), the mode script, remove
+> work; a **hAP ac²** (`arm`) was also installed with an extra package, and a
+> **CRS125-24G-1S-2HnD** (`mipsbe`). Other architectures
+> (arm64, smips, ppc, tile), the mode script, remove
 > branding, the license key and the shutdown variant have **not yet been tested** on
 > hardware. For such models keep a fallback: a device you can recover with MikroTik's
 > official Netinstall (Windows/Linux) if needed.
@@ -349,6 +350,8 @@ Errors also appear in a bar at the top of the window; close it with × (**Dismis
 | **The device stopped receiving with … still to send: the install is incomplete.** | Install it again. |
 | **… received every file but never confirmed it was ready; the install was finished anyway. Check that the device starts up.** | A warning: the install was closed, but the device did not confirm it. Check that it boots properly; if not, install again. Please send a log in this case. |
 | **This device booted the RouterOS … kernel, so it cannot install …. Power it off and on to netboot again.** | You changed the profile (version) after the device booted. Boot it into Etherboot mode again. |
+| **… is built for “…”, but this device reports “…”. Nothing was installed and the device was not formatted.** | A package does not match the device's architecture (every package names the architecture it is built for; the app checks them all before it starts). The device is untouched. Check that the right model is connected; if it keeps happening, report it (see [Feedback](#12-feedback)). |
+| **No RouterOS package is built for this device's architecture “…” … Please report it …** | The device reports an architecture the app could not match to any RouterOS download. Nothing was installed. Please open a [GitHub issue](https://github.com/SepsiG/Mac-Netinstall/issues) with the whole message (it lists the model and the device's hello) and the exported log. |
 | **macOS blocks this app's local network access: the devices get no answer.** (red, in the status line and in the device's row) | The Local Network permission is missing or the macOS question is still unanswered. Click **Open System Settings** (Privacy & Security → Local Network), turn Mac Netinstall on, then netboot the device again. The permissions sheet also opens once to check it. |
 | **Sending failed (Netinstall, …×).** | A send failed for another reason (e.g. the adapter went away). If it keeps happening, check the cable and the adapter, and the permissions (**Settings → Check permissions**). |
 | **The engine stopped unexpectedly. Restart Mac Netinstall.** | Restart the app and send the log file. |
@@ -391,8 +394,9 @@ seconds aborts. All options: `ni-cli --help` and `ni-cli <command> --help`.
 ## 11. Known limitations
 
 - **Only partly validated on real hardware.** Tested so far: a hEX RB750Gr3 (`mmips`) with
-  the default, empty, script and keep configuration modes and auto-repeat, and a hAP ac²
-  (`arm`) with an extra package. Not yet tested: arm64, mipsbe, ppc and tile (whether their
+  the default, empty, script and keep configuration modes and auto-repeat, a hAP ac²
+  (`arm`) with an extra package, and a CRS125-24G-1S-2HnD (`mipsbe`). Not yet tested: arm64,
+  smips, ppc and tile (whether their
   boot kernels boot), the mode script, remove
   branding, the license key and the shutdown variant. Keep the official Netinstall as a
   fallback for untested models. The open points are listed in the

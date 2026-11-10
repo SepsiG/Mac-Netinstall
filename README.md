@@ -7,8 +7,8 @@ Not affiliated with MikroTik.
 
 Status: validated on a MikroTik hEX RB750Gr3 (`mmips`) with all four
 configuration modes (default, empty, script, keep) and auto-repeat, and on a
-hAP ac² (`arm`) with an extra package; arm64, mipsbe, ppc and tile are not yet
-tested on hardware (see [CHANGELOG.md](CHANGELOG.md)). See `docs/superpowers/specs/` for the design.
+hAP ac² (`arm`) with an extra package, and on a CRS125-24G-1S-2HnD (`mipsbe`);
+arm64, smips, ppc and tile are not yet tested on hardware (see [CHANGELOG.md](CHANGELOG.md)). See `docs/superpowers/specs/` for the design.
 
 **User guide:** [English](docs/user-guide.en.md) · [Magyar](docs/user-guide.hu.md)
 — installing, preparing the Mac, profiles, flashing, troubleshooting.
