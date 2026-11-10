@@ -527,7 +527,7 @@
   "update.skip": "Ezt a verziót kihagyom",
   "update.downloading": "A Mac Netinstall {version} letöltése… {progress}",
   "update.downloaded": "Letöltve és ellenőrizve: {file} (a Letöltések mappában).",
-  "update.install_hint": "Húzd a Mac Netinstall-t az Alkalmazások mappába, a régit cseréld le; utána indítsd újra az appot. Az első indításnál újra kérheti a Helyi hálózat engedélyt.",
+  "update.install_hint": "Húzd a Mac Netinstall-t az Alkalmazások mappába, a régit cseréld le; utána indítsd újra az appot. Az első indításnál a macOS Gatekeeper ellenőrzi az új appot (nincs hitelesítve, ezért a Rendszerbeállítások → Adatvédelem és biztonság oldalon újra szükség lehet az „Open Anyway” gombra), és újra kérheti a Helyi hálózat engedélyt.",
   "update.not_opened": "Nyisd meg a Letöltések mappából.",
   "update.notes_title": "A(z) {version} verzió újdonságai",
   "update.notes_empty": "Ehhez a kiadáshoz nincs leírás.",
@@ -542,5 +542,9 @@
   "about.up_to_date": "A Mac Netinstall {version} a legfrissebb verzió.",
   "about.update_available": "Új verzió érhető el: {version}",
   "about.skipped": "Kihagyott verzió: {version}",
-  "about.skipped_reset": "Jelezze újra"
+  "about.skipped_reset": "Jelezze újra",
+
+  "code.update_open_busy": "Az új verziót akkor nyitjuk meg, amikor egyetlen eszköz sincs előkészítés vagy telepítés alatt.",
+  "update.open": "Megnyitás",
+  "about.check_again_in": "Újra keresés {seconds} mp múlva"
 }

@@ -292,11 +292,35 @@ describe("SettingsDialog updates", () => {
         .mockResolvedValueOnce(structuredClone(AVAILABLE))
         .mockRejectedValueOnce({ code: "update_check_failed", params: { problem: "network" } }),
     });
-    open(backend);
-    await userEvent.click(within(about()).getByRole("button", { name: "Check for updates now" }));
-    expect(await within(about()).findByText("New version available: 0.1.3")).toBeInTheDocument();
-    await userEvent.click(within(about()).getByRole("button", { name: "Check for updates now" }));
-    expect(await screen.findByText("Could not check for updates: no connection to GitHub.")).toBeInTheDocument();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      open(backend);
+      await userEvent.click(within(about()).getByRole("button", { name: "Check for updates now" }));
+      expect(await within(about()).findByText("New version available: 0.1.3")).toBeInTheDocument();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await userEvent.click(within(about()).getByRole("button", { name: "Check for updates now" }));
+      expect(await screen.findByText("Could not check for updates: no connection to GitHub.")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits a minute between manual checks", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { backend } = open();
+      const button = within(about()).getByRole("button", { name: "Check for updates now" });
+      await userEvent.click(button);
+      expect(backend.checkForUpdates).toHaveBeenCalledTimes(1);
+      const again = await within(about()).findByRole("button", { name: /Check again in 60 s/ });
+      expect(again).toBeDisabled();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(within(about()).getByRole("button", { name: /Check again in 3\d s/ })).toBeDisabled();
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await within(about()).findByRole("button", { name: "Check for updates now" })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows a skipped version and announces it again on request", async () => {

@@ -47,12 +47,29 @@
   let update = $state<UpdateView | null>(null);
   let checked = $state(false);
   let checking = $state(false);
+  /** Seconds until the next manual check is allowed (a minute apart). */
+  let cooldown = $state(0);
+  const COOLDOWN_SECS = 60;
+  let cooldownTimer: ReturnType<typeof setInterval> | undefined;
+
+  function startCooldown() {
+    cooldown = COOLDOWN_SECS;
+    clearInterval(cooldownTimer);
+    cooldownTimer = setInterval(() => {
+      cooldown -= 1;
+      if (cooldown <= 0) {
+        cooldown = 0;
+        clearInterval(cooldownTimer);
+      }
+    }, 1000);
+  }
 
   onMount(() => {
     backend.updateStatus().then(
       (v) => (update = v),
       () => {},
     );
+    return () => clearInterval(cooldownTimer);
   });
 
   function updated(v: UpdateView) {
@@ -63,6 +80,7 @@
   async function checkNow() {
     checking = true;
     error = null;
+    startCooldown();
     try {
       updated(await backend.checkForUpdates(true));
       checked = true;
@@ -180,8 +198,12 @@
       </label>
       <p class="help" id="s-updates-help">{$t("about.check_updates_help")}</p>
       <div class="row">
-        <button type="button" class="small" onclick={checkNow} disabled={checking}>
-          {checking ? $t("about.checking") : $t("about.check_now")}
+        <button type="button" class="small" onclick={checkNow} disabled={checking || cooldown > 0}>
+          {checking
+            ? $t("about.checking")
+            : cooldown > 0
+              ? $t("about.check_again_in", { seconds: cooldown })
+              : $t("about.check_now")}
         </button>
         <span class="help">
           {update?.last_checked_unix

@@ -2,10 +2,13 @@
   // The update notice at the top of the main window: a newer release is
   // on GitHub. Non-modal; the release notes open in a sheet. The download
   // (verified against the published SHA-256) runs in Rust, which also
-  // opens the DMG; the window never handles a URL.
+  // places the verified DMG in Downloads; the window never handles a URL
+  // or a path.
   //
   // `hidden` hides it while devices are being prepared or flashed; it
-  // stays mounted, so a running download keeps its progress.
+  // stays mounted, so a running download keeps its progress. The DMG is
+  // opened (once, automatically) only while it is not hidden, and the
+  // release notes sheet closes while hidden.
   import { onMount } from "svelte";
   import { toFailure } from "../lib/api";
   import { useBackend } from "../lib/context";
@@ -36,6 +39,9 @@
   let progress = $state<UpdateProgress | null>(null);
   let done = $state<DownloadedView | null>(null);
   let error = $state<Failure | null>(null);
+  /** The DMG was opened automatically (or that failed). */
+  let autoOpened = $state(false);
+  let openFailed = $state(false);
 
   const version = $derived(update.latest?.version ?? "");
   const blocks = $derived(noteBlocks(update.latest?.notes ?? ""));
@@ -68,6 +74,8 @@
     error = null;
     done = null;
     progress = null;
+    autoOpened = false;
+    openFailed = false;
     downloading = true;
     try {
       done = await backend.downloadUpdate();
@@ -77,6 +85,24 @@
       downloading = false;
     }
   }
+
+  async function openDmg() {
+    try {
+      await backend.openDownloadedUpdate();
+      openFailed = false;
+    } catch (e) {
+      openFailed = true;
+      error = toFailure(e);
+    }
+  }
+
+  // Open the verified DMG once nothing is being flashed.
+  $effect(() => {
+    if (done && !hidden && !autoOpened) {
+      autoOpened = true;
+      void openDmg();
+    }
+  });
 
   async function skip() {
     try {
@@ -100,7 +126,7 @@
     {#if done}
       <div>{$t("update.downloaded", { file: done.file_name })}</div>
       <div class="secondary">{$t("update.install_hint")}</div>
-      {#if !done.opened}<div class="secondary">{$t("update.not_opened")}</div>{/if}
+      {#if openFailed}<div class="secondary">{$t("update.not_opened")}</div>{/if}
     {:else if downloading}
       <div>{$t("update.downloading", { version, progress: progressText })}</div>
       {#if progress?.total}
@@ -122,13 +148,16 @@
       <button class="small primary" onclick={download}>{$t("update.download")}</button>
       <button class="small" onclick={skip}>{$t("update.skip")}</button>
     {/if}
+    {#if done}
+      <button class="small primary" onclick={openDmg}>{$t("update.open")}</button>
+    {/if}
     {#if !downloading}
       <button class="small" onclick={onlater}>{done ? $t("update.close") : $t("update.later")}</button>
     {/if}
   </div>
 </div>
 
-{#if notesOpen}
+{#if notesOpen && !hidden}
   <Modal title={$t("update.notes_title", { version })} onclose={() => (notesOpen = false)} id="release_notes" width={560} minWidth={360} minHeight={200}>
     <div class="notes">
       {#each blocks as b, i (i)}

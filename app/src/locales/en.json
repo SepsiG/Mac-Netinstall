@@ -527,7 +527,7 @@
   "update.skip": "Skip this version",
   "update.downloading": "Downloading Mac Netinstall {version}… {progress}",
   "update.downloaded": "Downloaded and verified: {file} (in Downloads).",
-  "update.install_hint": "Drag Mac Netinstall to the Applications folder and replace the old one, then restart the app. On the first launch macOS may ask for the Local Network permission again.",
+  "update.install_hint": "Drag Mac Netinstall to the Applications folder and replace the old one, then restart the app. On its first launch macOS Gatekeeper checks the new app (it is not notarized, so \"Open Anyway\" in System Settings → Privacy & Security may be needed again), and macOS may ask for the Local Network permission again.",
   "update.not_opened": "Open it from the Downloads folder.",
   "update.notes_title": "What's new in {version}",
   "update.notes_empty": "This release has no notes.",
@@ -542,5 +542,9 @@
   "about.up_to_date": "Mac Netinstall {version} is the latest version.",
   "about.update_available": "New version available: {version}",
   "about.skipped": "Skipped version: {version}",
-  "about.skipped_reset": "Announce it again"
+  "about.skipped_reset": "Announce it again",
+
+  "code.update_open_busy": "The new version is opened once no device is being prepared or flashed.",
+  "update.open": "Open",
+  "about.check_again_in": "Check again in {seconds} s"
 }
