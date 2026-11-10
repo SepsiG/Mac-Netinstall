@@ -108,6 +108,7 @@ async fn handle(mut stream: TcpStream, routes: Routes, log: Arc<Mutex<Vec<String
     let head = String::from_utf8_lossy(&head).into_owned();
     log.lock().unwrap().push(head.clone());
     let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let is_head = head.starts_with("HEAD ");
     let range = head.lines().find_map(|l| {
         let l = l.to_ascii_lowercase();
         let v = l.strip_prefix("range: bytes=-")?;
@@ -188,6 +189,8 @@ async fn handle(mut stream: TcpStream, routes: Routes, log: Arc<Mutex<Vec<String
         "HTTP/1.1 {status} X\r\nContent-Length: {declared}\r\n{extra}Connection: close\r\n\r\n"
     );
     let _ = stream.write_all(head.as_bytes()).await;
-    let _ = stream.write_all(&body).await;
+    if !is_head {
+        let _ = stream.write_all(&body).await;
+    }
     let _ = stream.shutdown().await;
 }

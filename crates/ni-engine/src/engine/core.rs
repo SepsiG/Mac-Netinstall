@@ -12,13 +12,14 @@ use crate::event::{
 use crate::gate::{Gate, Verdict};
 use crate::prepare::{
     boot_maps, ensure_kernels, prepare, resolve_kernels, served_kernel_version, version_mismatch,
+    Prepared, Target,
 };
-use crate::profile::spec_to_string;
 use crate::profile::Profile;
-use ni_assets::{Assets, Channel, KernelSet, Version, VersionSpec};
+use crate::profile::{follows_kernels, kernel_spec, spec_to_string};
+use ni_assets::{Assets, Channel, KernelSet, PkgArch, Version, VersionSpec};
 use ni_bootp::{BootpEvent, BootpHandle, IgnoreReason};
 use ni_net::{BroadcastTarget, RecvErrorAction, RecvErrorGuard};
-use ni_proto::{DeviceInfo, FailReason, Frame, InstallPlan, Mac, ServerSession};
+use ni_proto::{DeviceInfo, FailReason, Frame, Mac, ServerSession};
 use ni_tftp::{FileMap, TftpEvent};
 use std::collections::{BTreeMap, HashMap};
 use std::future::pending;
@@ -78,7 +79,7 @@ pub(crate) enum Internal {
         epoch: u64,
         mac: Mac,
         attempt: u64,
-        result: Result<(Version, InstallPlan), Failure>,
+        result: Result<Prepared, Failure>,
     },
     RunnerExited {
         epoch: u64,
@@ -151,6 +152,9 @@ pub(crate) struct Running {
     /// `local_network_denied` was reported and no send has worked since.
     pub local_network_denied: bool,
     pub next_prune: Instant,
+    /// Hello arches resolved from package contents this session
+    /// (lowercase hello arch → download arch; see `prepare::Prepared`).
+    pub arch_map: HashMap<String, PkgArch>,
 }
 
 impl Running {
@@ -380,7 +384,7 @@ impl Core {
             .cfg
             .profile
             .as_ref()
-            .map(|p| p.version.clone())
+            .map(kernel_spec)
             .unwrap_or(VersionSpec::Channel(Channel::Stable));
         run.kernel_gen += 1;
         let generation = run.kernel_gen;
@@ -480,7 +484,7 @@ impl Core {
             return Err(kernel_unknown(mac));
         };
         if let VersionSpec::Exact(v) = &profile.version {
-            if v != kernel {
+            if follows_kernels(&profile) && v != kernel {
                 return Err(version_mismatch(v, kernel));
             }
         }
@@ -631,7 +635,7 @@ impl Core {
         };
         // The same spec keeps the kernels, unless they could not be had:
         // then this is how to try again without a restart.
-        let refetch = run.kernel_spec.as_ref() != Some(&profile.version)
+        let refetch = run.kernel_spec.as_ref() != Some(&kernel_spec(&profile))
             || matches!(run.kernels, KernelState::Unavailable { .. });
         run.cfg.profile = Some(profile.clone());
         // Devices queued by auto-repeat take the new profile (and keep
@@ -849,6 +853,10 @@ impl Core {
         let (Some(profile), Some(info)) = (dev.using.clone(), dev.info.clone()) else {
             return;
         };
+        let known = run.arch_map.get(&arch_key(&info.arch)).copied();
+        let target = Target::new(info)
+            .with_boot_arch(dev.boot_arch)
+            .with_known(known);
         dev.queued = None;
         // The kernels it booted (those served now if it was not seen
         // netbooting, e.g. it said hello right after a restart). Neither
@@ -862,21 +870,18 @@ impl Core {
         let attempt = dev.attempt;
         // Known without resolving: the profile's spec is what the served
         // kernels were resolved from, and the device runs those.
-        let version = served
-            .filter(|v| kernel_spec.as_ref() == Some(&profile.version) && kernel_version == *v);
+        let version = served.filter(|v| {
+            follows_kernels(&profile)
+                && kernel_spec.as_ref() == Some(&profile.version)
+                && kernel_version == *v
+        });
         dev.version = version.clone();
         let shown = version.as_ref().map(|v| v.to_string());
         let config = Some(profile.config.name().to_string());
+        let source = Some(profile.package_source.as_str().to_string());
         run.tasks.retain(|t| !t.is_finished());
         run.tasks.push(tokio::spawn(async move {
-            let result = prepare(
-                &assets,
-                &profile,
-                version,
-                Some(&kernel_version),
-                &info.arch,
-            )
-            .await;
+            let result = prepare(&assets, &profile, version, Some(&kernel_version), &target).await;
             let _ = internal
                 .send(Internal::Prepared {
                     epoch,
@@ -891,16 +896,12 @@ impl Core {
             DeviceState::Preparing {
                 version: shown,
                 config,
+                source,
             },
         );
     }
 
-    fn prepared(
-        &mut self,
-        mac: Mac,
-        attempt: u64,
-        result: Result<(Version, InstallPlan), Failure>,
-    ) {
+    fn prepared(&mut self, mac: Mac, attempt: u64, result: Result<Prepared, Failure>) {
         let Some(run) = self.run.as_mut() else { return };
         let session_cfg = run.cfg.session.clone();
         let Some(dev) = run.devices.get_mut(&mac) else {
@@ -910,28 +911,44 @@ impl Core {
             return;
         }
         let mut newer = None;
+        let mut resolved = None;
         let state = match result {
             Err(f) => DeviceState::failed(f),
-            Ok((version, plan)) => {
+            Ok(Prepared {
+                version,
+                plan,
+                resolved: now_resolved,
+                ..
+            }) => {
                 let info = dev.info.clone().expect("prepared devices have said hello");
-                // The official tool does not enforce the device's minimum
-                // version either; say so and go on.
-                newer = Version::parse(&info.min_os)
-                    .ok()
-                    .filter(|min| *min > version)
-                    .map(|min| {
+                let shown = version.as_ref().map_or(String::new(), Version::to_string);
+                if let Some(arch) = now_resolved {
+                    run.arch_map.insert(arch_key(&info.arch), arch);
+                    resolved = Some(
+                        Failure::new("arch_resolved")
+                            .with("mac", mac)
+                            .with("arch", info.arch.trim())
+                            .with("download_arch", arch),
+                    );
+                }
+                // Below the device's minimum: `prepare` refused it unless
+                // the profile allows it; then say so and go on.
+                newer = version
+                    .as_ref()
+                    .filter(|v| v.below_minimum(&info.min_os))
+                    .map(|v| {
                         Failure::new("min_os_newer")
                             .with("mac", mac)
-                            .with("min_os", min)
-                            .with("version", &version)
+                            .with("min_os", info.min_os.trim())
+                            .with("version", v)
                     });
-                dev.version = Some(version.clone());
+                dev.version = version.clone();
                 match ServerSession::new(info, &plan, session_cfg, Instant::now()) {
                     Ok(session) => {
                         dev.session = Some(session);
                         dev.last_progress = None;
                         DeviceState::Flashing {
-                            version: version.to_string(),
+                            version: shown,
                             phase: "offering".into(),
                             sent: 0,
                             total: plan.total_bytes(),
@@ -941,6 +958,10 @@ impl Core {
                 }
             }
         };
+        if let Some(f) = resolved {
+            info!(%mac, "{f}");
+            self.emit(EngineEvent::Info(f));
+        }
         if let Some(f) = newer {
             self.warning(f);
         }
@@ -968,7 +989,20 @@ impl Core {
             return; // already discovered (waiting, flashing, failed, ...)
         }
         dev.info = Some(info.clone());
-        info!(%mac, model = %info.model, arch = %info.arch, "device discovered");
+        // The whole hello, so an unknown model can be diagnosed from the
+        // log file (the event carries only what the UI shows); the license
+        // key only as its length.
+        info!(
+            %mac,
+            model = %info.model,
+            arch = %info.arch,
+            license_id = %info.license_id,
+            license_key = %crate::prepare::redacted_key(&info.license_key),
+            min_os = %info.min_os,
+            extra = ?info.extra,
+            hello_dst = %info.hello_dst,
+            "device discovered"
+        );
         self.emit(EngineEvent::Discovered {
             mac,
             info: DeviceInfoView::from(&info),
@@ -1615,6 +1649,11 @@ impl Core {
             self.stop(io);
         }
     }
+}
+
+/// The key of a hello arch in `Running::arch_map`.
+fn arch_key(hello_arch: &str) -> String {
+    hello_arch.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]

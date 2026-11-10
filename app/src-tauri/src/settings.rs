@@ -36,7 +36,13 @@ pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
 /// Version 6 adds `onboarding_done` (the permissions sheet was gone
 /// through); older files get `false`, so it is shown once after the
 /// update too (those users were never asked up front either).
-pub const SETTINGS_VERSION: u32 = 6;
+///
+/// Version 7 adds `keep_downloads` (keep downloaded RouterOS files after
+/// quitting; `false` for a new install: downloads are deleted on quit, but
+/// older files, and any existing file whose value is unusable, get `true`,
+/// so an upgrade never wipes an offline cache) and `disclaimer_accepted_version` (the disclaimer text
+/// version the user accepted; older files get `null`, so it is asked once).
+pub const SETTINGS_VERSION: u32 = 7;
 
 /// Smallest main window (also `minWidth` / `minHeight` in tauri.conf.json).
 pub const MIN_WINDOW_WIDTH: u32 = 820;
@@ -150,6 +156,14 @@ pub struct Settings {
     /// The permissions sheet (Local Network, firewall) was gone through
     /// at least once; until then it opens at launch.
     pub onboarding_done: bool,
+    /// Keep downloaded RouterOS files (kernels, packages) after quitting.
+    /// `false` (default): they are deleted on quit and leftovers at the
+    /// next launch; registered local files and the small version lists
+    /// are always kept.
+    pub keep_downloads: bool,
+    /// The version of the disclaimer the user accepted
+    /// ([`ni_engine::DISCLAIMER_VERSION`]); starting needs the current one.
+    pub disclaimer_accepted_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -169,6 +183,8 @@ impl Default for Settings {
             dialog_sizes: Default::default(),
             log_panel_height: None,
             onboarding_done: false,
+            keep_downloads: false,
+            disclaimer_accepted_version: None,
         }
     }
 }
@@ -210,6 +226,13 @@ impl Settings {
             return Err(invalid("dialog_sizes"));
         }
         if self
+            .disclaimer_accepted_version
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.len() > 16)
+        {
+            return Err(invalid("disclaimer_accepted_version"));
+        }
+        if self
             .log_panel_height
             .is_some_and(|h| !valid_log_panel_height(h))
         {
@@ -227,7 +250,8 @@ impl Settings {
     /// `edit` (from the settings dialog) with what the app remembers by
     /// itself kept from `self`: the last interface, profile and
     /// auto-repeat, the window, the dialog sizes, the log panel's height
-    /// and whether onboarding was done. A dialog opened before
+    /// whether onboarding was done and the accepted disclaimer. A dialog
+    /// opened before
     /// a start must not undo what the start remembered.
     pub fn merged_edit(&self, edit: Settings) -> Settings {
         Settings {
@@ -238,6 +262,7 @@ impl Settings {
             dialog_sizes: self.dialog_sizes.clone(),
             log_panel_height: self.log_panel_height,
             onboarding_done: self.onboarding_done,
+            disclaimer_accepted_version: self.disclaimer_accepted_version.clone(),
             ..edit
         }
     }
@@ -258,6 +283,8 @@ const FIELDS: &[&str] = &[
     "dialog_sizes",
     "log_panel_height",
     "onboarding_done",
+    "keep_downloads",
+    "disclaimer_accepted_version",
 ];
 
 /// Set `field` of `s` from the file's JSON `obj`; `false` if it has the
@@ -304,6 +331,8 @@ fn set_field(
         "dialog_sizes" => get(obj, field, &mut s.dialog_sizes),
         "log_panel_height" => get(obj, field, &mut s.log_panel_height),
         "onboarding_done" => get(obj, field, &mut s.onboarding_done),
+        "keep_downloads" => get(obj, field, &mut s.keep_downloads),
+        "disclaimer_accepted_version" => get(obj, field, &mut s.disclaimer_accepted_version),
         _ => unreachable!("unknown settings field {field}"),
     }
 }
@@ -398,6 +427,9 @@ impl SettingsStore {
         let Ok(data) = std::fs::read(&self.path) else {
             return loaded;
         };
+        // An existing file is an existing user: never delete their
+        // downloads unless they turned that on (see `KEEP_DOWNLOADS_SINCE`).
+        loaded.settings.keep_downloads = true;
         let obj = match serde_json::from_slice::<serde_json::Value>(&data) {
             Ok(serde_json::Value::Object(obj)) => obj,
             _ => {
@@ -905,7 +937,7 @@ mod tests {
         assert_eq!(loaded.settings.log_panel_height, Some(200));
         let stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(stored["version"], 6);
+        assert_eq!(stored["version"], SETTINGS_VERSION);
         assert_eq!(stored["onboarding_done"], json!(false));
         // Done round-trips; a wrong type falls back alone.
         let mut s = loaded.settings.clone();
@@ -921,6 +953,76 @@ mod tests {
         assert_eq!(loaded.problems, ["onboarding_done"]);
         assert!(!loaded.settings.onboarding_done);
         assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+    }
+
+    #[test]
+    fn version_6_files_gain_keep_downloads_and_the_disclaimer() {
+        let dir = tempdir("settings-v6");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            json!({"version": 6, "language": "hu", "onboarding_done": true}).to_string(),
+        )
+        .unwrap();
+        let store = SettingsStore::new(&path);
+        let loaded = store.load_checked();
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert!(
+            loaded.settings.keep_downloads,
+            "an upgrade keeps the existing offline cache"
+        );
+        assert_eq!(loaded.settings.disclaimer_accepted_version, None);
+        assert!(loaded.settings.onboarding_done);
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["version"], 7);
+        assert_eq!(stored["keep_downloads"], json!(true));
+        assert_eq!(stored["disclaimer_accepted_version"], json!(null));
+        let mut s = loaded.settings.clone();
+        s.keep_downloads = false;
+        store.save(&s).unwrap();
+        assert!(!store.load().keep_downloads, "opting in to deletion sticks");
+        s.keep_downloads = true;
+        s.disclaimer_accepted_version = Some("1".into());
+        store.save(&s).unwrap();
+        let back = store.load();
+        assert!(back.keep_downloads);
+        assert_eq!(back.disclaimer_accepted_version.as_deref(), Some("1"));
+        // Wrong types fall back alone.
+        std::fs::write(
+            &path,
+            json!({"version": 7, "language": "hu", "keep_downloads": "yes",
+                   "disclaimer_accepted_version": ""})
+            .to_string(),
+        )
+        .unwrap();
+        let loaded = SettingsStore::new(&path).load_checked();
+        assert_eq!(
+            loaded.problems,
+            ["keep_downloads", "disclaimer_accepted_version"]
+        );
+        assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+        assert!(loaded.settings.keep_downloads, "a broken value keeps files");
+        // Unversioned and unparsable files are existing users too.
+        std::fs::write(&path, json!({"language": "hu"}).to_string()).unwrap();
+        assert!(SettingsStore::new(&path).load().keep_downloads);
+        std::fs::write(&path, b"{oops").unwrap();
+        assert!(SettingsStore::new(&path).load().keep_downloads);
+        // A new install (no file) deletes on quit.
+        let fresh = SettingsStore::new(dir.join("none.json")).load();
+        assert!(!fresh.keep_downloads);
+        // The settings dialog cannot accept (or revoke) the disclaimer, but
+        // sets keep_downloads.
+        let current = Settings {
+            disclaimer_accepted_version: Some("1".into()),
+            ..Settings::default()
+        };
+        let merged = current.merged_edit(Settings {
+            keep_downloads: true,
+            ..Settings::default()
+        });
+        assert!(merged.keep_downloads);
+        assert_eq!(merged.disclaimer_accepted_version.as_deref(), Some("1"));
     }
 
     #[test]
@@ -1018,7 +1120,7 @@ mod tests {
         std::fs::write(&path, b"{not json").unwrap();
         let store = SettingsStore::new(&path);
         let loaded = store.load_checked();
-        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.settings, existing_user_defaults());
         assert_eq!(loaded.problems, ["unparsable"]);
         assert_eq!(backup(&path).as_deref(), Some(&b"{not json"[..]));
         store.save(&Settings::default()).unwrap();
@@ -1080,9 +1182,18 @@ mod tests {
         let dir = tempdir("settings-broken");
         let path = dir.join("settings.json");
         std::fs::write(&path, b"{not json").unwrap();
-        assert_eq!(SettingsStore::new(&path).load(), Settings::default());
+        assert_eq!(SettingsStore::new(&path).load(), existing_user_defaults());
         std::fs::write(&path, br#"{"max_parallel": 0}"#).unwrap();
-        assert_eq!(SettingsStore::new(&path).load(), Settings::default());
+        assert_eq!(SettingsStore::new(&path).load(), existing_user_defaults());
+    }
+
+    /// The defaults for a settings file that exists but is unusable: an
+    /// existing user, whose downloads are kept.
+    fn existing_user_defaults() -> Settings {
+        Settings {
+            keep_downloads: true,
+            ..Settings::default()
+        }
     }
 
     #[test]

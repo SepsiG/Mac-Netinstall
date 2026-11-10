@@ -100,6 +100,9 @@ impl Device {
             profile: self.profile().map(|p| p.name.clone()),
             config: self.profile().map(|p| p.config.name().to_string()),
             version: self.version.as_ref().map(|v| v.to_string()),
+            source: self
+                .profile()
+                .map(|p| p.package_source.as_str().to_string()),
             attempt: self.attempt,
             first_seen_ms: unix_ms(self.first_seen),
             updated_ms: unix_ms(self.changed),

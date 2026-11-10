@@ -15,7 +15,7 @@ use crate::config::{
     check_pool_reserved, link_status, resolve_addresses, subnet, EngineConfig, LinkStatus, NetPlan,
 };
 use crate::event::Failure;
-use crate::profile::Profile;
+use crate::profile::{kernel_spec, PackageSource, Profile};
 use ni_assets::Assets;
 use ni_bootp::{BootpConfig, BootpResponder};
 use ni_net::{bind_udp, BindOptions, Interface, InterfaceKind, NetError};
@@ -270,25 +270,48 @@ pub fn bind_failure(service: &str, e: &NetError) -> Failure {
 }
 
 /// Can the profile's assets be had? Errors: `version_unavailable`
-/// (`cause`: the asset error code), `script_missing`, `empty_script` (the
-/// configuration script is empty). Warning:
+/// (`cause`: the asset error code; the profile's version or that of its
+/// boot kernels, see [`kernel_spec`]), `package_file_missing` (`name`,
+/// `cause`: a local package is not registered), `script_missing`,
+/// `empty_script` (the configuration script is empty). Warning:
 /// `kernels_not_cached` (they will be downloaded at start).
 pub async fn check_assets(assets: &Assets, profile: &Profile) -> Vec<Finding> {
     let mut out = Vec::new();
     if let Err(f) = profile.validate() {
         return vec![Finding::error(f)];
     }
-    match assets.resolve(&profile.version).await {
-        Err(e) => out.push(Finding::error(
+    let unavailable = |e: &ni_assets::AssetError| {
+        Finding::error(
             Failure::new("version_unavailable")
                 .with("cause", e.code())
-                .with("detail", &e),
-        )),
+                .with("detail", e),
+        )
+    };
+    let kernels = kernel_spec(profile);
+    if profile.package_source == PackageSource::Download && kernels != profile.version {
+        // v6: the packages' version must exist too.
+        if let Err(e) = assets.resolve(&profile.version).await {
+            out.push(unavailable(&e));
+        }
+    }
+    match assets.resolve(&kernels).await {
+        Err(e) => out.push(unavailable(&e)),
         Ok(version) => {
             let cached = assets.cached_versions().await.unwrap_or_default();
             if !cached.contains(&version) {
                 out.push(Finding::warning(
                     Failure::new("kernels_not_cached").with("version", &version),
+                ));
+            }
+        }
+    }
+    if profile.package_source == PackageSource::Local {
+        for name in &profile.local_packages {
+            if let Err(e) = assets.local_file(name).await {
+                out.push(Finding::error(
+                    Failure::new("package_file_missing")
+                        .with("name", name)
+                        .with("cause", e.code()),
                 ));
             }
         }
@@ -647,6 +670,50 @@ mod tests {
         let findings = check_assets(&a, &profile).await;
         assert_eq!(codes(&findings), [("version_unavailable", Severity::Error)]);
         assert_eq!(findings[0].failure.param("cause"), Some("not_found"));
+    }
+
+    /// v6 and local installs boot the stable 7.x kernels: those are what
+    /// must be cached; local packages must be registered.
+    #[tokio::test]
+    async fn assets_check_follows_the_kernel_spec_and_local_packages() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        ni_assets::testutil::mirror_v6(&srv, ni_assets::testutil::V6, "arm", "arm", true);
+        let dir = tempdir("preflight-v6");
+        let a = assets(&srv, &dir);
+        let v6 = Profile::new("v6", VersionSpec::Channel(Channel::V6LongTerm));
+        let findings = check_assets(&a, &v6).await;
+        assert_eq!(
+            codes(&findings),
+            [("kernels_not_cached", Severity::Warning)]
+        );
+        assert_eq!(findings[0].failure.param("version"), Some("7.25.1"));
+        a.ensure_kernels(
+            &a.resolve(&VersionSpec::Channel(Channel::Stable))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(check_assets(&a, &v6).await, []);
+        let mut local = Profile::new("local", VersionSpec::Channel(Channel::Testing));
+        local.package_source = crate::profile::PackageSource::Local;
+        local.local_packages = vec!["mine.npk".into()];
+        let findings = check_assets(&a, &local).await;
+        assert_eq!(
+            codes(&findings),
+            [("package_file_missing", Severity::Error)]
+        );
+        assert_eq!(findings[0].failure.param("name"), Some("mine.npk"));
+        let npk = dir.join("mine.npk");
+        std::fs::write(
+            &npk,
+            ni_assets::testutil::npk_package("system", "arm", 300, 1),
+        )
+        .unwrap();
+        a.register_local_file(&npk).await.unwrap();
+        // The (unresolvable) testing channel does not matter for local packages.
+        assert_eq!(check_assets(&a, &local).await, []);
     }
 
     #[tokio::test]

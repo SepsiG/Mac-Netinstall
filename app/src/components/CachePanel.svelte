@@ -11,6 +11,13 @@
   import { damaged, type CachedItem, type CacheView, type DeleteScope, type Failure } from "../lib/types";
   import ConfirmDialog from "./ConfirmDialog.svelte";
 
+  let {
+    keepDownloads = $bindable(),
+  }: {
+    /** "Keep downloaded files after quitting" (shown when bound). */
+    keepDownloads?: boolean;
+  } = $props();
+
   const backend = useBackend();
   let view = $state<CacheView | null>(null);
   let error = $state<Failure | null>(null);
@@ -89,6 +96,13 @@
 <section class="cache" aria-labelledby="cache-title">
   <h3 id="cache-title">{$t("settings.cache")}</h3>
   <p class="help">{$t("settings.cache_help")}</p>
+  {#if keepDownloads !== undefined}
+    <label class="keep">
+      <input type="checkbox" bind:checked={keepDownloads} aria-describedby="keep-help" />
+      {$t("settings.keep_downloads")}
+    </label>
+    <p id="keep-help" class="help">{$t("settings.keep_downloads_help")}</p>
+  {/if}
   {#if view}
     <p class="help">{$t("settings.cache_location", { size: bytes(view.inventory.total, $locale), location: view.location })}</p>
   {/if}
@@ -172,6 +186,12 @@
 {/if}
 
 <style>
+  .keep {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0 0;
+  }
   .cache {
     grid-column: 1 / -1;
   }

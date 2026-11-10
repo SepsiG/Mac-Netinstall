@@ -8,7 +8,7 @@ use crate::error::AssetError;
 use crate::events::AssetEvent;
 use crate::lock;
 use crate::npk::{check_npk, package_names, valid_package_name};
-use crate::urls::{self, MAIN_PACKAGE};
+use crate::urls::{self, MAIN_PACKAGE, V6_BUNDLE};
 use crate::version::Version;
 use bytes::Bytes;
 use ni_proto::PlanFile;
@@ -32,7 +32,8 @@ impl Assets {
     /// Names of the extra packages published for `arch` (e.g. `wireless`,
     /// `container`), read from the directory of `all_packages-<arch>-<ver>.zip`
     /// with a ranged request and cached. The main `routeros` package is not
-    /// listed.
+    /// listed, nor (for v6) the packages its bundle holds already
+    /// ([`V6_BUNDLE`]).
     pub async fn available_packages(
         &self,
         version: &Version,
@@ -60,7 +61,10 @@ impl Assets {
             }
             other => other?,
         };
-        let names = package_names(&entries, version.as_str(), arch.as_str());
+        let mut names = package_names(&entries, version.as_str(), arch.as_str());
+        if version.is_v6() {
+            names.retain(|n| !V6_BUNDLE.contains(&n.as_str()));
+        }
         let list = names.clone();
         blocking(move || {
             let _lock = lock;
@@ -74,9 +78,12 @@ impl Assets {
     }
 
     /// The main `routeros` package followed by `extras` (duplicates and
-    /// `routeros` itself ignored), verified and ready for
+    /// `routeros` itself ignored; for v6 also the packages its bundle holds,
+    /// [`V6_BUNDLE`]), verified and ready for
     /// [`ni_proto::InstallPlan::packages`]. Each [`PlanFile::name`] is the
-    /// package file name, e.g. `routeros-7.25.1-arm64.npk`.
+    /// package file name, e.g. `routeros-7.25.1-arm64.npk` or (v6)
+    /// `routeros-arm-6.49.23.npk`. A main package that is not published
+    /// (404) is [`AssetError::PackageNotPublished`].
     pub async fn ensure_packages(
         &self,
         version: &Version,
@@ -88,9 +95,29 @@ impl Assets {
         }
         let mut names = vec![MAIN_PACKAGE.to_string()];
         for name in extras {
-            if !names.contains(name) {
+            let bundled = version.is_v6() && V6_BUNDLE.contains(&name.as_str());
+            if !names.contains(name) && !bundled {
                 names.push(name.clone());
             }
+        }
+        let dir = self.version_dir(version);
+        let main_file = urls::main_package_file_name(version, arch);
+        // The main package first: a version not published for this arch
+        // says so, rather than failing on the (also missing) package list.
+        let main = match self.ensure_npk(&dir, version, &main_file).await {
+            Err(AssetError::NotFound { .. }) => {
+                return Err(AssetError::PackageNotPublished {
+                    file: main_file,
+                    arch,
+                    version: version.clone(),
+                })
+            }
+            other => other?,
+        };
+        if version.is_v6() {
+            // What this bundle really holds (not only the usual parts).
+            let bundled = crate::npk::contained_packages(&main);
+            names.retain(|n| n == MAIN_PACKAGE || !bundled.contains(n));
         }
         if names.len() > 1 {
             let available = self.available_packages(version, arch).await?;
@@ -101,10 +128,13 @@ impl Assets {
                 });
             }
         }
-        let dir = self.version_dir(version);
         let mut files = Vec::with_capacity(names.len());
-        for name in names {
-            let file = urls::package_file_name(&name, version, arch);
+        files.push(PlanFile {
+            name: main_file,
+            data: main,
+        });
+        for name in &names[1..] {
+            let file = urls::package_file_name(name, version, arch);
             let data = self.ensure_npk(&dir, version, &file).await?;
             files.push(PlanFile { name: file, data });
         }
@@ -258,7 +288,7 @@ mod tests {
             .ensure_packages(&v(), PkgArch::Mipsbe, &[])
             .await
             .unwrap_err();
-        assert_eq!(err.code(), "not_found");
+        assert_eq!(err.code(), "package_not_published");
     }
 
     #[tokio::test]
@@ -316,6 +346,69 @@ mod tests {
                 assert!(!index.files[&format!("routeros-{ver}-arm64.npk")].published_checksum);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn v6_packages_use_the_bundle_and_v6_file_names() {
+        let srv = TestServer::start().await;
+        let (bundle, calea) = mirror_v6(&srv, V6, "ppc", "powerpc", true);
+        let root = tempdir("v6-packages");
+        let a = assets(&srv, &root);
+        let v6 = Version::parse(V6).unwrap();
+        // The bundle's parts are not offered as extras.
+        let list = a.available_packages(&v6, PkgArch::Ppc).await.unwrap();
+        assert_eq!(list, ["calea", "gps"]);
+        // `wireless` is in the bundle already: not installed twice.
+        let extras = ["wireless".to_string(), "calea".into()];
+        let files = a.ensure_packages(&v6, PkgArch::Ppc, &extras).await.unwrap();
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["routeros-powerpc-6.49.23.npk", "calea-6.49.23-ppc.npk"]
+        );
+        assert_eq!(files[0].data.as_ref(), bundle.as_slice());
+        assert_eq!(files[1].data.as_ref(), calea.as_slice());
+        let index = CacheDir::new(root.join(V6)).load();
+        assert!(index.files["routeros-powerpc-6.49.23.npk"].published_checksum);
+    }
+
+    #[tokio::test]
+    async fn v6_checksums_are_optional_before_6_49_13() {
+        let srv = TestServer::start().await;
+        let old = "6.48.7";
+        mirror_v6(&srv, old, "mipsbe", "mips", false);
+        let root = tempdir("v6-nosum");
+        let a = assets(&srv, &root);
+        let v = Version::parse(old).unwrap();
+        let files = a.ensure_packages(&v, PkgArch::Mipsbe, &[]).await.unwrap();
+        assert_eq!(files[0].name, "routeros-mipsbe-6.48.7.npk");
+        let index = CacheDir::new(root.join(old)).load();
+        assert!(!index.files["routeros-mipsbe-6.48.7.npk"].published_checksum);
+        // From 6.49.13 on a missing checksum is an error.
+        mirror_v6(&srv, "6.49.13", "mipsbe", "mips", false);
+        let err = a
+            .ensure_packages(&Version::parse("6.49.13").unwrap(), PkgArch::Mipsbe, &[])
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "checksum_missing");
+    }
+
+    #[tokio::test]
+    async fn a_main_package_that_is_not_published_says_so() {
+        let srv = TestServer::start().await;
+        mirror_v6(&srv, "6.30.4", "mipsbe", "mips", false);
+        let root = tempdir("not-published");
+        let a = assets(&srv, &root);
+        let v = Version::parse("6.30.4").unwrap();
+        let err = a
+            .ensure_packages(&v, PkgArch::Mmips, &[])
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "package_not_published");
+        assert!(
+            matches!(&err, AssetError::PackageNotPublished { arch: PkgArch::Mmips, version, .. } if *version == v),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

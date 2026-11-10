@@ -7,9 +7,11 @@
 use serde::Serialize;
 
 /// [`crate::Failure`] codes: command errors, device failures (`failed`
-/// states), engine `error` and `warning` events, and preflight findings.
+/// states), engine `error`, `warning` and `info` events, and preflight
+/// findings.
 pub const FAILURES: &[&str] = &[
     "already_running",
+    "arch_resolved",
     "assets_failed",
     "bind_failed",
     "bootp_send_failed",
@@ -18,6 +20,7 @@ pub const FAILURES: &[&str] = &[
     "device_busy",
     "device_done",
     "device_in_cooldown",
+    "disclaimer_not_accepted",
     "duplicate_package",
     "empty_script",
     "engine_gone",
@@ -36,6 +39,7 @@ pub const FAILURES: &[&str] = &[
     "invalid_name",
     "invalid_netmask",
     "invalid_network",
+    "invalid_package_file",
     "invalid_package_name",
     "invalid_plan",
     "invalid_profile",
@@ -49,14 +53,21 @@ pub const FAILURES: &[&str] = &[
     "link_up",
     "local_network_allowed",
     "local_network_denied",
+    "missing_system_package",
+    "mode_script_needs_7_22",
     "mode_script_with_keep",
     "no_ipv4",
+    "no_local_packages",
     "min_os_newer",
     "no_manual_ipv4",
     "no_profile",
     "not_cancellable",
     "not_failed",
     "not_running",
+    "package_arch_mismatch",
+    "package_file_missing",
+    "package_not_published",
+    "package_version_mismatch",
     "pool_includes_reserved",
     "pool_inverted",
     "pool_outside_subnet",
@@ -74,9 +85,12 @@ pub const FAILURES: &[&str] = &[
     "tftp_rejected",
     "too_many_packages",
     "unknown_device",
+    "unknown_device_arch",
     "unknown_interface",
     "unsuitable_interface",
+    "version_below_minimum",
     "version_unavailable",
+    "version_unknown",
 ];
 
 /// `reason` of an `ignored` event.
@@ -184,6 +198,7 @@ mod tests {
     /// This crate's sources, without their test modules.
     const SOURCES: &[&str] = &[
         include_str!("config.rs"),
+        include_str!("disclaimer.rs"),
         include_str!("engine/core.rs"),
         include_str!("engine/device.rs"),
         include_str!("engine/mod.rs"),
@@ -339,6 +354,7 @@ mod tests {
             DeviceState::Preparing {
                 version: None,
                 config: None,
+                source: None,
             },
             DeviceState::Flashing {
                 version: String::new(),

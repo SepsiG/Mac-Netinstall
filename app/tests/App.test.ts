@@ -100,6 +100,45 @@ describe("App", () => {
     expect(backend.stop).toHaveBeenCalled();
   });
 
+  it("asks to accept the disclaimer before the first start", async () => {
+    const backend = await start({
+      getSettings: vi.fn(async () => ({ ...SETTINGS, last_profile: "lab", disclaimer_accepted_version: null })),
+    });
+    await waitFor(() => expect(screen.getByLabelText("Profile")).toHaveValue("lab"));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    let dialog = screen.getByRole("dialog", { name: "Disclaimer" });
+    expect(dialog).toHaveTextContent("without any warranty");
+    expect(dialog).toHaveTextContent("Not affiliated with");
+    const accept = within(dialog).getByRole("button", { name: "Accept" });
+    expect(accept).toBeDisabled();
+    // Cancel: nothing starts.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(backend.start).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    dialog = screen.getByRole("dialog", { name: "Disclaimer" });
+    await userEvent.click(within(dialog).getByLabelText("I understand and use it at my own risk"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Accept" }));
+    expect(backend.acceptDisclaimer).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(backend.start).toHaveBeenCalled());
+    // Accepted (and stored by the backend): not asked again.
+    backend.emit({ event: "stopped" });
+    vi.mocked(backend.start).mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(screen.queryByRole("dialog", { name: "Disclaimer" })).toBeNull();
+    await waitFor(() => expect(backend.start).toHaveBeenCalled());
+  });
+
+  it("asks again when the disclaimer text version changed", async () => {
+    const backend = await start({
+      getSettings: vi.fn(async () => ({ ...SETTINGS, last_profile: "lab", disclaimer_accepted_version: "0" })),
+    });
+    await waitFor(() => expect(screen.getByLabelText("Profile")).toHaveValue("lab"));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(screen.getByRole("dialog", { name: "Disclaimer" })).toBeInTheDocument();
+    expect(backend.start).not.toHaveBeenCalled();
+  });
+
   it("changing the profile while running tells the engine", async () => {
     const backend = mockBackend({
       snapshot: vi.fn(async () => ({ ...IDLE, running: true, profile: null })),

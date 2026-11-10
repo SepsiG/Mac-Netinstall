@@ -197,36 +197,41 @@ impl Assets {
 
     /// Delete all downloaded versions (directories named like a version; a
     /// symlink named like a version is unlinked, its target left alone)
-    /// and part files whose writer is gone; registered local files are
-    /// kept. A download running at the same time may fail.
-    pub async fn clear_downloads(&self) -> Result<(), AssetError> {
+    /// and part files whose writer is gone; registered local files and the
+    /// channel and version lists are kept.
+    ///
+    /// The cache may be shared with other processes (`ni-cli`, a second
+    /// app): a version is deleted only while every lock its writers use is
+    /// free (taken without waiting, as [`Assets::delete_cached`] does), so a
+    /// version being downloaded or read for an install elsewhere is never
+    /// removed under it. Returns the versions skipped because they were
+    /// busy, sorted.
+    pub async fn clear_downloads(&self) -> Result<Vec<String>, AssetError> {
         let root = self.root.clone();
         blocking(move || {
             let entries = match std::fs::read_dir(&root) {
                 Ok(e) => e,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
                 Err(e) => return Err(AssetError::io("read", &root)(e)),
             };
+            let mut skipped = Vec::new();
             for entry in entries.flatten() {
-                let path = entry.path();
-                let is_version = entry
+                let Some(version) = entry
                     .file_name()
                     .to_str()
-                    .is_some_and(|n| Version::parse(n).is_ok());
-                let Ok(kind) = entry.file_type() else {
+                    .and_then(|n| Version::parse(n).ok())
+                else {
                     continue;
                 };
-                if !is_version {
-                    continue;
-                }
-                if kind.is_symlink() {
-                    std::fs::remove_file(&path).map_err(AssetError::io("remove", &path))?;
-                } else if kind.is_dir() {
-                    std::fs::remove_dir_all(&path).map_err(AssetError::io("remove", &path))?;
+                match super::inventory::delete_version(&root, &version, false) {
+                    Ok(_) => {}
+                    Err(AssetError::Busy { .. }) => skipped.push(version.to_string()),
+                    Err(e) => return Err(e),
                 }
             }
             remove_stale_parts(&root, Duration::ZERO);
-            Ok(())
+            skipped.sort();
+            Ok(skipped)
         })
         .await?
     }
@@ -334,9 +339,26 @@ mod tests {
         std::fs::write(&script, b"#").unwrap();
         a.register_local_file(&script).await.unwrap();
         std::fs::create_dir_all(root.join("not-a-version")).unwrap();
+        // A v6 download, a local package and the small UI caches.
+        mirror_v6(&srv, V6, "arm", "arm", true);
+        a.ensure_packages(&Version::parse(V6).unwrap(), PkgArch::Arm, &[])
+            .await
+            .unwrap();
+        let npk = root.join("Mine.npk");
+        std::fs::write(&npk, crate::testutil::npk_package("system", "arm", 200, 1)).unwrap();
+        a.register_local_file(&npk).await.unwrap();
+        a.resolve(&crate::VersionSpec::Channel(crate::Channel::Stable))
+            .await
+            .unwrap();
+        std::fs::write(root.join(crate::VERSIONS_FILE), b"{}").unwrap();
         a.clear_downloads().await.unwrap();
         assert!(!root.join(V).exists());
+        assert!(!root.join(V6).exists());
         assert!(root.join("local/x.rsc").exists());
+        assert!(root.join("local/mine.npk").exists());
+        assert!(a.local_file("mine.npk").await.is_ok());
+        assert!(root.join(super::super::CHANNELS_FILE).exists());
+        assert!(root.join(crate::VERSIONS_FILE).exists());
         assert!(root.join("not-a-version").exists());
         // Nothing to clear is fine too.
         assets(&srv, &root.join("absent"))
@@ -412,6 +434,48 @@ mod tests {
         assert_eq!(a.local_file("setup.rsc").await.unwrap().as_ref(), b"# two");
         let index = CacheDir::new(root.join("local")).load();
         assert_eq!(index.files.keys().collect::<Vec<_>>(), ["setup.rsc"]);
+    }
+
+    /// Another process (ni-cli, a second app) using a version: its
+    /// directory is skipped and reported, never removed under it.
+    #[tokio::test]
+    async fn clear_downloads_skips_versions_another_process_holds() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        mirror_version(&srv, "7.24.6");
+        mirror_v6(&srv, V6, "arm", "arm", true);
+        let root = tempdir("clear-held");
+        let a = assets(&srv, &root);
+        for ver in [V, "7.24.6", V6] {
+            let arch = if ver == V6 {
+                PkgArch::Arm
+            } else {
+                PkgArch::Arm64
+            };
+            a.ensure_packages(&Version::parse(ver).unwrap(), arch, &[])
+                .await
+                .unwrap();
+        }
+        // A writer into 7.25.1 (the directory lock, held shared by
+        // downloads) and one on a single file of 7.24.6.
+        let dir = CacheDir::new(root.join(V));
+        let dir_lock =
+            crate::lock::lock_shared_blocking(&dir.lock_path(crate::cache::DIR_LOCK)).unwrap();
+        let other = CacheDir::new(root.join("7.24.6"));
+        let file_lock = crate::lock::try_lock_file(&other.lock_path("routeros-7.24.6-arm64.npk"))
+            .unwrap()
+            .unwrap();
+        let skipped = a.clear_downloads().await.unwrap();
+        assert_eq!(skipped, ["7.24.6", V]);
+        assert!(root
+            .join(V)
+            .join(format!("routeros-{V}-arm64.npk"))
+            .exists());
+        assert!(root.join("7.24.6/routeros-7.24.6-arm64.npk").exists());
+        assert!(!root.join(V6).exists(), "a free version is removed");
+        drop((dir_lock, file_lock));
+        assert_eq!(a.clear_downloads().await.unwrap(), Vec::<String>::new());
+        assert!(!root.join(V).exists() && !root.join("7.24.6").exists());
     }
 
     #[tokio::test]

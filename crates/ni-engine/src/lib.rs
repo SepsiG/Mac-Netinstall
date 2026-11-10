@@ -12,6 +12,7 @@
 
 pub mod codes;
 pub mod config;
+pub mod disclaimer;
 pub mod engine;
 pub mod event;
 pub mod gate;
@@ -24,12 +25,13 @@ pub use config::{
     link_status, resolve_network, subnet, EngineConfig, InterfaceSource, LinkStatus, NetPlan,
     Ports, DEFAULT_NETMASK, MAX_COOLDOWN, MAX_PARALLEL, MIN_COOLDOWN,
 };
+pub use disclaimer::{DISCLAIMER_TEXT, DISCLAIMER_URL, DISCLAIMER_VERSION};
 pub use engine::{DeviceView, EngineHandle, Snapshot, EVENT_CAPACITY};
 pub use event::{
     DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo, WaitReason,
 };
 pub use preflight::{Finding, PreflightReport, Severity};
 pub use profile::{
-    default_profiles_root, license_key_from_file, AfterInstall, ConfigMode, Listing, Profile,
-    ProfileStore, MAX_LICENSE_KEY,
+    default_profiles_root, follows_kernels, kernel_spec, license_key_from_file, AfterInstall,
+    ConfigMode, Listing, PackageSource, Profile, ProfileStore, MAX_LICENSE_KEY, MAX_LOCAL_PACKAGES,
 };

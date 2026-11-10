@@ -60,6 +60,7 @@ impl Printer {
             EngineEvent::Device { mac, state } => self.device(*mac, state),
             EngineEvent::Error(f) => Some(format!("error: {}", failure(f))),
             EngineEvent::Warning(f) => Some(format!("warning: {}", failure(f))),
+            EngineEvent::Info(f) => Some(format!("info: {}", failure(f))),
         }
     }
 
@@ -124,6 +125,10 @@ pub fn hint(code: &str) -> Option<&'static str> {
         ),
         "no_ipv4" => Some("give the interface a static IPv4 address in System Settings > Network"),
         "unsuitable_interface" => Some("RouterBOARDs boot over wired Ethernet only"),
+        "unknown_device_arch" => Some(
+            "no RouterOS package is built for this device's architecture; please report it \
+             (with these details) at https://github.com/SepsiG/Mac-Netinstall/issues",
+        ),
         _ => None,
     }
 }
@@ -241,6 +246,16 @@ mod tests {
             p.line(&EngineEvent::OnlyMacChanged { mac: None }).unwrap(),
             "serving every device"
         );
+        let resolved = Failure::new("arch_resolved")
+            .with("arch", "xmips")
+            .with("download_arch", "smips");
+        assert_eq!(
+            p.line(&EngineEvent::Info(resolved)).unwrap(),
+            "info: arch_resolved (arch: xmips, download_arch: smips)"
+        );
+        assert!(hint("unknown_device_arch")
+            .unwrap()
+            .contains("github.com/SepsiG/Mac-Netinstall/issues"));
         let failed = EngineEvent::Device {
             mac: MAC,
             state: DeviceState::failed(Failure::new("flash_timeout").with("phase", "formatting")),

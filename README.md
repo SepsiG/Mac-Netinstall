@@ -7,8 +7,13 @@ Not affiliated with MikroTik.
 
 Status: validated on a MikroTik hEX RB750Gr3 (`mmips`) with all four
 configuration modes (default, empty, script, keep) and auto-repeat, and on a
-hAP ac² (`arm`) with an extra package; arm64, mipsbe, ppc and tile are not yet
-tested on hardware (see [CHANGELOG.md](CHANGELOG.md)). See `docs/superpowers/specs/` for the design.
+hAP ac² (`arm`) with an extra package, and on a CRS125-24G-1S-2HnD (`mipsbe`);
+arm64, smips, ppc and tile are not yet tested on hardware (see [CHANGELOG.md](CHANGELOG.md)). See `docs/superpowers/specs/` for the design.
+
+**Disclaimer:** provided “as is”, without any warranty (GNU GPL v3, sections
+15–16). Netinstall erases the device: use it at your own risk. The authors
+accept no liability for any damage, including devices that become unusable
+(“bricked”). See [Disclaimer](#disclaimer).
 
 **User guide:** [English](docs/user-guide.en.md) · [Magyar](docs/user-guide.hu.md)
 — installing, preparing the Mac, profiles, flashing, troubleshooting.
@@ -54,6 +59,9 @@ time; `--max-parallel N` allows more. `--server-ip`/`--netmask` override the
 adapter's manual IPv4 from macOS (advanced). `flash`/`preflight
 --allow-any-interface` (advanced) accepts an interface that is not a wired
 Ethernet adapter, with a warning; the app never offers one.
+
+`ni-cli flash` prints the disclaimer and runs only after it is accepted
+with `--accept-disclaimer` (or `MAC_NETINSTALL_ACCEPT_DISCLAIMER=1`).
 
 Profiles (`ni-cli profiles …`, and the app's) are JSON files readable by
 their owner only (mode 0600), since they may hold a software license key.
@@ -129,3 +137,24 @@ Signing is ad-hoc; `.github/workflows/release.yml` has commented-out hooks
 for Developer ID signing and notarization secrets.
 
 License: GPL-3.0 (see LICENSE and NOTICE).
+
+## Disclaimer
+
+- Mac Netinstall is free software, provided **“as is”, without any
+  warranty**, as stated in sections 15–16 of the
+  [GNU General Public License v3](LICENSE).
+- Netinstall **erases the device's storage** and reinstalls RouterOS.
+  **Use it at your own risk.**
+- The authors and contributors accept **no liability for any damage or
+  loss**, including devices becoming unusable (“bricked”), lost
+  configuration or data, downtime, or damage resulting from installing old,
+  archived or end-of-life RouterOS versions, versions below the device's
+  minimum version, or wrong packages.
+- Test on a device you can recover (e.g. with MikroTik's official
+  Netinstall) before using it in production.
+- Not affiliated with, endorsed or supported by MikroTik. MikroTik,
+  RouterOS and RouterBOARD are trademarks of their owner.
+
+Magyarul: a szoftvert „ahogy van” alapon, mindenféle garancia nélkül
+biztosítjuk; saját felelősségedre használd. Részletek:
+[felhasználói útmutató](docs/user-guide.hu.md#13-felelősség-kizárása).

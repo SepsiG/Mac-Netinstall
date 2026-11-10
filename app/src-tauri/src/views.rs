@@ -131,6 +131,42 @@ pub struct ScriptView {
     pub size: u64,
 }
 
+/// A registered local `.npk` file, with what its header says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageFileView {
+    /// Lowercase file name: what profiles refer to.
+    pub name: String,
+    pub size: u64,
+    /// The package name in its header (`system` for a main package).
+    pub package: String,
+    /// The architecture it is built for (as devices name it).
+    pub arch: String,
+    /// Its version, if the header names a final release.
+    pub version: Option<String>,
+}
+
+/// A release channel and the version it names now (`None`: unknown, e.g.
+/// offline and never resolved).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelView {
+    pub channel: String,
+    pub version: Option<String>,
+}
+
+/// What the version picker offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VersionsView {
+    pub channels: Vec<ChannelView>,
+    /// Newest first (7.x, then 6.x).
+    pub versions: Vec<ni_assets::ListedVersion>,
+    /// When the list was fetched (Unix seconds; 0: the built-in list).
+    pub fetched_unix: u64,
+    /// `fresh`, `cached` or `seed`.
+    pub source: ni_assets::ListSource,
+    /// Why refreshing failed (an asset error code), if it did.
+    pub error: Option<String>,
+}
+
 /// A license key read from a key file (line breaks removed).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LicenseKeyView {

@@ -188,6 +188,7 @@ pub(crate) fn start(
         send_errors: Default::default(),
         local_network_denied: false,
         next_prune: Instant::now(),
+        arch_map: HashMap::new(),
     };
     let netinstall_dest = BroadcastTarget::with_subnet(
         running.cfg.ports.netinstall_dest,

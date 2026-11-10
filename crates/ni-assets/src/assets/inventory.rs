@@ -191,9 +191,20 @@ fn is_kernel(name: &str) -> bool {
     name.starts_with("kernel-") && name.ends_with(".elf")
 }
 
-/// `wireless-7.25.1-arm64.npk` in version `7.25.1` → (`wireless`, `arm64`).
+/// `wireless-7.25.1-arm64.npk` in version `7.25.1` → (`wireless`, `arm64`);
+/// the v6 main package `routeros-powerpc-6.49.23.npk` → (`routeros`,
+/// `ppc`).
 fn package_parts<'a>(file: &'a str, version: &str) -> Option<(&'a str, &'a str)> {
-    let (rest, arch) = file.strip_suffix(".npk")?.rsplit_once('-')?;
+    let stem = file.strip_suffix(".npk")?;
+    if let Some(arch6) = stem
+        .strip_suffix(version)
+        .and_then(|r| r.strip_suffix('-'))
+        .and_then(|r| r.strip_prefix("routeros-"))
+    {
+        let arch = if arch6 == "powerpc" { "ppc" } else { arch6 };
+        return (!arch.is_empty()).then_some(("routeros", arch));
+    }
+    let (rest, arch) = stem.rsplit_once('-')?;
     let name = rest.strip_suffix(version)?.strip_suffix('-')?;
     Some((name, arch))
 }
@@ -501,7 +512,7 @@ fn delete_kernels(root: &Path, version: &Version, id: &str) -> Result<u64, Asset
 /// Delete a whole version directory, holding every lock its writers use.
 /// With `only_if_empty`, nothing is deleted (`None`) unless the directory
 /// has no index entry and no part file (checked under the locks).
-fn delete_version(
+pub(super) fn delete_version(
     root: &Path,
     version: &Version,
     only_if_empty: bool,
@@ -654,6 +665,28 @@ impl Assets {
 mod tests {
     use super::*;
     use crate::arch::PkgArch;
+
+    #[test]
+    fn package_file_names_give_name_and_arch() {
+        assert_eq!(
+            package_parts("wireless-7.25.1-arm64.npk", "7.25.1"),
+            Some(("wireless", "arm64"))
+        );
+        assert_eq!(
+            package_parts("routeros-powerpc-6.49.23.npk", "6.49.23"),
+            Some(("routeros", "ppc"))
+        );
+        assert_eq!(
+            package_parts("routeros-mipsbe-6.49.23.npk", "6.49.23"),
+            Some(("routeros", "mipsbe"))
+        );
+        assert_eq!(
+            package_parts("calea-6.49.23-ppc.npk", "6.49.23"),
+            Some(("calea", "ppc"))
+        );
+        assert_eq!(package_parts("routeros--6.49.23.npk", "6.49.23"), None);
+        assert_eq!(package_parts("notes.txt", "6.49.23"), None);
+    }
     use crate::testutil::*;
 
     async fn filled(name: &str) -> (TestServer, TempDir, Assets) {

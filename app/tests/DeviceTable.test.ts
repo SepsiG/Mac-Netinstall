@@ -18,6 +18,7 @@ function dev(state: DeviceState, extra: Partial<DeviceRow> = {}): DeviceRow {
     info: { model: "RB5009UG+S+", arch: "arm64", license_id: "X", min_os: "7" },
     version: "7.25.1",
     config: null,
+    source: null,
     attempt: 1,
     updated_ms: Date.now(),
     state,
@@ -66,6 +67,19 @@ describe("DeviceTable", () => {
     expect(within(row()).getByText("empty configuration")).toBeInTheDocument();
     locale.set("hu");
     expect(await within(row()).findByText("üres konfiguráció")).toBeInTheDocument();
+  });
+
+  it("shows the device's minimum version as a tooltip on its model", () => {
+    show([dev({ state: "discovered" })]);
+    expect(within(row()).getByText("RB5009UG+S+")).toHaveAttribute("title", "Minimum RouterOS version: 7");
+  });
+
+  it("shows where the packages come from", async () => {
+    show([dev({ state: "done" }, { source: "local", version: "7.24.6" })]);
+    expect(within(row()).getByText("local file")).toBeInTheDocument();
+    expect(within(row()).getByText(/7\.24\.6/)).toBeInTheDocument();
+    locale.set("hu");
+    expect(await within(row()).findByText("saját fájl")).toBeInTheDocument();
   });
 
   it("shows progress for kernel transfer and flashing", () => {

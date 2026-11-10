@@ -35,6 +35,8 @@ pub struct HttpConfig {
     pub download_base: String,
     /// Where `NEWESTa7.<channel>` lives.
     pub upgrade_base: String,
+    /// MikroTik's changelog page (the version list's source).
+    pub changelog_base: String,
     pub connect_timeout: Duration,
     /// Longest silence while reading a response.
     pub read_timeout: Duration,
@@ -49,6 +51,7 @@ impl Default for HttpConfig {
         Self {
             download_base: urls::DOWNLOAD_BASE.into(),
             upgrade_base: urls::UPGRADE_BASE.into(),
+            changelog_base: urls::CHANGELOG_BASE.into(),
             connect_timeout: Duration::from_secs(15),
             read_timeout: Duration::from_secs(60),
             download_timeout: Duration::from_secs(30 * 60),
@@ -184,6 +187,32 @@ impl Http {
         let resp = self.get(url, None, None).await?;
         let body = Self::body(url, resp, MAX_TEXT).await?;
         Ok(String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// A text page of at most `max` bytes (`too_large` past it).
+    pub async fn text_max(&self, url: &str, max: u64) -> Result<String, AssetError> {
+        let resp = self.get(url, None, None).await?;
+        let body = Self::body(url, resp, max).await?;
+        Ok(String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// Whether `url` exists: a `HEAD` request answering 2xx (`true`) or 404
+    /// (`false`); other answers are errors.
+    pub async fn exists(&self, url: &str) -> Result<bool, AssetError> {
+        let resp = self
+            .client
+            .head(url)
+            .send()
+            .await
+            .map_err(|e| net_error(url, e))?;
+        match resp.status() {
+            s if s.is_success() => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            s => Err(AssetError::Status {
+                url: url.into(),
+                status: s.as_u16(),
+            }),
+        }
     }
 
     /// A small text file, or `None` on 404.
@@ -375,6 +404,36 @@ mod tests {
             matches!(err, AssetError::Status { status: 503, .. }),
             "{err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn pages_are_capped_and_existence_is_a_head_request() {
+        let srv = TestServer::start().await;
+        srv.route("/page", Reply::Body(vec![b'a'; 3000]));
+        srv.route("/boom", Reply::Status(500));
+        let h = http(1 << 20);
+        assert_eq!(
+            h.text_max(&format!("{}/page", srv.base), 3000)
+                .await
+                .unwrap()
+                .len(),
+            3000
+        );
+        let err = h
+            .text_max(&format!("{}/page", srv.base), 2999)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "too_large");
+        assert!(h.exists(&format!("{}/page", srv.base)).await.unwrap());
+        assert!(!h.exists(&format!("{}/nope", srv.base)).await.unwrap());
+        assert_eq!(
+            h.exists(&format!("{}/boom", srv.base))
+                .await
+                .unwrap_err()
+                .code(),
+            "http_status"
+        );
+        assert!(srv.paths().contains(&"HEAD /page".to_string()));
     }
 
     #[tokio::test]

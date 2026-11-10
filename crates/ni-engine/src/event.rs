@@ -124,15 +124,19 @@ pub enum DeviceState {
     /// when the profile's version is the one the boot kernels were
     /// resolved to; otherwise it is resolved during preparation).
     /// `config` is the profile's configuration mode (`keep`, `default`,
-    /// `empty`, `script`).
+    /// `empty`, `script`), `source` where its packages come from
+    /// (`download` or `local`).
     Preparing {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
     },
     /// The install session runs; `phase` is [`ni_proto::Phase::name`],
-    /// `version` the RouterOS version being installed.
+    /// `version` the RouterOS version being installed (empty for local
+    /// packages whose version is unknown).
     Flashing {
         version: String,
         phase: String,
@@ -332,6 +336,10 @@ pub enum EngineEvent {
     /// `recv_error`, `bootp_send_failed`,
     /// `tftp_rejected`, `kernels_offline_fallback` (`version`).
     Warning(Failure),
+    /// Worth a line in the log, nothing to act on: `arch_resolved`
+    /// (`mac`, `arch`: the hello arch, `download_arch`: the packages it
+    /// gets), when a device's arch was resolved from package contents.
+    Info(Failure),
 }
 
 #[cfg(test)]
@@ -369,6 +377,7 @@ mod tests {
             state: DeviceState::Preparing {
                 version: version.map(String::from),
                 config: None,
+                source: None,
             },
         };
         assert_eq!(
@@ -381,12 +390,13 @@ mod tests {
             state: DeviceState::Preparing {
                 version: None,
                 config: Some("empty".into()),
+                source: Some("local".into()),
             },
         };
         assert_eq!(
             roundtrip(&with_config),
             json!({"event": "device", "mac": "48:A9:8A:11:22:33", "state": "preparing",
-                   "config": "empty"})
+                   "config": "empty", "source": "local"})
         );
         let failed = EngineEvent::Device {
             mac: MAC,
@@ -485,6 +495,20 @@ mod tests {
     }
 
     #[test]
+    fn info_events_are_flat_failures() {
+        let e = EngineEvent::Info(
+            Failure::new("arch_resolved")
+                .with("arch", "xmips")
+                .with("download_arch", "smips"),
+        );
+        assert_eq!(
+            roundtrip(&e),
+            json!({"event": "info", "code": "arch_resolved",
+                   "params": {"arch": "xmips", "download_arch": "smips"}})
+        );
+    }
+
+    #[test]
     fn forgotten_and_only_mac_events() {
         assert_eq!(
             roundtrip(&EngineEvent::Forgotten { mac: MAC }),
@@ -525,6 +549,7 @@ mod tests {
             DeviceState::Preparing {
                 version: None,
                 config: None,
+                source: None,
             },
             DeviceState::Flashing {
                 version: "7.25.1".into(),

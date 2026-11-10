@@ -2,7 +2,7 @@
 // and `emit*` drive the event callbacks.
 import { vi } from "vitest";
 import type { Backend } from "../src/lib/api";
-import type { CacheView, EngineEvent, Profile, SettingsPane, Settings, Snapshot } from "../src/lib/types";
+import type { CacheView, EngineEvent, Profile, SettingsPane, Settings, Snapshot, VersionsView } from "../src/lib/types";
 
 export const SETTINGS: Settings = {
   version: 1,
@@ -19,6 +19,28 @@ export const SETTINGS: Settings = {
   dialog_sizes: {},
   log_panel_height: null,
   onboarding_done: true,
+  keep_downloads: false,
+  disclaimer_accepted_version: "1",
+};
+
+export const VERSIONS: VersionsView = {
+  channels: [
+    { channel: "stable", version: "7.25.1" },
+    { channel: "long-term", version: "7.24.6" },
+    { channel: "testing", version: "7.26rc2" },
+    { channel: "development", version: null },
+    { channel: "v6-long-term", version: "6.49.23" },
+  ],
+  versions: [
+    { version: "7.25.1", channels: ["stable"], date: "2026-11-02" },
+    { version: "7.24.6", channels: ["long-term"], date: "2026-11-02" },
+    { version: "7.24.5", channels: ["stable"], date: "2026-09-20" },
+    { version: "6.49.23", channels: ["stable", "long-term"], date: "2026-03-15" },
+    { version: "6.48.7", channels: ["long-term"], date: null },
+  ],
+  fetched_unix: 1_793_600_000,
+  source: "cached",
+  error: null,
 };
 
 export const CACHE: CacheView = {
@@ -83,6 +105,9 @@ export function profile(name: string, more: Partial<Profile> = {}): Profile {
     remove_branding: false,
     license_key: null,
     after_install: "reboot",
+    package_source: "download",
+    local_packages: [],
+    allow_below_minimum: false,
     ...more,
   };
 }
@@ -158,6 +183,13 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
       arch,
       packages: ["container", "wireless"],
     })),
+    availableVersions: vi.fn(async (_refresh: boolean) => structuredClone(VERSIONS)),
+    checkVersionExists: vi.fn(async (v: string) => v !== "6.49.99"),
+    pickPackages: vi.fn(async () => [
+      { name: "routeros-7.24.6-arm.npk", size: 12_000_000, package: "system", arch: "arm", version: "7.24.6" },
+    ]),
+    acceptDisclaimer: vi.fn(async () => ({ ...SETTINGS, disclaimer_accepted_version: "1" })),
+    openLink: vi.fn(async () => {}),
     pickScript: vi.fn(async () => ({ name: "setup.rsc", size: 30 })),
     pickLicenseKey: vi.fn(async () => ({ key: "-----BEGIN KEY-----AAAA-----END KEY-----" })),
     getSettings: vi.fn(async () => ({ ...SETTINGS })),

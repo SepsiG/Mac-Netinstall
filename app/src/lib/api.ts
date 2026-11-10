@@ -9,6 +9,8 @@ import type {
   Failure,
   InterfaceView,
   LicenseKeyView,
+  Link,
+  PackageFileView,
   PackagesView,
   PermissionsView,
   PreflightReport,
@@ -20,6 +22,7 @@ import type {
   Snapshot,
   StartInfo,
   StartRequest,
+  VersionsView,
 } from "./types";
 
 export type Unlisten = () => void;
@@ -46,6 +49,17 @@ export interface Backend {
   saveProfile(profile: Profile, previous: string | null): Promise<void>;
   deleteProfile(name: string): Promise<void>;
   availablePackages(version: string, arch: string): Promise<PackagesView>;
+  /** Channels and the versions to pick from (`refresh`: fetch the list again). */
+  availableVersions(refresh: boolean): Promise<VersionsView>;
+  /** Whether MikroTik publishes this version. */
+  checkVersionExists(version: string): Promise<boolean>;
+  /** Opens a multi-select file dialog for `.npk` files (in Rust) and
+   *  registers them; empty if cancelled. */
+  pickPackages(): Promise<PackageFileView[]>;
+  /** Accept the current disclaimer; returns the stored settings. */
+  acceptDisclaimer(): Promise<Settings>;
+  /** Open a fixed page (repository, disclaimer, license) in the browser. */
+  openLink(link: Link): Promise<void>;
   /** Opens a file dialog (in Rust); `null` if cancelled. */
   pickScript(): Promise<ScriptView | null>;
   /** Opens a file dialog and reads the key file (in Rust); `null` if cancelled. */
@@ -112,6 +126,11 @@ export function tauriBackend(): Backend {
     saveProfile: (profile, previous) => invoke("save_profile", { profile, previous }),
     deleteProfile: (name) => invoke("delete_profile", { name }),
     availablePackages: (version, arch) => invoke("available_packages", { version, arch }),
+    availableVersions: (refresh) => invoke("available_versions", { refresh }),
+    checkVersionExists: (version) => invoke("check_version_exists", { version }),
+    pickPackages: () => invoke("pick_packages"),
+    acceptDisclaimer: () => invoke("accept_disclaimer"),
+    openLink: (link) => invoke("open_link", { link }),
     pickScript: () => invoke("pick_script"),
     pickLicenseKey: () => invoke("pick_license_key"),
     getSettings: () => invoke("get_settings"),

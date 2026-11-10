@@ -137,7 +137,7 @@ pub enum Command {
 pub enum AssetsCommand {
     /// Download (or verify cached) boot kernels and packages.
     Fetch {
-        /// Channel (stable, long-term, testing, development) or version (7.25.1).
+        /// Channel (stable, long-term, testing, development, v6-long-term) or version (7.25.1, 6.49.23).
         #[arg(long)]
         version: VersionSpec,
         /// Package architecture(s) to fetch packages for (arm64, mipsbe, ...).
@@ -169,7 +169,7 @@ pub enum ProfilesCommand {
 /// What to install, given on the command line.
 #[derive(Debug, Clone, Args)]
 pub struct RecipeArgs {
-    /// Channel (stable, long-term, testing, development) or version (7.25.1).
+    /// Channel (stable, long-term, testing, development, v6-long-term) or version (7.25.1, 6.49.23).
     #[arg(long)]
     pub version: VersionSpec,
     /// Extra package(s) besides routeros, e.g. wifi-qcom.
@@ -302,7 +302,16 @@ pub struct FlashArgs {
     /// devices de-duplicate re-sent chunks is unverified on hardware).
     #[arg(long, default_value_t = 3)]
     pub retransmits: u32,
+    /// Accept the disclaimer (printed without it): no warranty, Netinstall
+    /// erases the device, use at your own risk. Or set
+    /// MAC_NETINSTALL_ACCEPT_DISCLAIMER=1.
+    #[arg(long)]
+    pub accept_disclaimer: bool,
 }
+
+/// The environment variable that accepts the disclaimer like
+/// `--accept-disclaimer`.
+pub const ACCEPT_DISCLAIMER_ENV: &str = "MAC_NETINSTALL_ACCEPT_DISCLAIMER";
 
 fn parse_pool(s: &str) -> Result<(Ipv4Addr, Ipv4Addr), String> {
     let (a, b) = s
@@ -494,7 +503,7 @@ mod tests {
             ErrorKind::MissingRequiredArgument
         );
         assert_eq!(
-            kind(&["flash", "--iface", "en7", "--version", "6.49"]),
+            kind(&["flash", "--iface", "en7", "--version", "6.29"]),
             ErrorKind::ValueValidation
         );
         assert_eq!(

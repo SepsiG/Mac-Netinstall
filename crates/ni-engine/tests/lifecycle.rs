@@ -318,9 +318,42 @@ async fn a_device_that_never_says_wtrm_is_done_with_a_warning() {
     assert!(report.is_some(), "TERM reached the device");
 }
 
+/// A version below the device's minimum is refused before anything is
+/// offered (it could brick the device).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_newer_min_os_is_only_a_warning() {
+async fn a_version_below_the_device_minimum_is_refused() {
     let mut rig = rig(|_| {}).await;
+    let mut newer = sim_config(A);
+    newer.info.min_os = "7.99".into();
+    let sim = boot(&rig, A, newer).await;
+    rig.lan.add(sim).await;
+    let failed = state(&mut rig.events, A, "failed").await;
+    let EngineEvent::Device {
+        state: DeviceState::Failed { code, params },
+        ..
+    } = failed
+    else {
+        unreachable!()
+    };
+    assert_eq!(code, "version_below_minimum");
+    assert_eq!(params["min_os"], "7.99");
+    assert_eq!(params["version"], "7.25.1");
+    let report = rig.lan.report(A).await.expect("the device is known");
+    assert!(
+        report.received.is_empty() && !report.terminated,
+        "nothing was sent"
+    );
+}
+
+/// With the profile's explicit permission it is only a warning.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_newer_min_os_is_only_a_warning_when_allowed() {
+    let mut rig = rig(|cfg| {
+        if let Some(p) = cfg.profile.as_mut() {
+            p.allow_below_minimum = true;
+        }
+    })
+    .await;
     let mut newer = sim_config(A);
     newer.info.min_os = "7.99".into();
     let sim = boot(&rig, A, newer).await;

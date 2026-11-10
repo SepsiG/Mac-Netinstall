@@ -63,14 +63,17 @@ impl PkgArch {
     /// Map the architecture a device reports in its Netinstall hello.
     ///
     /// Matching ignores case and surrounding whitespace. `powerpc` is
-    /// accepted for `ppc`. Which exact strings real devices send is a
-    /// hardware check (see the roadmap).
+    /// accepted for `ppc`, and plain `mips` for `mipsbe`.
+    ///
+    /// Strings seen from real devices: hEX RB750Gr3 → `mmips`,
+    /// hAP ac² → `arm`, CRS125-24G-1S-2HnD (big-endian MIPS) → `mips`.
+    /// The others are still a hardware check (see the roadmap).
     pub fn from_device_arch(s: &str) -> Result<Self, ArchError> {
         let lower = s.trim().to_ascii_lowercase();
         let arch = match lower.as_str() {
             "arm" => PkgArch::Arm,
             "arm64" => PkgArch::Arm64,
-            "mipsbe" => PkgArch::Mipsbe,
+            "mipsbe" | "mips" => PkgArch::Mipsbe,
             "mmips" => PkgArch::Mmips,
             "smips" => PkgArch::Smips,
             "ppc" | "powerpc" => PkgArch::Ppc,
@@ -129,13 +132,22 @@ mod tests {
         }
     }
 
+    /// Seen on real hardware (2026-11-10): a CRS125-24G-1S-2HnD (big-endian
+    /// MIPS, RouterOS packages `*-mipsbe.npk`) reports plain `mips` in its
+    /// Netinstall hello.
+    #[test]
+    fn plain_mips_from_a_crs125_hello_is_mipsbe() {
+        assert_eq!(PkgArch::from_device_arch("mips"), Ok(PkgArch::Mipsbe));
+        assert_eq!(PkgArch::from_device_arch("MIPS "), Ok(PkgArch::Mipsbe));
+    }
+
     #[test]
     fn x86_is_unsupported_and_others_unknown() {
         assert_eq!(
             PkgArch::from_device_arch("x86"),
             Err(ArchError::Unsupported("x86".into()))
         );
-        for s in ["", "mips", "aarch64", "risc-v"] {
+        for s in ["", "mipsle", "aarch64", "risc-v"] {
             assert_eq!(
                 PkgArch::from_device_arch(s),
                 Err(ArchError::Unknown(s.into())),

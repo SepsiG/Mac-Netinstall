@@ -13,8 +13,12 @@ pub const APP_FAILURES: &[&str] = &[
     "key_file_failed",
     "log_io",
     "no_home",
+    "not_a_package",
     "not_a_script",
+    "open_link_failed",
     "open_settings_failed",
+    "package_exists",
+    "package_failed",
     "packages_unavailable",
     "profile_exists",
     "script_failed",
@@ -28,12 +32,16 @@ pub struct AppCatalog {
     #[serde(flatten)]
     pub engine: ni_engine::codes::Catalog,
     pub app_failures: Vec<&'static str>,
+    /// The disclaimer text version the window asks to accept
+    /// ([`ni_engine::DISCLAIMER_VERSION`]).
+    pub disclaimer_version: &'static str,
 }
 
 pub fn catalog() -> AppCatalog {
     AppCatalog {
         engine: ni_engine::codes::catalog(),
         app_failures: APP_FAILURES.to_vec(),
+        disclaimer_version: ni_engine::DISCLAIMER_VERSION,
     }
 }
 

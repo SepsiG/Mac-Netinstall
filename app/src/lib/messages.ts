@@ -82,8 +82,8 @@ export function logEntry(e: EngineEvent, at: number): LogEntry | null {
         at,
         level: "info",
         mac: e.mac,
-        key: "log.discovered",
-        values: { model: e.model, arch: e.arch, license: e.license_id },
+        key: e.min_os.trim() ? "log.discovered" : "log.discovered_no_min",
+        values: { model: e.model, arch: e.arch, license: e.license_id, min_os: e.min_os.trim() },
       };
     case "ignored":
       return { at, level: "info", mac: e.mac, key: "log.ignored", values: { reason: e.reason } };
@@ -106,6 +106,8 @@ export function logEntry(e: EngineEvent, at: number): LogEntry | null {
       return { at, level: "error", failure: { code: e.code, params: e.params } };
     case "warning":
       return { at, level: "warning", failure: { code: e.code, params: e.params } };
+    case "info":
+      return { at, level: "info", mac: e.params?.mac, failure: { code: e.code, params: e.params } };
     case "kernels":
       return null; // the status bar shows it; kernels_ready / error log it
   }

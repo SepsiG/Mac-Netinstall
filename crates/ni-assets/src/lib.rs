@@ -24,6 +24,7 @@ mod lock;
 pub mod npk;
 pub mod urls;
 pub mod version;
+pub mod versions;
 
 /// Test fixtures (synthetic kernels, NPKs, a fake MikroTik mirror over a
 /// local HTTP server, self-cleaning temp dirs). Not a stable API: enabled
@@ -37,13 +38,15 @@ pub use arch::{ArchError, PkgArch};
 pub use archive::ArchiveError;
 pub use assets::{
     default_cache_root, item_version, kernel_file_name, read_regular_file, Assets, CachedItem,
-    CachedVersion, DeleteScope, Integrity, Inventory, ItemKind, LocalFile, LocalKind,
-    ReadFileError, BUNDLE_ID, CHANNELS_FILE, MAX_LOCAL_NAME, MAX_SCRIPT_SIZE, STALE_PART_AGE,
+    CachedVersion, DeleteScope, Integrity, Inventory, ItemKind, ListSource, LocalFile, LocalKind,
+    ReadFileError, VersionsAnswer, BUNDLE_ID, CHANNELS_FILE, MAX_LOCAL_NAME, MAX_SCRIPT_SIZE,
+    STALE_PART_AGE,
 };
 pub use cache::{Entry, Index};
 pub use error::AssetError;
 pub use events::{AssetEvent, EventSink, PROGRESS_STEP};
 pub use http::{HttpConfig, USER_AGENT};
 pub use kernel::{extract_kernels, KernelError, KernelSet};
-pub use npk::NpkError;
+pub use npk::{NpkError, NpkHeader};
 pub use version::{Channel, Release, Version, VersionError, VersionSpec};
+pub use versions::{ListedVersion, VersionList, VERSIONS_FILE};

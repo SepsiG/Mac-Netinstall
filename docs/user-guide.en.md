@@ -4,11 +4,16 @@
 
 > **Status:** validated on real hardware with a **hEX RB750Gr3** (`mmips`, RouterOS 7.25.1):
 > all four configuration modes (default, empty, custom script, keep existing) and auto-repeat
-> work; a **hAP ac²** (`arm`) was also installed with an extra package. Other architectures
-> (arm64, mipsbe, ppc, tile), the mode script, remove
+> work; a **hAP ac²** (`arm`) was also installed with an extra package, and a
+> **CRS125-24G-1S-2HnD** (`mipsbe`). Other architectures
+> (arm64, smips, ppc, tile), the mode script, remove
 > branding, the license key and the shutdown variant have **not yet been tested** on
 > hardware. For such models keep a fallback: a device you can recover with MikroTik's
 > official Netinstall (Windows/Linux) if needed.
+>
+> **Disclaimer:** the app is provided “as is”, without any warranty. Netinstall erases the
+> device: use it at your own risk. The authors accept no liability for damage, including
+> devices that become unusable (“bricked”). See [Disclaimer](#13-disclaimer).
 
 ## Contents
 
@@ -24,6 +29,7 @@
 10. [Command line (ni-cli)](#10-command-line-ni-cli)
 11. [Known limitations](#11-known-limitations)
 12. [Feedback](#12-feedback)
+13. [Disclaimer](#13-disclaimer)
 
 ## 1. What it is
 
@@ -137,11 +143,68 @@ or create one with **New…**; change an existing one with **Edit…**. Profiles
 | Field | Description |
 |---|---|
 | **Name** | 1–64 letters, digits, spaces or `. _ - +`, not starting with a dot or a space. |
-| **RouterOS version** | **Channel** (**Stable**, **Long-term**, **Testing**, **Development**) – always the channel's current version; or **Exact version**, e.g. `7.25.1` or `7.26rc1`. RouterOS 7 only. |
+| **Packages from** | **Download from MikroTik** (default) or **Local package files (.npk)** (see [Installing from local .npk files](#installing-from-local-npk-files)). |
+| **RouterOS version** | Chosen in the version picker (see [Choosing the version](#choosing-the-version)): a channel that always installs its current version, a concrete RouterOS 7 or archived 6.x version, or a version typed by hand. |
 | **Extra packages** | The `routeros` system package is always installed; tick extra packages here (e.g. `wifi-qcom`). **List for** shows which packages exist for an architecture – it only filters the list; the app detects the device's architecture by itself. |
 | **Configuration** | What happens to the configuration (see below). |
 | **After install** | **Reboot**, **Reboot with the message “Installation successful”** or **Shut down**. |
-| **Advanced** | Mode script, remove branding, license key (see below). |
+| **Advanced** | Mode script, remove branding, license key, installing below the device's minimum version (see below). |
+
+### Choosing the version
+
+The **RouterOS version** list has three groups and a search box (**Search versions**):
+
+- **Always the newest** – **Stable**, **Long-term**, **Testing**, **Development** and
+  **RouterOS v6 (long-term)**, each with the version it names right now in parentheses.
+  A profile with a channel always installs that channel's current version.
+- **RouterOS 7** – concrete releases from MikroTik's changelog, newest first, with their
+  channel (Stable, Long-term) and release date.
+- **Archive (6.x, end of life)** – RouterOS 6 releases from 6.30 on.
+- **Custom version…** – type a version (e.g. `7.20.8` or `6.49.23`); the app checks
+  whether download.mikrotik.com publishes it (**published** / **not published on
+  download.mikrotik.com**).
+
+The list comes from mikrotik.com and is kept for a day; the line under it says how old it
+is, **Refresh** fetches it again. Offline the last list (or a small built-in list) is used.
+
+### RouterOS 6 (archive versions)
+
+RouterOS 6 (6.30 to 6.49.x) can be installed too. Things to know:
+
+- **RouterOS 6 is end of life.** Use it only when you have a reason to (e.g. an old
+  device or a configuration that needs v6).
+- **Never install a version older than the device's minimum (factory) version.** That can
+  leave the device unusable. The device reports its minimum version in its Netinstall hello
+  when it is discovered (the log line and the model's tooltip show it; how real devices fill
+  this field is still being verified on hardware); the app **refuses** an older version
+  before anything is erased: **“RouterOS … is older than this device's minimum version …”**.
+  If either version cannot be read (e.g. a local package of an unknown version), the install
+  is refused too. Some newer devices do not support v6 at all.
+- Old releases do not exist for every architecture (e.g. 6.30.4 has no `arm` or `mmips`
+  package; `arm64` starts around 6.45): **“RouterOS … is not published for the …
+  architecture.”**
+- The device boots the current RouterOS 7 netinstall kernels, which install v6 packages.
+- In v6 the main package bundles `system`, `ipv6`, `wireless`, `hotspot`, `mpls`,
+  `routing`, `ppp`, `dhcp`, `security` and `advanced-tools`; the extra-package list shows
+  only the real extras.
+- The mode script needs RouterOS 7.22 or later, so it cannot be used with v6.
+
+A suggestion for a first try: install `6.49.23` on a hEX you can recover.
+
+### Installing from local .npk files
+
+Choose **Local package files (.npk)** in **Packages from**, then **Choose .npk files…**
+(several at once). The list shows each file's package name, architecture and version as
+read from the file. Remove one with ×.
+
+- One file must be a main (`system`/`routeros`) package; it is installed first.
+- Every file must be built for the device's architecture; this is checked before the
+  device is formatted.
+- The installed version is read from the main package (shown as “version unknown” if it
+  cannot be read; then the mode script cannot be used).
+- The boot kernels still come from the current stable RouterOS 7 netinstall: that needs an
+  internet connection once, or kept downloads (see [Settings](#8-settings)).
+- The files are copied into the app's own folder; if one is deleted there, choose it again.
 
 ### Configuration modes
 
@@ -164,13 +227,19 @@ configuration**.
 - **Mode script (mode.scr)** – an extra RouterOS script sent to the device as `mode.scr`
   (the official tool's `-sm`). Per MikroTik's documentation it runs once, on first boot,
   before the other configuration scripts, and needs RouterOS 7.22 or later. Not together
-  with keeping the existing configuration.
+  with keeping the existing configuration, and not for versions before 7.22 (RouterOS 6
+  included).
 - **Remove branding** – sends the official tool's `-b` flag. What a device does with it
   has not been verified.
 - **License key:** – **Choose key file…**. Only for devices that need a software key (e.g.
   x86), like the official tool's `-k`. RouterBOARDs carry their license on the device, so
   you normally leave this empty. The key is stored in the profile file, which only your
   user can read.
+- **Allow below the device's minimum version (risky)** – off by default. Normally a version
+  older than the minimum version the device reports is refused before anything is erased,
+  because it can make the device unusable; so is an install whose version, or the device's
+  minimum, cannot be read. Turn it on only if you know the device supports
+  that version.
 
 **Save** stores the profile, **Cancel** closes the editor (it asks first if there are
 unsaved changes). An existing profile can be removed with **Delete…**.
@@ -182,7 +251,9 @@ unsaved changes). An existing profile can be removed with **Delete…**.
 2. Choose the adapter in the **Interface** list and the profile in the **Profile** list.
    If the app should start installing on its own, tick **Auto-repeat** (see
    [section 7](#7-several-devices-and-auto-repeat)).
-3. Wait until the status line shows **✓ Ready to start**, then click **Start**. If needed,
+3. Wait until the status line shows **✓ Ready to start**, then click **Start**. The first
+   time, the app shows the **Disclaimer**: tick **I understand and use it at my own risk**
+   and click **Accept** (**Cancel** starts nothing). If needed,
    the app downloads the boot kernels now. On the right of the status line, **Boot
    kernels:** shows their state (e.g. `RouterOS 7.25.1`, with a percentage while
    downloading). While running, the left side shows a line like **Serving on en7
@@ -307,6 +378,18 @@ Opened with the **Settings** button in the toolbar.
   **"RouterOS … is in use right now (served or being installed). Stop first, or delete
   other files."**
 
+- **Keep downloaded files after quitting** (under **Downloaded RouterOS files**) – off by
+  default: the downloaded kernels and packages are **deleted when the app quits** (and
+  leftovers at the next launch). Your own files (scripts, packages) and the version lists
+  are always kept. Turn it on for offline work or when you install many devices over
+  several days: without kept files the app cannot fall back to the last used version
+  offline. **Upgrading from 0.1.1:** an existing settings file keeps the downloads (the
+  box is ticked); untick it if you want them deleted. The cache is shared with `ni-cli`, so
+  the setting also deletes what `ni-cli` downloaded; a version another program is using at
+  that moment is skipped.
+- **About** – the app's version, its license (GNU GPL v3), the disclaimer and links to the
+  GitHub page, the full disclaimer and the license.
+
 **Save** stores the settings, **Cancel** discards the changes.
 
 ## 9. Log and troubleshooting
@@ -349,6 +432,8 @@ Errors also appear in a bar at the top of the window; close it with × (**Dismis
 | **The device stopped receiving with … still to send: the install is incomplete.** | Install it again. |
 | **… received every file but never confirmed it was ready; the install was finished anyway. Check that the device starts up.** | A warning: the install was closed, but the device did not confirm it. Check that it boots properly; if not, install again. Please send a log in this case. |
 | **This device booted the RouterOS … kernel, so it cannot install …. Power it off and on to netboot again.** | You changed the profile (version) after the device booted. Boot it into Etherboot mode again. |
+| **… is built for “…”, but this device reports “…”. Nothing was installed and the device was not formatted.** | A package does not match the device's architecture (every package names the architecture it is built for; the app checks them all before it starts). The device is untouched. Check that the right model is connected; if it keeps happening, report it (see [Feedback](#12-feedback)). |
+| **No RouterOS package is built for this device's architecture “…” … Please report it …** | The device reports an architecture the app could not match to any RouterOS download. Nothing was installed. Please open a [GitHub issue](https://github.com/SepsiG/Mac-Netinstall/issues) with the whole message (it lists the model and the device's hello) and the exported log. |
 | **macOS blocks this app's local network access: the devices get no answer.** (red, in the status line and in the device's row) | The Local Network permission is missing or the macOS question is still unanswered. Click **Open System Settings** (Privacy & Security → Local Network), turn Mac Netinstall on, then netboot the device again. The permissions sheet also opens once to check it. |
 | **Sending failed (Netinstall, …×).** | A send failed for another reason (e.g. the adapter went away). If it keeps happening, check the cable and the adapter, and the permissions (**Settings → Check permissions**). |
 | **The engine stopped unexpectedly. Restart Mac Netinstall.** | Restart the app and send the log file. |
@@ -365,7 +450,9 @@ cargo build --release -p ni-cli
 # the binary: target/release/ni-cli
 ```
 
-Main commands: `interfaces`, `preflight`, `assets`, `profiles`, `flash`. It shares the
+Main commands: `interfaces`, `preflight`, `assets`, `profiles`, `flash`. `flash` prints
+the disclaimer and refuses to run until you accept it with `--accept-disclaimer` (or by
+setting `MAC_NETINSTALL_ACCEPT_DISCLAIMER=1`). It shares the
 profiles and downloaded files with the app. Examples:
 
 ```sh
@@ -376,11 +463,11 @@ ni-cli interfaces
 ni-cli preflight --iface en7 --profile "hAP base"
 
 # One device: stable RouterOS, keeping the existing configuration
-ni-cli flash --iface en7 --version stable --config keep
+ni-cli flash --accept-disclaimer --iface en7 --version stable --config keep
 
 # A batch: own script, every new device, until Ctrl-C;
 # without re-sends (see Known limitations)
-ni-cli flash --iface en7 --version 7.25.1 --package wifi-qcom \
+ni-cli flash --accept-disclaimer --iface en7 --version 7.25.1 --package wifi-qcom \
   --script base.rsc --auto-repeat --retransmits 0
 ```
 
@@ -391,8 +478,9 @@ seconds aborts. All options: `ni-cli --help` and `ni-cli <command> --help`.
 ## 11. Known limitations
 
 - **Only partly validated on real hardware.** Tested so far: a hEX RB750Gr3 (`mmips`) with
-  the default, empty, script and keep configuration modes and auto-repeat, and a hAP ac²
-  (`arm`) with an extra package. Not yet tested: arm64, mipsbe, ppc and tile (whether their
+  the default, empty, script and keep configuration modes and auto-repeat, a hAP ac²
+  (`arm`) with an extra package, and a CRS125-24G-1S-2HnD (`mipsbe`). Not yet tested: arm64,
+  smips, ppc and tile (whether their
   boot kernels boot), the mode script, remove
   branding, the license key and the shutdown variant. Keep the official Netinstall as a
   fallback for untested models. The open points are listed in the
@@ -401,7 +489,9 @@ seconds aborts. All options: `ni-cli --help` and `ni-cli <command> --help`.
   this correctly is unverified. If an install stalls at a step, `ni-cli`'s
   `--retransmits 0` turns it off.
 - Apple Silicon Macs only, macOS 13 or later.
-- x86 (PXE) and ARM64 UEFI devices are not supported; RouterOS 7 only.
+- x86 (PXE) and ARM64 UEFI devices are not supported. RouterOS 7 and RouterOS 6 from
+  6.30 on; installing v6 with the RouterOS 7 netinstall kernels has not been tested on
+  hardware yet, nor the oldest PowerPC boards or arm64 with v6.
 - Ad-hoc signed, not notarized: the first launch has to be allowed (see
   [section 3](#3-installing-the-app)).
 - Without the Local Network permission the app cannot reach devices.
@@ -421,3 +511,21 @@ Please attach:
 - the profile settings (version, packages, configuration mode, after install) –
   **do not send the license key**;
 - your Mac model, macOS version and Ethernet adapter type.
+
+## 13. Disclaimer
+
+- Mac Netinstall is free software, provided **“as is”, without any warranty**, as stated
+  in sections 15–16 of the [GNU General Public License v3](../LICENSE).
+- Netinstall **erases the device's storage** and reinstalls RouterOS. **Use it at your own
+  risk.**
+- The authors and contributors accept **no liability for any damage or loss**, including
+  devices becoming unusable (“bricked”), lost configuration or data, downtime, or damage
+  from installing old, archived or end-of-life RouterOS versions, versions below the
+  device's minimum version, or wrong packages.
+- Test on a device you can recover (e.g. with MikroTik's official Netinstall) before using
+  it in production.
+- Mac Netinstall is not affiliated with, endorsed or supported by MikroTik. MikroTik,
+  RouterOS and RouterBOARD are trademarks of their owner.
+
+The app asks you to accept this once, before the first **Start** (and again if the text
+changes).
