@@ -79,3 +79,34 @@ pub fn npk(len: usize, fill: u8) -> Vec<u8> {
     v.resize(len, fill);
     v
 }
+
+/// A synthetic NPK with the part layout of a real RouterOS package
+/// (magic, payload length, then `u16 type, u32 len, data` parts): an empty
+/// type-25 part, the type-1 header (`name`, NUL-padded to 16 bytes, then
+/// 20 bytes of version data), the type-16 architecture `arch`, a type-21
+/// filler of `fill` bytes and the trailing 1-byte type-16 part real
+/// packages end with. `len` bytes in total.
+pub fn npk_package(name: &str, arch: &str, len: usize, fill: u8) -> Vec<u8> {
+    fn part(v: &mut Vec<u8>, kind: u16, data: &[u8]) {
+        v.extend_from_slice(&kind.to_le_bytes());
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(data);
+    }
+    assert!(name.len() <= 16);
+    let mut header = name.as_bytes().to_vec();
+    header.resize(16, 0);
+    header.extend_from_slice(&[0x07, 0x19, 0x66, 0x01, 0x00, 0x6a, 0, 0, 0, 0]);
+    header.resize(36, 0);
+    let mut v = NPK_MAGIC.to_vec();
+    v.extend_from_slice(&[0; 4]);
+    part(&mut v, 25, &[]);
+    part(&mut v, 1, &header);
+    part(&mut v, 16, arch.as_bytes());
+    let fixed = v.len() + 6 + 7;
+    assert!(len >= fixed, "an NPK of {name}/{arch} needs {fixed} bytes");
+    part(&mut v, 21, &vec![fill; len - fixed]);
+    part(&mut v, 16, b"I");
+    let size = (v.len() - 8) as u32;
+    v[4..8].copy_from_slice(&size.to_le_bytes());
+    v
+}

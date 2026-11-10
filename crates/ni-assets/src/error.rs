@@ -117,6 +117,7 @@ impl AssetError {
         "cancelled",
         "not_npk",
         "npk_length",
+        "npk_malformed",
         "archive_missing_cli",
         "archive",
         "kernel_missing",
@@ -155,6 +156,7 @@ impl AssetError {
             AssetError::Cancelled => "cancelled",
             AssetError::Npk(NpkError::NotAnNpk { .. }) => "not_npk",
             AssetError::Npk(NpkError::LengthMismatch { .. }) => "npk_length",
+            AssetError::Npk(NpkError::Malformed { .. }) => "npk_malformed",
             AssetError::Archive(ArchiveError::MissingCli) => "archive_missing_cli",
             AssetError::Archive(_) => "archive",
             AssetError::Kernel(KernelError::Missing(_)) => "kernel_missing",
@@ -227,6 +229,7 @@ mod tests {
                 expected: 1,
                 actual: 2,
             }),
+            AssetError::Npk(NpkError::Malformed { reason: "r" }),
             AssetError::Archive(ArchiveError::MissingCli),
             AssetError::Archive(ArchiveError::BadZip("x")),
             AssetError::Kernel(KernelError::Missing(vec![BootArch::Tile])),
@@ -272,6 +275,7 @@ mod tests {
                 "cancelled",
                 "not_npk",
                 "npk_length",
+                "npk_malformed",
                 "archive_missing_cli",
                 "archive",
                 "kernel_missing",
@@ -305,10 +309,10 @@ mod tests {
         all.dedup();
         assert_eq!(all.len(), AssetError::CODES.len());
         // The two codes the test above cannot construct (they wrap
-        // `reqwest::Error`), plus the 31 it checks.
+        // `reqwest::Error`), plus the 32 it checks.
         assert!(AssetError::CODES.contains(&"http_client"));
         assert!(AssetError::CODES.contains(&"network"));
-        assert_eq!(AssetError::CODES.len(), 33);
+        assert_eq!(AssetError::CODES.len(), 34);
     }
 
     #[test]

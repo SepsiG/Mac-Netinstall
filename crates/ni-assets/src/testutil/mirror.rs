@@ -1,6 +1,6 @@
 //! A fake MikroTik mirror for [`Assets`] tests.
 
-use super::{kernel_container, npk, synthetic_kernels, tar_gz, zip, Reply, TestServer};
+use super::{kernel_container, npk_package, synthetic_kernels, tar_gz, zip, Reply, TestServer};
 use crate::events::AssetEvent;
 use crate::http::HttpConfig;
 use crate::npk::sha256_hex;
@@ -33,8 +33,8 @@ pub fn mirror(srv: &TestServer) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 /// Like [`mirror`], for version `ver`.
 pub fn mirror_version(srv: &TestServer, ver: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let tarball = netinstall_tarball();
-    let main = npk(5000, 0xaa);
-    let wireless = npk(3000, 0xbb);
+    let main = npk_package("system", "arm64", 5000, 0xaa);
+    let wireless = npk_package("wireless", "arm64", 3000, 0xbb);
     let d = format!("/dl/{ver}");
     srv.route(
         "/up/NEWESTa7.stable",
@@ -71,6 +71,28 @@ pub fn mirror_version(srv: &TestServer, ver: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>
         Reply::Body(zip(&[(wl.as_str(), &wireless[..]), (ct.as_str(), b"c")])),
     );
     (tarball, main, wireless)
+}
+
+/// Also serve `routeros` and `wireless` (with checksums) and the
+/// `all_packages` zip for the download architecture `download` of [`V`],
+/// with `npk_arch` as the architecture inside both packages (the arch a
+/// device names in its hello: `mips` for `mipsbe`). Returns the two
+/// packages.
+pub fn mirror_arch(srv: &TestServer, download: &str, npk_arch: &str) -> (Vec<u8>, Vec<u8>) {
+    let main = npk_package("system", npk_arch, 4000, 0xa1);
+    let wireless = npk_package("wireless", npk_arch, 2000, 0xb1);
+    let d = format!("/dl/{V}");
+    for (name, data) in [("routeros", &main), ("wireless", &wireless)] {
+        let file = format!("{name}-{V}-{download}.npk");
+        srv.route(&format!("{d}/{file}"), Reply::Body(data.clone()));
+        srv.route(&format!("{d}/{file}.sha256"), sum_file(data, &file));
+    }
+    let wl = format!("wireless-{V}-{download}.npk");
+    srv.route(
+        &format!("{d}/all_packages-{download}-{V}.zip"),
+        Reply::Body(zip(&[(wl.as_str(), &wireless[..])])),
+    );
+    (main, wireless)
 }
 
 pub fn assets(srv: &TestServer, root: &Path) -> Assets {

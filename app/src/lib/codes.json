@@ -1,6 +1,7 @@
 {
   "failures": [
     "already_running",
+    "arch_resolved",
     "assets_failed",
     "bind_failed",
     "bootp_send_failed",
@@ -48,6 +49,7 @@
     "not_cancellable",
     "not_failed",
     "not_running",
+    "package_arch_mismatch",
     "pool_includes_reserved",
     "pool_inverted",
     "pool_outside_subnet",
@@ -65,6 +67,7 @@
     "tftp_rejected",
     "too_many_packages",
     "unknown_device",
+    "unknown_device_arch",
     "unknown_interface",
     "unsuitable_interface",
     "version_unavailable"
@@ -91,6 +94,7 @@
     "cancelled",
     "not_npk",
     "npk_length",
+    "npk_malformed",
     "archive_missing_cli",
     "archive",
     "kernel_missing",

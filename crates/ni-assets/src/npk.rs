@@ -4,6 +4,14 @@
 //! `u32` holding the length of the rest of the file, so a complete package
 //! is exactly `8 + length` bytes (verified on 7.1, 7.12.1, 7.16.2 and
 //! 7.25.1 packages).
+//!
+//! The rest is a sequence of parts, each `u16 type, u32 length, data`
+//! (little-endian). Part type 1 is the package header (its name,
+//! NUL-padded to 16 bytes, then version data); the first type-16 part after
+//! it is the architecture the package is built for, which is exactly the
+//! arch a device sends in its Netinstall hello (`routeros-*-mipsbe.npk`
+//! says `mips`, `-mmips` says `mmips`, `-arm` says `arm`). See
+//! [`package_header`].
 
 use ni_proto::message::NPK_MAGIC;
 use sha2::{Digest, Sha256};
@@ -20,6 +28,87 @@ pub enum NpkError {
         expected: u64,
         actual: u64,
     },
+    /// The part list has no readable package name or architecture.
+    #[error("malformed RouterOS package: {reason}")]
+    Malformed { reason: &'static str },
+}
+
+/// Part type of the package header (name and version).
+pub const PART_HEADER: u16 = 1;
+/// Part type of the architecture (the first one after the header).
+pub const PART_ARCH: u16 = 16;
+
+/// What [`package_header`] reads from an NPK.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpkHeader {
+    /// The package name (`system` for `routeros-*.npk`, `wireless`, ...).
+    pub name: String,
+    /// The architecture as the device names it in its hello (`mips` for
+    /// the `mipsbe` downloads).
+    pub arch: String,
+}
+
+/// Read the package name (part type 1) and architecture (the first part of
+/// type 16 after it). Every length is bounds-checked: hostile input is an
+/// error, never a panic. The NPK length header itself is [`check_npk`]'s
+/// business and not checked here.
+pub fn package_header(data: &[u8]) -> Result<NpkHeader, NpkError> {
+    let malformed = |reason| NpkError::Malformed { reason };
+    if data.len() < 8 || !data.starts_with(&NPK_MAGIC) {
+        return Err(malformed("missing NPK magic"));
+    }
+    let mut name: Option<String> = None;
+    let mut off = 8usize;
+    while data.len().saturating_sub(off) >= 6 {
+        let kind = u16::from_le_bytes([data[off], data[off + 1]]);
+        let len = u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]]);
+        let start = off + 6;
+        let end = usize::try_from(len)
+            .ok()
+            .and_then(|l| start.checked_add(l))
+            .filter(|&e| e <= data.len())
+            .ok_or(malformed("a part runs past the end of the file"))?;
+        let body = &data[start..end];
+        match (kind, &name) {
+            (PART_HEADER, None) => {
+                let raw = &body[..body.len().min(16)];
+                let raw = raw.split(|&b| b == 0).next().unwrap_or_default();
+                name = Some(text(raw).ok_or(malformed("unreadable package name"))?);
+            }
+            (PART_ARCH, Some(name)) => {
+                let arch = text(body).ok_or(malformed("unreadable architecture"))?;
+                return Ok(NpkHeader {
+                    name: name.clone(),
+                    arch,
+                });
+            }
+            _ => {}
+        }
+        off = end;
+    }
+    Err(malformed(if name.is_some() {
+        "no architecture part"
+    } else {
+        "no package header"
+    }))
+}
+
+/// The architecture an NPK is built for (see [`package_header`]).
+pub fn package_arch(data: &[u8]) -> Result<String, NpkError> {
+    package_header(data).map(|h| h.arch)
+}
+
+/// The package name in an NPK's header (see [`package_header`]).
+pub fn package_name(data: &[u8]) -> Result<String, NpkError> {
+    package_header(data).map(|h| h.name)
+}
+
+/// Printable ASCII with surrounding NULs and whitespace removed; `None` if
+/// empty or anything else is in it.
+fn text(raw: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(raw).ok()?;
+    let s = s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
+    (!s.is_empty() && s.bytes().all(|b| b.is_ascii_graphic())).then(|| s.to_string())
 }
 
 /// Check `data` is a complete NPK (magic and header length).
@@ -96,7 +185,135 @@ pub fn package_names(entries: &[String], version: &str, arch: &str) -> Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::npk;
+    use crate::testutil::{npk, npk_package};
+    use proptest::prelude::*;
+
+    fn part(v: &mut Vec<u8>, kind: u16, data: &[u8]) {
+        v.extend_from_slice(&kind.to_le_bytes());
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(data);
+    }
+
+    /// Magic, length and the given parts.
+    fn with_parts(parts: &[(u16, &[u8])]) -> Vec<u8> {
+        let mut v = NPK_MAGIC.to_vec();
+        v.extend_from_slice(&[0; 4]);
+        for (kind, data) in parts {
+            part(&mut v, *kind, data);
+        }
+        let size = (v.len() - 8) as u32;
+        v[4..8].copy_from_slice(&size.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn reads_name_and_arch_of_a_synthetic_package() {
+        let data = npk_package("system", "mips", 4000, 0xaa);
+        assert_eq!(data.len(), 4000);
+        assert_eq!(check_npk("a.npk", &data), Ok(()));
+        assert_eq!(package_arch(&data).as_deref(), Ok("mips"));
+        assert_eq!(package_name(&data).as_deref(), Ok("system"));
+        assert_eq!(
+            package_header(&data),
+            Ok(NpkHeader {
+                name: "system".into(),
+                arch: "mips".into()
+            })
+        );
+        let wl = npk_package("wireless", "arm64", 200, 0);
+        assert_eq!(package_arch(&wl).as_deref(), Ok("arm64"));
+        assert_eq!(package_name(&wl).as_deref(), Ok("wireless"));
+    }
+
+    /// Only the first type-16 part after the type-1 header is the
+    /// architecture: real packages end with a 1-byte type-16 part (`I`).
+    #[test]
+    fn the_arch_is_the_first_type_16_part_after_the_header() {
+        let mut name = b"system".to_vec();
+        name.resize(36, 0);
+        let data = with_parts(&[
+            (16, b"I"),
+            (25, b""),
+            (1, &name),
+            (2, b"Main package"),
+            (16, b"mmips"),
+            (16, b"I"),
+        ]);
+        assert_eq!(package_arch(&data).as_deref(), Ok("mmips"));
+        // Surrounding NULs and whitespace are not part of it.
+        let data = with_parts(&[(1, &name), (16, b" smips\0\0")]);
+        assert_eq!(package_arch(&data).as_deref(), Ok("smips"));
+    }
+
+    #[test]
+    fn malformed_packages_are_errors() {
+        let mut name = b"system".to_vec();
+        name.resize(36, 0);
+        let cases: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            b"PK\x03\x04\0\0\0\0".to_vec(),
+            npk(100, 0),                          // no parts
+            with_parts(&[(16, b"arm")]),          // arch without a header
+            with_parts(&[(1, &name)]),            // header without an arch
+            with_parts(&[(1, &name), (16, b"")]), // empty arch
+            with_parts(&[(1, &name), (16, b"a\xffb")]),
+            with_parts(&[(1, b"\0\0\0"), (16, b"arm")]), // empty name
+        ];
+        for data in cases {
+            assert!(package_arch(&data).is_err(), "{data:?}");
+        }
+        // A part running past the end of the file.
+        let mut cut = with_parts(&[(1, &name), (16, b"arm")]);
+        cut.truncate(cut.len() - 1);
+        assert!(package_arch(&cut).is_err());
+        assert!(package_name(&npk(8, 0)).is_err());
+    }
+
+    /// The packages in the user's cache, if there are any (read-only).
+    /// Official 7.25.1 packages: `routeros-*-mipsbe.npk` says `mips`, the
+    /// arch a CRS125 sends in its hello.
+    #[test]
+    #[ignore = "reads official packages from the local cache, if present"]
+    fn real_cached_packages_carry_the_hello_arch() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let dir = std::path::Path::new(&home)
+            .join("Library/Caches/io.github.sepsig.mac-netinstall/7.25.1");
+        let expect = [
+            ("routeros-7.25.1-mmips.npk", "system", "mmips"),
+            ("routeros-7.25.1-arm.npk", "system", "arm"),
+            ("routeros-7.25.1-mipsbe.npk", "system", "mips"),
+            ("wireless-7.25.1-arm.npk", "wireless", "arm"),
+            ("wireless-7.25.1-mipsbe.npk", "wireless", "mips"),
+        ];
+        for (file, name, arch) in expect {
+            let Ok(data) = std::fs::read(dir.join(file)) else {
+                eprintln!("skipped {file}: not cached");
+                continue;
+            };
+            let header = package_header(&data).unwrap();
+            assert_eq!((header.name.as_str(), header.arch.as_str()), (name, arch));
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn header_parser_never_panics(
+            data in proptest::collection::vec(any::<u8>(), 0..256),
+            idx in 0usize..300,
+            byte in any::<u8>(),
+            cut in 0usize..300,
+        ) {
+            let _ = package_header(&data);
+            let mut v = npk_package("system", "arm", 120, 1);
+            let i = idx % v.len();
+            v[i] = byte;
+            let _ = package_header(&v);
+            v.truncate(cut.min(v.len()));
+            let _ = package_header(&v);
+        }
+    }
 
     #[test]
     fn accepts_a_complete_npk() {

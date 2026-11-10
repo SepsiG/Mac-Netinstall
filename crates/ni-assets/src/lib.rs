@@ -45,5 +45,5 @@ pub use error::AssetError;
 pub use events::{AssetEvent, EventSink, PROGRESS_STEP};
 pub use http::{HttpConfig, USER_AGENT};
 pub use kernel::{extract_kernels, KernelError, KernelSet};
-pub use npk::NpkError;
+pub use npk::{NpkError, NpkHeader};
 pub use version::{Channel, Release, Version, VersionError, VersionSpec};

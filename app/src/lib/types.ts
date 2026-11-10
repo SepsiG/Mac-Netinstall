@@ -93,7 +93,8 @@ export type EngineEvent =
   | { event: "forgotten"; mac: string }
   | { event: "only_mac_changed"; mac: string | null }
   | ({ event: "error" } & Failure)
-  | ({ event: "warning" } & Failure);
+  | ({ event: "warning" } & Failure)
+  | ({ event: "info" } & Failure);
 
 export interface Finding extends Failure {
   severity: "error" | "warning";

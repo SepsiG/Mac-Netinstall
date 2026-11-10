@@ -7,9 +7,11 @@
 use serde::Serialize;
 
 /// [`crate::Failure`] codes: command errors, device failures (`failed`
-/// states), engine `error` and `warning` events, and preflight findings.
+/// states), engine `error`, `warning` and `info` events, and preflight
+/// findings.
 pub const FAILURES: &[&str] = &[
     "already_running",
+    "arch_resolved",
     "assets_failed",
     "bind_failed",
     "bootp_send_failed",
@@ -57,6 +59,7 @@ pub const FAILURES: &[&str] = &[
     "not_cancellable",
     "not_failed",
     "not_running",
+    "package_arch_mismatch",
     "pool_includes_reserved",
     "pool_inverted",
     "pool_outside_subnet",
@@ -74,6 +77,7 @@ pub const FAILURES: &[&str] = &[
     "tftp_rejected",
     "too_many_packages",
     "unknown_device",
+    "unknown_device_arch",
     "unknown_interface",
     "unsuitable_interface",
     "version_unavailable",

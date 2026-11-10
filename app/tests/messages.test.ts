@@ -52,6 +52,13 @@ describe("messages", () => {
     expect(logText("hu", ignored)).toBe("Nincs kiszolgálva: nemrég telepítve (várakozási idő)");
     const warn = logEntry({ event: "warning", code: "link_up", params: { interface: "en7" } }, at)!;
     expect([warn.level, logText("en", warn)]).toEqual(["warning", "en7: link is back."]);
+    const resolved = logEntry(
+      { event: "info", code: "arch_resolved", params: { mac: MAC, arch: "xmips", download_arch: "smips" } },
+      at,
+    )!;
+    expect(resolved.level).toBe("info");
+    expect(logText("en", resolved)).toContain("xmips");
+    expect(logText("en", resolved)).toContain("smips");
     const found = logEntry(
       { event: "discovered", mac: MAC, model: "hEX", arch: "mmips", license_id: "AB", min_os: "7" },
       at,

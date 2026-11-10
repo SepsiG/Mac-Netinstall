@@ -332,6 +332,10 @@ pub enum EngineEvent {
     /// `recv_error`, `bootp_send_failed`,
     /// `tftp_rejected`, `kernels_offline_fallback` (`version`).
     Warning(Failure),
+    /// Worth a line in the log, nothing to act on: `arch_resolved`
+    /// (`mac`, `arch`: the hello arch, `download_arch`: the packages it
+    /// gets), when a device's arch was resolved from package contents.
+    Info(Failure),
 }
 
 #[cfg(test)]
@@ -482,6 +486,20 @@ mod tests {
         ] {
             roundtrip(&e);
         }
+    }
+
+    #[test]
+    fn info_events_are_flat_failures() {
+        let e = EngineEvent::Info(
+            Failure::new("arch_resolved")
+                .with("arch", "xmips")
+                .with("download_arch", "smips"),
+        );
+        assert_eq!(
+            roundtrip(&e),
+            json!({"event": "info", "code": "arch_resolved",
+                   "params": {"arch": "xmips", "download_arch": "smips"}})
+        );
     }
 
     #[test]
