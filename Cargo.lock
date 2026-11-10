@@ -2091,7 +2091,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "mac-netinstall"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "core-foundation",
  "core-foundation-sys",
@@ -2243,7 +2243,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "ni-assets"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "flate2",
@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "ni-bootp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ni-net",
  "ni-proto",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "ni-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "ni-assets",
@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "ni-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "ni-assets",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "ni-net"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "core-foundation",
  "core-foundation-sys",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "ni-proto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "proptest",
@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "ni-sim"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "ni-proto",
@@ -2343,7 +2343,7 @@ dependencies = [
 
 [[package]]
 name = "ni-tftp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "ni-net",

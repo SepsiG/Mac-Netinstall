@@ -7,6 +7,8 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-10
+
 This release adds RouterOS 6, a version picker and installs from local
 `.npk` files, and refuses versions below a device's minimum version.
 Mac Netinstall is provided "as is", without any warranty (GPL-3.0 sections
@@ -186,6 +188,7 @@ Not affiliated with MikroTik.
 - Apple Silicon only; x86 (`X86_64__boot`, PXE) and ARM64 UEFI devices are
   not supported.
 
-[Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/SepsiG/Mac-Netinstall/releases/tag/v0.1.0
