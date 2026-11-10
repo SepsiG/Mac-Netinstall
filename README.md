@@ -47,7 +47,12 @@ Requires an Apple Silicon Mac with macOS 13 or later.
 (one request to `api.github.com`, nothing else is sent; turn it off in
 Settings → About). A newer version is announced in a banner; **Download**
 saves the DMG to `~/Downloads`, verifies it against the published
-`.sha256` and opens it; replace the app in Applications and restart it.
+`.sha256` and opens it (not while devices are being flashed); replace the
+app in Applications and restart it. The DMG is marked as downloaded from
+the Internet, so macOS Gatekeeper checks the new app; since it is not
+notarized, the first launch may need **Open Anyway** again. The `.sha256`
+check protects against corrupted or incomplete downloads, not against a
+compromised release.
 `ni-cli version --check` does the same comparison from the command line.
 
 While it runs, the app is in the Dock; the Dock icon's badge shows how many

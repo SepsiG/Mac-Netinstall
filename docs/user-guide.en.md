@@ -407,19 +407,27 @@ flashed; it waits until they are done.
 
 - **What's new?** – the release notes (shown as plain text); **Open on GitHub** opens the
   release page.
-- **Download** – downloads `Mac-Netinstall_<version>_aarch64.dmg` into your **Downloads**
-  folder (an existing file is never replaced: `… (1).dmg`), checks it against the published
-  `.sha256` checksum and opens it. A file that does not match is deleted and an error is
-  shown. Then drag **Mac Netinstall** onto **Applications**, replace the old one, and
-  restart the app. The app does not quit by itself. On the first launch macOS may ask for
-  the **Local Network** permission again (and, on macOS 15 and later, **Open Anyway** may
-  be needed again, see [section 3](#3-installing-the-app)).
+- **Download** – downloads `Mac-Netinstall_<version>_aarch64.dmg` (first into the app's
+  cache, `~/Library/Caches/io.github.sepsig.mac-netinstall/updates`), checks it against the
+  published `.sha256` checksum, then puts it into your **Downloads** folder (an existing
+  file is never replaced: `… (1).dmg`) and opens it. A file that does not match is deleted
+  and an error is shown. While devices are being prepared or flashed the DMG is not opened;
+  it opens once they are done (or use **Open**). The checksum protects against corrupted or
+  incomplete downloads, not against a compromised release (it is published next to the
+  DMG). The DMG is marked as downloaded from the Internet, like a browser download, so
+  **macOS Gatekeeper checks the new app** when it is first opened. Then drag **Mac
+  Netinstall** onto **Applications**, replace the old one, and restart the app. The app
+  does not quit by itself. Since the app is not notarized, the first launch may need **Open
+  Anyway** again (System Settings → Privacy & Security, see
+  [section 3](#3-installing-the-app)), and macOS may ask for the **Local Network**
+  permission again.
 - **Later** – hides the banner until the next start.
 - **Skip this version** – this version is not announced again, only a newer one.
 
 In **Settings → About**: **Check for updates automatically** (on by default) turns the
 daily check off; **Check for updates now** asks at once (and says whether you have the
-latest version); the time of the last check is shown; a skipped version is listed with
+latest version; it can be used again after a minute); the time of the last successful
+check is shown; a skipped version is listed with
 **Announce it again**.
 
 ## 9. Log and troubleshooting

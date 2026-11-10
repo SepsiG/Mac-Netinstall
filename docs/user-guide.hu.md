@@ -427,19 +427,27 @@ soha nem jelenik meg, megvárja, amíg végeznek.
 
 - **Mi újság?** – a kiadási megjegyzések (egyszerű szövegként); a **Megnyitás a GitHubon**
   a kiadás oldalát nyitja meg.
-- **Letöltés** – a `Mac-Netinstall_<verzió>_aarch64.dmg` fájlt a **Letöltések** mappába
-  tölti (meglévő fájlt sosem ír felül: `… (1).dmg`), ellenőrzi a közzétett `.sha256`
-  ellenőrzőösszeggel, majd megnyitja. Ha nem egyezik, a fájlt törli és hibát jelez. Ezután
-  húzd a **Mac Netinstall**-t az **Alkalmazások** mappába, a régit cseréld le, és indítsd
-  újra az appot. Az alkalmazás magától nem lép ki. Az első indításnál a macOS újra kérheti
-  a **Helyi hálózat** engedélyt (macOS 15-től pedig újra szükség lehet az Adatvédelem és
-  biztonság oldali megnyitás gombra, lásd a [3. fejezetet](#3-telepítés)).
+- **Letöltés** – letölti a `Mac-Netinstall_<verzió>_aarch64.dmg` fájlt (előbb az app
+  gyorsítótárába: `~/Library/Caches/io.github.sepsig.mac-netinstall/updates`), ellenőrzi a
+  közzétett `.sha256` ellenőrzőösszeggel, majd a **Letöltések** mappába teszi (meglévő
+  fájlt sosem ír felül: `… (1).dmg`) és megnyitja. Ha nem egyezik, a fájlt törli és hibát
+  jelez. Eszköz előkészítése vagy telepítése közben a DMG-t nem nyitja meg, csak amikor
+  végeztek (vagy a **Megnyitás** gombbal). Az ellenőrzőösszeg a sérült vagy félbemaradt
+  letöltés ellen véd, egy kompromittált kiadás ellen nem (a DMG mellett van közzétéve). A
+  DMG-t internetről letöltöttként jelöli meg, mint a böngészők, így **a macOS Gatekeeper
+  ellenőrzi az új appot** az első megnyitáskor. Ezután húzd a **Mac Netinstall**-t az
+  **Alkalmazások** mappába, a régit cseréld le, és indítsd újra az appot. Az alkalmazás
+  magától nem lép ki. Mivel az app nincs hitelesítve (notarizálva), az első indításnál
+  újra szükség lehet az Adatvédelem és biztonság oldali megnyitás gombra (**Open Anyway**,
+  lásd a [3. fejezetet](#3-telepítés)), és a macOS újra kérheti a **Helyi hálózat**
+  engedélyt.
 - **Később** – a sávot a következő indításig elrejti.
 - **Ezt a verziót kihagyom** – erről a verzióról nem szól többet, csak egy újabbról.
 
 A **Beállítások → Névjegy** részben: a **Frissítések automatikus keresése** (alapból
 bekapcsolva) kikapcsolja a napi ellenőrzést; a **Frissítések keresése most** azonnal
-lekérdez (és megmondja, ha a legfrissebb verzió fut); látszik az utolsó ellenőrzés ideje;
+lekérdez (és megmondja, ha a legfrissebb verzió fut; egy perc múlva használható újra);
+látszik az utolsó sikeres ellenőrzés ideje;
 a kihagyott verzió a **Jelezze újra** gombbal együtt jelenik meg.
 
 ## 9. Napló és hibaelhárítás
