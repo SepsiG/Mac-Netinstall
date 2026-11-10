@@ -5,7 +5,8 @@
 > **Állapot:** valódi hardveren, egy **hEX RB750Gr3**-on (`mmips`, RouterOS 7.25.1)
 > kipróbálva: mind a négy konfigurációs mód (alapértelmezett, üres, egyéni szkript,
 > meglévő megtartása) és az automatikus ismétlés működik; egy **hAP ac²** (`arm`) is
-> felment egy extra csomaggal, és egy **CRS125-24G-1S-2HnD** (`mipsbe`) is. A többi architektúrán (arm64, smips, ppc, tile), a módszkripttel, a márkajelzés eltávolításával, a licenckulccsal és a
+> felment egy extra csomaggal, és egy **CRS125-24G-1S-2HnD** (`mipsbe`) is. Az archívumból a
+> RouterOS **6.49.23** is felment a hEX-re. A többi architektúrán (arm64, smips, ppc, tile), a módszkripttel, a márkajelzés eltávolításával, a licenckulccsal és a
 > telepítés utáni leállítással **még nem tesztelt** hardveren. Ilyen típusoknál tarts kéznél
 > tartalékot: olyan eszközt, amelyet szükség esetén a MikroTik hivatalos Netinstalljával
 > (Windows/Linux) helyre tudsz állítani.
@@ -184,8 +185,8 @@ RouterOS 6 (6.30-tól 6.49.x-ig) is telepíthető. Amit érdemes tudni:
   eszköz vagy v6-ot igénylő konfiguráció).
 - **Soha ne telepíts az eszköz minimális (gyári) verziójánál régebbit.** Ettől az eszköz
   használhatatlanná válhat. Az eszköz a minimális verzióját a felismeréskor, a Netinstall
-  bejelentkezésében (hello) küldi el (a naplósor és a típus melletti buborék mutatja; hogy
-  a valódi eszközök mit írnak ebbe a mezőbe, azt még hardveren ellenőrizzük); az
+  bejelentkezésében (hello) küldi el (a naplósor és a típus melletti buborék mutatja; például
+  egy hEX RB750Gr3 6.36.1-et, egy LTE-s hAP ac² (D53G-5HacD2HnD&FG621-EA) 7.11-et jelez); az
   alkalmazás a régebbit **megtagadja**, mielőtt bármit törölne: **„A RouterOS …
   régebbi, mint az eszköz minimális verziója …”**. Ha valamelyik verzió nem olvasható ki
   (pl. ismeretlen verziójú saját csomag), a telepítést szintén megtagadja. Egyes újabb
@@ -503,7 +504,7 @@ megszakít. Minden opció: `ni-cli --help` és `ni-cli <parancs> --help`.
 - **Valódi hardveren csak részben kipróbálva.** Eddig egy hEX RB750Gr3-on (`mmips`)
   működött az alapértelmezett, az üres, a szkriptes és a megtartó konfigurációs mód, valamint
   az automatikus ismétlés, egy hAP ac²-n (`arm`) egy extra csomaggal, és egy
-  CRS125-24G-1S-2HnD-n (`mipsbe`) is. Még nem tesztelt: az arm64, smips, ppc és tile (elindul-e a boot kernelük), a módszkript, a márkajelzés eltávolítása, a licenckulcs és a telepítés utáni
+  CRS125-24G-1S-2HnD-n (`mipsbe`) is, valamint a RouterOS 6.49.23 a hEX-en. Még nem tesztelt: az arm64, smips, ppc és tile (elindul-e a boot kernelük), a módszkript, a márkajelzés eltávolítása, a licenckulcs és a telepítés utáni
   leállítás. Nem tesztelt típusoknál tartsd kéznél a hivatalos Netinstallt tartalékként.
   A nyitott pontok listája:
   [roadmap](superpowers/plans/2026-11-06-00-roadmap.md).
@@ -512,8 +513,8 @@ megszakít. Minden opció: `ni-cli --help` és `ni-cli <parancs> --help`.
   megakad, az `ni-cli` `--retransmits 0` kapcsolójával kikapcsolható.
 - Csak Apple Silicon Mac, macOS 13 vagy újabb.
 - x86 (PXE) és ARM64 UEFI eszközök nem támogatottak. RouterOS 7 és 6.30-tól RouterOS 6
-  telepíthető; a v6 telepítése a RouterOS 7 netinstall kernelével valódi hardveren még
-  nem kipróbált, ahogy a legrégebbi PowerPC-s eszközök és az arm64 v6-tal sem.
+  telepíthető; a v6 telepítése a RouterOS 7 netinstall kernelével működik (6.49.23 egy
+  hEX-en), de a legrégebbi PowerPC-s eszközök és az arm64 v6-tal még nem kipróbáltak.
 - Ad-hoc aláírás, nincs notarizálva: az első indítást engedélyezni kell (lásd
   [3. fejezet](#3-telepítés)).
 - Helyi hálózat engedély nélkül az alkalmazás nem éri el az eszközöket.
