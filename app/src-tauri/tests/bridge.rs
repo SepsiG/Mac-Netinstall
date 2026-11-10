@@ -38,6 +38,7 @@ fn http(srv: &TestServer) -> HttpConfig {
     HttpConfig {
         download_base: format!("{}/dl/", srv.base),
         upgrade_base: format!("{}/up", srv.base),
+        changelog_base: format!("{}/cl", srv.base),
         ..HttpConfig::default()
     }
 }
@@ -76,6 +77,7 @@ async fn rig(name: &str) -> Rig {
     let mut p = Profile::new("test", VersionSpec::Channel(Channel::Stable));
     p.extra_packages = vec!["wireless".into()];
     core.save_profile(&p, None).unwrap();
+    core.accept_disclaimer();
     let core = Arc::new(core);
     let (tx, events) = mpsc::unbounded_channel();
     tokio::spawn(forward_events(core.watch_engine(), move |f| {
@@ -175,7 +177,13 @@ async fn boot(rig: &Rig, mac: Mac) {
 #[test]
 fn start_flash_and_remember_the_choices() {
     rig_test("bridge-flash", |mut rig| async move {
-        assert_eq!(rig.core.settings(), Settings::default());
+        assert_eq!(
+            rig.core.settings(),
+            Settings {
+                disclaimer_accepted_version: Some(ni_engine::DISCLAIMER_VERSION.into()),
+                ..Settings::default()
+            }
+        );
         let report = rig.core.preflight(&request()).await.unwrap();
         assert!(report.network.is_some());
         let info = rig.core.start(&request()).await.unwrap();
@@ -208,6 +216,121 @@ fn start_flash_and_remember_the_choices() {
             matches!(f, Forwarded::Event(EngineEvent::Stopped))
         })
         .await;
+    });
+}
+
+/// Nothing starts before the disclaimer is accepted; accepting is stored.
+#[tokio::test]
+async fn starting_needs_the_accepted_disclaimer() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("bridge-disclaimer");
+    let core = AppCore::new(Paths::under(&dir), http(&srv)).unwrap();
+    let err = core.start(&request()).await.unwrap_err();
+    assert_eq!(err.code, "disclaimer_not_accepted");
+    assert_eq!(err.param("version"), Some(ni_engine::DISCLAIMER_VERSION));
+    assert!(!core.snapshot().await.unwrap().running);
+    core.accept_disclaimer();
+    let stored: Settings =
+        serde_json::from_slice(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored.disclaimer_accepted_version.as_deref(),
+        Some(ni_engine::DISCLAIMER_VERSION)
+    );
+    // An older accepted version is asked again.
+    let old = Settings {
+        disclaimer_accepted_version: Some("0".into()),
+        ..Settings::default()
+    };
+    std::fs::write(dir.join("settings.json"), serde_json::to_vec(&old).unwrap()).unwrap();
+    let again = AppCore::new(Paths::under(&dir), http(&srv)).unwrap();
+    let err = again.start(&request()).await.unwrap_err();
+    assert_eq!(err.code, "disclaimer_not_accepted");
+}
+
+/// Quitting deletes the downloads (not local files) unless kept, and
+/// never while the engine runs.
+#[test]
+fn downloads_are_purged_unless_kept() {
+    rig_test("bridge-purge", |mut rig| async move {
+        let cache = rig.dir.join("cache");
+        let script = rig.dir.join("Keep.rsc");
+        std::fs::write(&script, b"/x\n").unwrap();
+        rig.core.register_script(&script).await.unwrap();
+        rig.core.start(&request()).await.unwrap();
+        kernels_ready(&mut rig).await;
+        assert!(cache.join("7.25.1").exists());
+        assert!(!rig.core.purge_downloads_if_wanted().await, "running");
+        assert!(cache.join("7.25.1").exists());
+        rig.core.stop().await.unwrap();
+        let mut keep = rig.core.settings();
+        keep.keep_downloads = true;
+        rig.core.set_settings(keep.clone()).await.unwrap();
+        assert!(!rig.core.purge_downloads_if_wanted().await, "kept");
+        assert!(cache.join("7.25.1").exists());
+        keep.keep_downloads = false;
+        rig.core.set_settings(keep).await.unwrap();
+        assert!(rig.core.purge_downloads_if_wanted().await);
+        assert!(!cache.join("7.25.1").exists());
+        assert!(cache.join("local/keep.rsc").exists());
+        assert!(cache.join("channels.json").exists());
+    });
+}
+
+/// The version picker's data: channels (v6 included) and the list; typed
+/// versions are checked; picked packages are registered with their header.
+#[test]
+fn versions_and_local_packages() {
+    rig_test("bridge-versions", |rig| async move {
+        ni_assets::testutil::mirror_v6(&rig.srv, "6.49.23", "arm", "arm", true);
+        let view = rig.core.available_versions(false).await;
+        let channels: Vec<(&str, Option<&str>)> = view
+            .channels
+            .iter()
+            .map(|c| (c.channel.as_str(), c.version.as_deref()))
+            .collect();
+        assert_eq!(channels[0], ("stable", Some("7.25.1")));
+        assert_eq!(channels[4], ("v6-long-term", Some("6.49.23")));
+        // No changelog pages on the fake mirror: the built-in list.
+        assert_eq!(view.source, ni_assets::ListSource::Seed);
+        assert!(view.error.is_some());
+        assert_eq!(view.versions[0].version.as_str(), "7.25.1");
+        assert!(rig.core.check_version_exists("6.49.23").await.unwrap());
+        assert!(!rig.core.check_version_exists("6.49.22").await.unwrap());
+        let err = rig.core.check_version_exists("5.26").await.unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("cause")),
+            ("version_unavailable", Some("version_too_old"))
+        );
+        let file = rig.dir.join("Mine.npk");
+        std::fs::write(
+            &file,
+            ni_assets::testutil::npk_package_version("system", "arm", (7, 24, 6), 600, 3),
+        )
+        .unwrap();
+        let got = rig.core.register_packages(&[file]).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (
+                got[0].name.as_str(),
+                got[0].package.as_str(),
+                got[0].arch.as_str(),
+                got[0].version.as_deref()
+            ),
+            ("mine.npk", "system", "arm", Some("7.24.6"))
+        );
+        let err = rig
+            .core
+            .register_packages(&[rig.dir.join("x.txt")])
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "not_a_package");
+        let bad = rig.dir.join("bad.npk");
+        std::fs::write(&bad, b"nope").unwrap();
+        let err = rig.core.register_packages(&[bad]).await.unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("cause")),
+            ("package_failed", Some("not_npk"))
+        );
     });
 }
 

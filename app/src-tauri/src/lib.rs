@@ -235,11 +235,28 @@ impl DockSource for EngineSource {
     }
 }
 
-/// Quit for good: stop the engine first, then exit.
+/// How long quitting waits for the downloads to be deleted.
+const QUIT_PURGE_WAIT: Duration = Duration::from_secs(10);
+
+/// After the engine stopped: delete the downloaded files unless the user
+/// keeps them (`keep_downloads`), bounded.
+async fn purge_downloads(app: &AppHandle) {
+    let core = app.state::<AppCore>();
+    if tokio::time::timeout(QUIT_PURGE_WAIT, core.purge_downloads_if_wanted())
+        .await
+        .is_err()
+    {
+        tracing::warn!("deleting the downloaded files took too long");
+    }
+}
+
+/// Quit for good: stop the engine first, delete the downloads (unless
+/// kept), then exit.
 pub(crate) async fn quit_now(app: AppHandle) {
     app.state::<CloseGuard>().allow();
     save_window(&app);
     stop_engine(&app).await;
+    purge_downloads(&app).await;
     app.exit(0);
 }
 
@@ -266,7 +283,10 @@ fn should_terminate(app: &AppHandle) -> usize {
     });
     if reply == NS_TERMINATE_NOW {
         app.state::<CloseGuard>().allow();
-        tauri::async_runtime::block_on(stop_engine(app));
+        tauri::async_runtime::block_on(async {
+            stop_engine(app).await;
+            purge_downloads(app).await;
+        });
     }
     reply
 }
@@ -334,6 +354,15 @@ pub fn run() {
             let engines = core.watch_engine();
             let saved_window = core.settings().window;
             app.manage(core);
+            // Leftovers of a run that did not quit normally (nothing runs
+            // yet in this process).
+            let purge_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                purge_handle
+                    .state::<AppCore>()
+                    .purge_downloads_if_wanted()
+                    .await;
+            });
             app.manage(CloseGuard::default());
             app.manage(WindowTracker::default());
             app.manage(WindowFocus::default());
@@ -404,6 +433,11 @@ pub fn run() {
             commands::save_profile,
             commands::delete_profile,
             commands::available_packages,
+            commands::available_versions,
+            commands::check_version_exists,
+            commands::pick_packages,
+            commands::accept_disclaimer,
+            commands::open_link,
             commands::pick_script,
             commands::pick_license_key,
             commands::get_settings,

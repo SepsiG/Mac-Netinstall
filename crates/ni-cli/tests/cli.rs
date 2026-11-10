@@ -101,6 +101,19 @@ async fn help_and_usage_errors() {
 }
 
 #[tokio::test]
+async fn flash_needs_the_disclaimer_accepted() {
+    let env = Env::new("cli-disclaimer");
+    let (code, out, err) = env
+        .run(&["flash", "--iface", "lo0", "--version", "stable"])
+        .await;
+    assert_ne!(code, 0);
+    assert!(out.is_empty() || !out.contains("flashed"), "{out}");
+    assert!(err.contains("not affiliated"), "{err}");
+    assert!(err.contains("--accept-disclaimer"), "{err}");
+    assert!(err.contains("disclaimer_not_accepted"), "{err}");
+}
+
+#[tokio::test]
 async fn interfaces_lists_lo0_with_all() {
     let env = Env::new("cli-ifaces");
     let (code, out, _) = env.run(&["--json", "interfaces", "--all"]).await;
@@ -387,6 +400,7 @@ fn flash_args(srv: &TestServer, lan: &SimLan) -> Vec<String> {
         "--upgrade-base",
         &format!("{}/up", srv.base),
         "flash",
+        "--accept-disclaimer",
         "--iface",
         "lo0",
         "--version",

@@ -5,12 +5,12 @@
 
 use crate::settings::{Settings, SettingsStore};
 use crate::views::{
-    without_paths, BrokenProfile, CacheView, InterfaceView, LicenseKeyView, PackagesView,
-    ProfilesView, ScriptView, StartRequest,
+    without_paths, BrokenProfile, CacheView, ChannelView, InterfaceView, LicenseKeyView,
+    PackageFileView, PackagesView, ProfilesView, ScriptView, StartRequest, VersionsView,
 };
 use ni_assets::{
-    default_cache_root, item_version, AssetError, DeleteScope, HttpConfig, LocalKind, PkgArch,
-    Version, VersionSpec,
+    default_cache_root, item_version, AssetError, Channel, DeleteScope, HttpConfig, LocalKind,
+    PkgArch, Version, VersionSpec,
 };
 use ni_engine::{
     default_profiles_root, license_key_from_file, preflight, EngineConfig, EngineHandle, Failure,
@@ -24,6 +24,8 @@ use tokio::sync::watch;
 
 /// Largest key file read (MikroTik key files are a few hundred bytes).
 pub const MAX_KEY_FILE: u64 = 64 * 1024;
+/// How long the stored version list is used before it is fetched again.
+pub const VERSION_LIST_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Where the app keeps its files.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,8 +333,41 @@ impl AppCore {
             .map_err(|e| Failure::new("interface_list_failed").with("detail", e))
     }
 
+    /// Accept the current disclaimer ([`ni_engine::DISCLAIMER_VERSION`]):
+    /// starting needs it.
+    pub fn accept_disclaimer(&self) {
+        self.remember(|s| {
+            s.disclaimer_accepted_version = Some(ni_engine::DISCLAIMER_VERSION.to_string())
+        });
+    }
+
+    /// Delete the downloaded RouterOS files unless the settings keep them
+    /// (`keep_downloads`) or the engine is running (it may need them).
+    /// Registered local files and the version lists stay. Best-effort:
+    /// returns whether anything was attempted.
+    pub async fn purge_downloads_if_wanted(&self) -> bool {
+        if self.settings().keep_downloads {
+            return false;
+        }
+        let engine = self.engine();
+        if engine.snapshot().await.is_ok_and(|s| s.running) {
+            return false;
+        }
+        match engine.assets().clear_downloads().await {
+            Ok(()) => tracing::info!("downloaded RouterOS files deleted"),
+            Err(e) => tracing::warn!("cannot delete downloaded files: {e}"),
+        }
+        true
+    }
+
     /// Start serving; remembers the interface, profile and auto-repeat.
+    /// Error: `disclaimer_not_accepted` until [`AppCore::accept_disclaimer`].
     pub async fn start(&self, req: &StartRequest) -> Result<StartInfo, Failure> {
+        if !ni_engine::disclaimer::is_accepted(
+            self.settings().disclaimer_accepted_version.as_deref(),
+        ) {
+            return Err(ni_engine::disclaimer::not_accepted());
+        }
         let cfg = self.engine_config(req)?;
         let swap = self.engine_swap.lock().await;
         let engine = self.ensure_engine(&swap).await?;
@@ -483,6 +518,103 @@ impl AppCore {
             arch: pkg_arch.as_str().to_string(),
             packages,
         })
+    }
+
+    /// The channels with the version each names now (from mikrotik.com, or
+    /// the last one known offline), and the list of versions to pick from
+    /// ([`ni_assets::Assets::version_list`]; `refresh` fetches it again).
+    pub async fn available_versions(&self, refresh: bool) -> VersionsView {
+        let engine = self.engine();
+        let assets = engine.assets().clone();
+        let tasks: Vec<_> = Channel::ALL
+            .into_iter()
+            .map(|c| {
+                let assets = assets.clone();
+                tokio::spawn(async move {
+                    let spec = VersionSpec::Channel(c);
+                    let version = ni_engine::prepare::resolve_or_remembered(&assets, &spec)
+                        .await
+                        .ok()
+                        .map(|(v, _)| v.to_string());
+                    ChannelView {
+                        channel: c.as_str().to_string(),
+                        version,
+                    }
+                })
+            })
+            .collect();
+        let answer = assets.version_list(VERSION_LIST_MAX_AGE, refresh).await;
+        let mut channels = Vec::with_capacity(tasks.len());
+        for (task, c) in tasks.into_iter().zip(Channel::ALL) {
+            channels.push(task.await.unwrap_or(ChannelView {
+                channel: c.as_str().to_string(),
+                version: None,
+            }));
+        }
+        VersionsView {
+            channels,
+            versions: answer.list.versions,
+            fetched_unix: answer.list.fetched_unix,
+            source: answer.source,
+            error: answer.error.map(String::from),
+        }
+    }
+
+    /// Whether a typed version is published by MikroTik. Errors:
+    /// `version_unavailable` (`cause`: `invalid_version`, `version_too_old`
+    /// or a network error code).
+    pub async fn check_version_exists(&self, version: &str) -> Result<bool, Failure> {
+        let fail = |e: AssetError| asset_cause("version_unavailable", &e);
+        let v = Version::parse(version).map_err(|e| fail(e.into()))?;
+        self.engine()
+            .assets()
+            .version_exists(&v)
+            .await
+            .map_err(fail)
+    }
+
+    /// Register picked `.npk` files (each checked like a download and its
+    /// header read). Errors: `not_a_package` (`name`), `package_failed`
+    /// (`name`, `cause`).
+    pub async fn register_packages(
+        &self,
+        paths: &[PathBuf],
+    ) -> Result<Vec<PackageFileView>, Failure> {
+        let engine = self.engine();
+        let assets = engine.assets();
+        let mut out = Vec::with_capacity(paths.len());
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if !name.to_lowercase().ends_with(".npk") {
+                return Err(Failure::new("not_a_package").with("name", name));
+            }
+            let failed = |e: &AssetError| {
+                Failure::new("package_failed")
+                    .with("name", &name)
+                    .with("cause", e.code())
+            };
+            let file = assets
+                .register_local_file(path)
+                .await
+                .map_err(|e| failed(&e))?;
+            let data = assets
+                .local_file(&file.name)
+                .await
+                .map_err(|e| failed(&e))?;
+            let header =
+                ni_assets::npk::package_header(&data).map_err(|e| failed(&AssetError::from(e)))?;
+            out.push(PackageFileView {
+                name: file.name,
+                size: file.size,
+                package: header.name,
+                arch: header.arch,
+                version: ni_assets::npk::package_version(&data).map(|v| v.to_string()),
+            });
+        }
+        Ok(out)
     }
 
     /// Register a picked `.rsc` file. Errors: `not_a_script` (`name`),

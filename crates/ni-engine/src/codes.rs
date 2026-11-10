@@ -20,6 +20,7 @@ pub const FAILURES: &[&str] = &[
     "device_busy",
     "device_done",
     "device_in_cooldown",
+    "disclaimer_not_accepted",
     "duplicate_package",
     "empty_script",
     "engine_gone",
@@ -195,6 +196,7 @@ mod tests {
     /// This crate's sources, without their test modules.
     const SOURCES: &[&str] = &[
         include_str!("config.rs"),
+        include_str!("disclaimer.rs"),
         include_str!("engine/core.rs"),
         include_str!("engine/device.rs"),
         include_str!("engine/mod.rs"),

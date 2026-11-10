@@ -12,6 +12,7 @@
 
 pub mod codes;
 pub mod config;
+pub mod disclaimer;
 pub mod engine;
 pub mod event;
 pub mod gate;
@@ -24,6 +25,7 @@ pub use config::{
     link_status, resolve_network, subnet, EngineConfig, InterfaceSource, LinkStatus, NetPlan,
     Ports, DEFAULT_NETMASK, MAX_COOLDOWN, MAX_PARALLEL, MIN_COOLDOWN,
 };
+pub use disclaimer::{DISCLAIMER_TEXT, DISCLAIMER_URL, DISCLAIMER_VERSION};
 pub use engine::{DeviceView, EngineHandle, Snapshot, EVENT_CAPACITY};
 pub use event::{
     DeviceInfoView, DeviceState, EngineEvent, Failure, KernelState, StartInfo, WaitReason,

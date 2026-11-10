@@ -302,7 +302,16 @@ pub struct FlashArgs {
     /// devices de-duplicate re-sent chunks is unverified on hardware).
     #[arg(long, default_value_t = 3)]
     pub retransmits: u32,
+    /// Accept the disclaimer (printed without it): no warranty, Netinstall
+    /// erases the device, use at your own risk. Or set
+    /// MAC_NETINSTALL_ACCEPT_DISCLAIMER=1.
+    #[arg(long)]
+    pub accept_disclaimer: bool,
 }
+
+/// The environment variable that accepts the disclaimer like
+/// `--accept-disclaimer`.
+pub const ACCEPT_DISCLAIMER_ENV: &str = "MAC_NETINSTALL_ACCEPT_DISCLAIMER";
 
 fn parse_pool(s: &str) -> Result<(Ipv4Addr, Ipv4Addr), String> {
     let (a, b) = s

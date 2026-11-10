@@ -191,6 +191,16 @@ impl Tracker {
 }
 
 pub async fn flash(ctx: &Ctx, args: FlashArgs) -> Outcome {
+    let by_env = std::env::var(crate::cli::ACCEPT_DISCLAIMER_ENV).is_ok_and(|v| v == "1");
+    if !args.accept_disclaimer && !by_env {
+        eprintln!(
+            "{}\n\nFull text: {}\nTo accept it, add --accept-disclaimer (or set {}=1).",
+            ni_engine::DISCLAIMER_TEXT,
+            ni_engine::DISCLAIMER_URL,
+            crate::cli::ACCEPT_DISCLAIMER_ENV
+        );
+        return Err(ni_engine::disclaimer::not_accepted());
+    }
     let engine = EngineHandle::spawn(&ctx.cache_dir, ctx.http.clone())?;
     let profile = match (&args.profile, &args.version) {
         (Some(name), _) => ctx.profiles.load(name)?,
