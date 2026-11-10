@@ -7,6 +7,7 @@ members = [
     "crates/ni-bootp",
     "crates/ni-tftp",
     "crates/ni-assets",
+    "crates/ni-update",
     "crates/ni-engine",
     "crates/ni-cli",
     "app/src-tauri",
@@ -48,3 +49,4 @@ ni-tftp = { path = "crates/ni-tftp" }
 ni-sim = { path = "crates/ni-sim" }
 ni-assets = { path = "crates/ni-assets" }
 ni-engine = { path = "crates/ni-engine" }
+ni-update = { path = "crates/ni-update" }
