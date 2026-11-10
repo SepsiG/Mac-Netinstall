@@ -1,6 +1,9 @@
 //! A fake MikroTik mirror for [`Assets`] tests.
 
-use super::{kernel_container, npk_package, synthetic_kernels, tar_gz, zip, Reply, TestServer};
+use super::{
+    kernel_container, npk_bundle, npk_package, npk_package_version, synthetic_kernels, tar_gz, zip,
+    Reply, TestServer,
+};
 use crate::events::AssetEvent;
 use crate::http::HttpConfig;
 use crate::npk::sha256_hex;
@@ -95,12 +98,70 @@ pub fn mirror_arch(srv: &TestServer, download: &str, npk_arch: &str) -> (Vec<u8>
     (main, wireless)
 }
 
+/// The newest v6 the fake mirror announces (`NEWEST6.long-term`).
+pub const V6: &str = "6.49.23";
+
+/// Serve a RouterOS v6 version `ver` for the download arch `download`
+/// (`ppc` is published as `routeros-powerpc-<ver>.npk`) with `npk_arch`
+/// inside the packages: the bundle main package (system, ipv6, wireless,
+/// ...), the `calea` extra and the `all_packages` zip (listing the bundle's
+/// parts too, as real v6 zips do), plus `NEWEST6.long-term` → [`V6`].
+/// Checksums are served if `sums`. Returns the bundle and `calea`.
+pub fn mirror_v6(
+    srv: &TestServer,
+    ver: &str,
+    download: &str,
+    npk_arch: &str,
+    sums: bool,
+) -> (Vec<u8>, Vec<u8>) {
+    let nums: Vec<u8> = ver.split('.').map(|p| p.parse().unwrap()).collect();
+    let version = (nums[0], nums[1], nums.get(2).copied().unwrap_or(0));
+    let bundle = npk_bundle(
+        download,
+        npk_arch,
+        version,
+        &["system", "ipv6", "wireless@", "hotspot", "ppp", "dhcp"],
+        4000,
+    );
+    let calea = npk_package_version("calea", npk_arch, version, 1500, 0xc1);
+    let d = format!("/dl/{ver}");
+    srv.route(
+        "/up/NEWEST6.long-term",
+        Reply::Body(format!("{V6} 1793000000\n").into_bytes()),
+    );
+    let arch6 = if download == "ppc" {
+        "powerpc"
+    } else {
+        download
+    };
+    let main = format!("routeros-{arch6}-{ver}.npk");
+    let extra = format!("calea-{ver}-{download}.npk");
+    for (file, data) in [(&main, &bundle), (&extra, &calea)] {
+        srv.route(&format!("{d}/{file}"), Reply::Body(data.clone()));
+        if sums {
+            srv.route(&format!("{d}/{file}.sha256"), sum_file(data, file));
+        }
+    }
+    let entries: Vec<String> = ["system", "wireless", "calea", "gps"]
+        .iter()
+        .map(|n| format!("{n}-{ver}-{download}.npk"))
+        .collect();
+    let files: Vec<(&str, &[u8])> = entries.iter().map(|e| (e.as_str(), &b"x"[..])).collect();
+    srv.route(
+        &format!("{d}/all_packages-{download}-{ver}.zip"),
+        Reply::Body(zip(&files)),
+    );
+    srv.route(&format!("{d}/CHANGELOG"), Reply::Body(b"changes".to_vec()));
+    (bundle, calea)
+}
+
 pub fn assets(srv: &TestServer, root: &Path) -> Assets {
     Assets::new(
         root,
         HttpConfig {
             download_base: format!("{}/dl/", srv.base),
             upgrade_base: format!("{}/up", srv.base),
+            changelog_base: format!("{}/cl", srv.base),
             ..HttpConfig::default()
         },
     )

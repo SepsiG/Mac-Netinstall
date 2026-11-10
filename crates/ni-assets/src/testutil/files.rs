@@ -110,3 +110,67 @@ pub fn npk_package(name: &str, arch: &str, len: usize, fill: u8) -> Vec<u8> {
     v[4..8].copy_from_slice(&size.to_le_bytes());
     v
 }
+
+/// Like [`npk_package`], with real version bytes in the header
+/// (`patch, b'f', minor, major`: a final release, as in RouterOS's own
+/// packages).
+pub fn npk_package_version(
+    name: &str,
+    arch: &str,
+    version: (u8, u8, u8),
+    len: usize,
+    fill: u8,
+) -> Vec<u8> {
+    let mut v = npk_package(name, arch, len, fill);
+    let (major, minor, patch) = version;
+    // magic (8), type-25 part (6), type-1 part head (6), name (16).
+    let at = 8 + 6 + 6 + 16;
+    v[at..at + 4].copy_from_slice(&[patch, b'f', minor, major]);
+    v
+}
+
+/// A synthetic RouterOS v6 main package: a bundle as in
+/// `routeros-<arch>-<ver>.npk`. A type-18 part (`routeros-<download>` and
+/// the version bytes), the channel and arch, then for each of `names` a
+/// type-1 header and a type-16 arch part (flat, no nesting), and a filler
+/// up to `len` bytes. `names[i]` may carry junk after a `@` as real ones do
+/// (`wireless@`).
+pub fn npk_bundle(
+    download: &str,
+    arch: &str,
+    version: (u8, u8, u8),
+    names: &[&str],
+    len: usize,
+) -> Vec<u8> {
+    fn part(v: &mut Vec<u8>, kind: u16, data: &[u8]) {
+        v.extend_from_slice(&kind.to_le_bytes());
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(data);
+    }
+    let (major, minor, patch) = version;
+    let header = |name: &str, size: usize| {
+        let mut h = name.as_bytes().to_vec();
+        h.resize(16, 0);
+        h.extend_from_slice(&[patch, b'f', minor, major]);
+        h.resize(size, 0);
+        h
+    };
+    let mut v = NPK_MAGIC.to_vec();
+    v.extend_from_slice(&[0; 4]);
+    part(&mut v, 25, &[]);
+    part(&mut v, 18, &header(&format!("routeros-{download}"), 32));
+    part(&mut v, 24, b"stable");
+    part(&mut v, 16, arch.as_bytes());
+    for name in names {
+        part(&mut v, 1, &header(name, 36));
+        part(&mut v, 16, arch.as_bytes());
+        part(&mut v, 2, b"part of the bundle");
+    }
+    let fixed = v.len() + 6 + 7;
+    assert!(len >= fixed, "a bundle needs {fixed} bytes");
+    part(&mut v, 21, &vec![0x5a; len - fixed]);
+    part(&mut v, 16, b"I");
+    let size = (v.len() - 8) as u32;
+    v[4..8].copy_from_slice(&size.to_le_bytes());
+    v
+}

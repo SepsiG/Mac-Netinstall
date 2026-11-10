@@ -4,7 +4,7 @@ use crate::arch::{ArchError, PkgArch};
 use crate::archive::ArchiveError;
 use crate::kernel::KernelError;
 use crate::npk::NpkError;
-use crate::version::VersionError;
+use crate::version::{Version, VersionError};
 use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -20,6 +20,15 @@ pub enum AssetError {
     InvalidPackageName(String),
     #[error("package {name} is not available for {arch}")]
     UnknownPackage { name: String, arch: PkgArch },
+    /// The main package of `version` is not published for `arch` (404):
+    /// old v6 releases lack newer architectures (6.30.4 has no arm or
+    /// mmips; arm64 starts around 6.45).
+    #[error("RouterOS {version} is not published for {arch} ({file})")]
+    PackageNotPublished {
+        file: String,
+        arch: PkgArch,
+        version: Version,
+    },
     #[error("cannot set up the HTTP client")]
     Client(#[source] reqwest::Error),
     #[error("{url} was not found")]
@@ -102,6 +111,7 @@ impl AssetError {
         "unsupported_arch",
         "invalid_package_name",
         "unknown_package",
+        "package_not_published",
         "http_client",
         "not_found",
         "http_status",
@@ -141,6 +151,7 @@ impl AssetError {
             AssetError::Arch(ArchError::Unsupported(_)) => "unsupported_arch",
             AssetError::InvalidPackageName(_) => "invalid_package_name",
             AssetError::UnknownPackage { .. } => "unknown_package",
+            AssetError::PackageNotPublished { .. } => "package_not_published",
             AssetError::Client(_) => "http_client",
             AssetError::NotFound { .. } => "not_found",
             AssetError::Status { .. } => "http_status",
@@ -194,6 +205,11 @@ mod tests {
             AssetError::UnknownPackage {
                 name: "x".into(),
                 arch: PkgArch::Arm,
+            },
+            AssetError::PackageNotPublished {
+                file: "f".into(),
+                arch: PkgArch::Arm,
+                version: Version::parse("6.30.4").unwrap(),
             },
             AssetError::NotFound { url: "u".into() },
             AssetError::Status {
@@ -262,6 +278,7 @@ mod tests {
                 "unsupported_arch",
                 "invalid_package_name",
                 "unknown_package",
+                "package_not_published",
                 "not_found",
                 "http_status",
                 "timeout",
@@ -309,10 +326,10 @@ mod tests {
         all.dedup();
         assert_eq!(all.len(), AssetError::CODES.len());
         // The two codes the test above cannot construct (they wrap
-        // `reqwest::Error`), plus the 32 it checks.
+        // `reqwest::Error`), plus the 33 it checks.
         assert!(AssetError::CODES.contains(&"http_client"));
         assert!(AssetError::CODES.contains(&"network"));
-        assert_eq!(AssetError::CODES.len(), 34);
+        assert_eq!(AssetError::CODES.len(), 35);
     }
 
     #[test]

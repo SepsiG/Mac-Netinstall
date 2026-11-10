@@ -103,6 +103,75 @@ pub fn package_name(data: &[u8]) -> Result<String, NpkError> {
     package_header(data).map(|h| h.name)
 }
 
+/// The parts of an NPK (`type`, `data`), in order, until the end of the
+/// file or the first part that runs past it. Hostile input ends the list,
+/// never panics.
+fn parts(data: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
+    let mut off = if data.len() >= 8 && data.starts_with(&NPK_MAGIC) {
+        8usize
+    } else {
+        data.len()
+    };
+    std::iter::from_fn(move || {
+        if data.len().saturating_sub(off) < 6 {
+            return None;
+        }
+        let kind = u16::from_le_bytes([data[off], data[off + 1]]);
+        let len = u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]]);
+        let start = off + 6;
+        let end = usize::try_from(len)
+            .ok()
+            .and_then(|l| start.checked_add(l))
+            .filter(|&e| e <= data.len())?;
+        off = end;
+        Some((kind, &data[start..end]))
+    })
+}
+
+/// Part type of a v6 bundle's own header (`routeros-<arch>` and version).
+pub const PART_BUNDLE: u16 = 18;
+
+/// The version in an NPK's header (the first type-1 or type-18 part: 16
+/// bytes of name, then `patch, kind, minor, major`). Only final releases
+/// (`kind` `f`) are decoded (`7.25.1`, `7.25` when the patch is 0,
+/// `6.49.23`); anything else, or a version this app does not accept, is
+/// `None`.
+pub fn package_version(data: &[u8]) -> Option<crate::Version> {
+    let body = parts(data)
+        .find(|(kind, _)| *kind == PART_HEADER || *kind == PART_BUNDLE)
+        .map(|(_, body)| body)?;
+    let [patch, kind, minor, major] = <[u8; 4]>::try_from(body.get(16..20)?).ok()?;
+    if kind != b'f' {
+        return None;
+    }
+    let text = if patch == 0 {
+        format!("{major}.{minor}")
+    } else {
+        format!("{major}.{minor}.{patch}")
+    };
+    crate::Version::parse(&text).ok()
+}
+
+/// The names of the packages an NPK holds: its type-1 headers. A plain
+/// package holds itself; a RouterOS v6 main package is a bundle of
+/// `system`, `ipv6`, `wireless`, ... A name is read up to the first byte
+/// that cannot be in a package name (real bundles have `wireless@`);
+/// unreadable names are skipped.
+pub fn contained_packages(data: &[u8]) -> Vec<String> {
+    parts(data)
+        .filter(|(kind, _)| *kind == PART_HEADER)
+        .filter_map(|(_, body)| {
+            let raw = &body[..body.len().min(16)];
+            let end = raw
+                .iter()
+                .position(|b| !(b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-'))
+                .unwrap_or(raw.len());
+            let name = std::str::from_utf8(&raw[..end]).ok()?;
+            valid_package_name(name).then(|| name.to_string())
+        })
+        .collect()
+}
+
 /// Printable ASCII with surrounding NULs and whitespace removed; `None` if
 /// empty or anything else is in it.
 fn text(raw: &[u8]) -> Option<String> {
@@ -312,6 +381,90 @@ mod tests {
             let _ = package_header(&v);
             v.truncate(cut.min(v.len()));
             let _ = package_header(&v);
+        }
+    }
+
+    #[test]
+    fn reads_the_version_of_final_releases() {
+        let v7 = crate::testutil::npk_package_version("system", "arm", (7, 25, 1), 400, 0);
+        assert_eq!(
+            package_version(&v7).map(|v| v.to_string()),
+            Some("7.25.1".into())
+        );
+        let v725 = crate::testutil::npk_package_version("system", "arm", (7, 25, 0), 400, 0);
+        assert_eq!(
+            package_version(&v725).map(|v| v.to_string()),
+            Some("7.25".into())
+        );
+        let v6 = crate::testutil::npk_package_version("calea", "arm", (6, 49, 23), 400, 0);
+        assert_eq!(
+            package_version(&v6).map(|v| v.to_string()),
+            Some("6.49.23".into())
+        );
+        // Real header bytes (routeros-mipsbe-6.49.23.npk's system part).
+        let mut name = b"system".to_vec();
+        name.resize(16, 0);
+        name.extend_from_slice(&[0x17, 0x66, 0x31, 0x06, 0xbc, 0x6d]);
+        name.resize(36, 0);
+        let real = with_parts(&[(1, &name), (16, b"mips")]);
+        assert_eq!(
+            package_version(&real).map(|v| v.to_string()),
+            Some("6.49.23".into())
+        );
+        // Pre-releases and odd bytes are not decoded.
+        let synthetic = npk_package("system", "arm", 300, 0);
+        assert_eq!(package_version(&synthetic), None);
+        let old = crate::testutil::npk_package_version("system", "arm", (5, 26, 0), 400, 0);
+        assert_eq!(package_version(&old), None, "below the floor");
+        assert_eq!(package_version(b"junk"), None);
+        assert_eq!(package_version(&with_parts(&[(1, b"short")])), None);
+    }
+
+    #[test]
+    fn lists_the_packages_of_a_v6_bundle() {
+        let bundle = crate::testutil::npk_bundle(
+            "smips",
+            "smips",
+            (6, 49, 23),
+            &["system", "ipv6", "wireless@", "hotspot", "advanced-tools"],
+            3000,
+        );
+        assert_eq!(check_npk("b.npk", &bundle), Ok(()));
+        assert_eq!(
+            package_header(&bundle),
+            Ok(NpkHeader {
+                name: "system".into(),
+                arch: "smips".into()
+            })
+        );
+        assert_eq!(
+            contained_packages(&bundle),
+            ["system", "ipv6", "wireless", "hotspot", "advanced-tools"]
+        );
+        assert_eq!(
+            package_version(&bundle).map(|v| v.to_string()),
+            Some("6.49.23".into())
+        );
+        // A plain package contains itself.
+        let wl = npk_package("wireless", "arm", 300, 0);
+        assert_eq!(contained_packages(&wl), ["wireless"]);
+        assert!(contained_packages(b"junk").is_empty());
+    }
+
+    proptest! {
+        #[test]
+        fn bundle_readers_never_panic(
+            data in proptest::collection::vec(any::<u8>(), 0..256),
+            idx in 0usize..600,
+            byte in any::<u8>(),
+        ) {
+            let _ = contained_packages(&data);
+            let _ = package_version(&data);
+            let mut v = crate::testutil::npk_bundle("arm", "arm", (6, 49, 23), &["system", "ppp"], 500);
+            let i = idx % v.len();
+            v[i] = byte;
+            let _ = contained_packages(&v);
+            let _ = package_version(&v);
         }
     }
 

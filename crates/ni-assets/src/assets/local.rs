@@ -334,9 +334,26 @@ mod tests {
         std::fs::write(&script, b"#").unwrap();
         a.register_local_file(&script).await.unwrap();
         std::fs::create_dir_all(root.join("not-a-version")).unwrap();
+        // A v6 download, a local package and the small UI caches.
+        mirror_v6(&srv, V6, "arm", "arm", true);
+        a.ensure_packages(&Version::parse(V6).unwrap(), PkgArch::Arm, &[])
+            .await
+            .unwrap();
+        let npk = root.join("Mine.npk");
+        std::fs::write(&npk, crate::testutil::npk_package("system", "arm", 200, 1)).unwrap();
+        a.register_local_file(&npk).await.unwrap();
+        a.resolve(&crate::VersionSpec::Channel(crate::Channel::Stable))
+            .await
+            .unwrap();
+        std::fs::write(root.join(crate::VERSIONS_FILE), b"{}").unwrap();
         a.clear_downloads().await.unwrap();
         assert!(!root.join(V).exists());
+        assert!(!root.join(V6).exists());
         assert!(root.join("local/x.rsc").exists());
+        assert!(root.join("local/mine.npk").exists());
+        assert!(a.local_file("mine.npk").await.is_ok());
+        assert!(root.join(super::super::CHANNELS_FILE).exists());
+        assert!(root.join(crate::VERSIONS_FILE).exists());
         assert!(root.join("not-a-version").exists());
         // Nothing to clear is fine too.
         assets(&srv, &root.join("absent"))

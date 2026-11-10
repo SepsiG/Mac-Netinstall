@@ -32,12 +32,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 mod inventory;
+mod list;
 mod local;
 mod packages;
 
 pub use inventory::{
     item_version, CachedItem, CachedVersion, DeleteScope, Integrity, Inventory, ItemKind,
 };
+pub use list::{ListSource, VersionsAnswer};
 pub(crate) use local::LOCAL_DIR;
 
 pub use local::{
@@ -80,6 +82,7 @@ pub struct Assets {
     http: Http,
     download_base: String,
     upgrade_base: String,
+    changelog_base: String,
     max_download: u64,
     events: Option<EventSink>,
     /// Verification results of cached files (see `inventory`).
@@ -238,6 +241,7 @@ impl Assets {
             http: Http::new(&cfg)?,
             download_base: cfg.download_base.trim_end_matches('/').to_string(),
             upgrade_base: cfg.upgrade_base.trim_end_matches('/').to_string(),
+            changelog_base: cfg.changelog_base.trim_end_matches('/').to_string(),
             max_download: cfg.max_download_bytes,
             events: None,
             checks: Default::default(),
@@ -269,10 +273,17 @@ impl Assets {
     pub async fn latest(&self, channel: Channel) -> Result<Release, AssetError> {
         let url = urls::newest(&self.upgrade_base, channel);
         let body = self.http.text(&url).await?;
-        parse_newest(&body).ok_or(AssetError::BadResponse {
-            url,
+        let release = parse_newest(&body).ok_or(AssetError::BadResponse {
+            url: url.clone(),
             reason: "expected `<version> <timestamp>`",
-        })
+        })?;
+        if release.version.is_v6() != channel.is_v6() {
+            return Err(AssetError::BadResponse {
+                url,
+                reason: "the channel names a version of another major release",
+            });
+        }
+        Ok(release)
     }
 
     /// The version a profile asks for; exact versions need no network.
@@ -542,6 +553,35 @@ mod tests {
         assert_eq!(err.code(), "bad_response");
         let err = a.latest(Channel::LongTerm).await.unwrap_err();
         assert_eq!(err.code(), "not_found");
+    }
+
+    #[tokio::test]
+    async fn the_v6_channel_resolves_to_v6_only() {
+        let srv = TestServer::start().await;
+        mirror_v6(&srv, V6, "arm", "arm", true);
+        let root = tempdir("resolve-v6");
+        let a = assets(&srv, &root);
+        let spec = VersionSpec::Channel(Channel::V6LongTerm);
+        assert_eq!(a.resolve(&spec).await.unwrap().as_str(), V6);
+        assert_eq!(srv.paths(), ["GET /up/NEWEST6.long-term"]);
+        assert_eq!(
+            a.remembered(Channel::V6LongTerm)
+                .await
+                .map(|v| v.to_string()),
+            Some(V6.into())
+        );
+        // A channel answering the other major is a bad answer.
+        srv.route(
+            "/up/NEWEST6.long-term",
+            Reply::Body(b"7.12.1 1700000000\n".to_vec()),
+        );
+        srv.route(
+            "/up/NEWESTa7.stable",
+            Reply::Body(b"6.49.23 1700000000\n".to_vec()),
+        );
+        for c in [Channel::V6LongTerm, Channel::Stable] {
+            assert_eq!(a.latest(c).await.unwrap_err().code(), "bad_response", "{c}");
+        }
     }
 
     #[tokio::test]
