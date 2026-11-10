@@ -9,12 +9,19 @@
 //!   "mode_script": "mode.rsc",
 //!   "remove_branding": false,
 //!   "license_key": null,
-//!   "after_install": "reboot"
+//!   "after_install": "reboot",
+//!   "package_source": "download",
+//!   "local_packages": [],
+//!   "allow_below_minimum": false
 //! }
 //! ```
 //!
 //! `version` is a channel (`stable`, `long-term`, `testing`,
-//! `development`) or an exact version (`7.25.1`). Scripts name files
+//! `development`, `v6-long-term`) or an exact version (`7.25.1`,
+//! `6.49.23`). With `"package_source": "local"` the packages are the
+//! registered local `.npk` files in `local_packages` instead of downloads
+//! (`version` then only chooses nothing: the boot kernels are the current
+//! stable ones, see [`kernel_spec`]). Scripts name files
 //! registered with `ni_assets::Assets::register_local_file`. The
 //! configuration options are the official `netinstall-cli`'s (`-r`, `-e`,
 //! `-s`, `-sm`, `-b`, `-k`, `--reboot`, `--shutdown`); see
@@ -36,6 +43,49 @@ use std::path::{Path, PathBuf};
 pub const MAX_NAME: usize = 64;
 /// Most extra packages in one profile.
 pub const MAX_EXTRA_PACKAGES: usize = 32;
+/// Most local package files in one profile.
+pub const MAX_LOCAL_PACKAGES: usize = 16;
+
+/// Where a profile's packages come from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageSource {
+    /// Downloaded from MikroTik for the profile's version.
+    #[default]
+    Download,
+    /// The registered local `.npk` files in [`Profile::local_packages`].
+    Local,
+}
+
+impl PackageSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PackageSource::Download => "download",
+            PackageSource::Local => "local",
+        }
+    }
+}
+
+/// The version spec of the boot kernels a profile's installs boot: the
+/// profile's own version for v7 downloads (kernels and packages of one
+/// release, checked against each other), otherwise the current 7.x
+/// netinstall kernels (`stable`): RouterOS v6 and local packages are
+/// installed by the v7 Netinstall protocol (the 7.x netinstall installs
+/// 6.49.x), and the v6 tarball kernels are not used.
+pub fn kernel_spec(profile: &Profile) -> VersionSpec {
+    if follows_kernels(profile) {
+        profile.version.clone()
+    } else {
+        VersionSpec::Channel(ni_assets::Channel::Stable)
+    }
+}
+
+/// Whether a profile installs the version of the boot kernels it is served
+/// ([`kernel_spec`] is its own version): only then is the installed version
+/// checked against the booted kernels.
+pub fn follows_kernels(profile: &Profile) -> bool {
+    profile.package_source == PackageSource::Download && !profile.version.is_v6()
+}
 
 /// `VersionSpec` as a plain string: `"stable"` or `"7.25.1"`.
 pub mod spec_str {
@@ -179,6 +229,17 @@ pub struct Profile {
     pub license_key: Option<String>,
     #[serde(default)]
     pub after_install: AfterInstall,
+    /// Download the packages (default) or use local `.npk` files.
+    #[serde(default)]
+    pub package_source: PackageSource,
+    /// Registered local `.npk` files (with [`PackageSource::Local`]): one
+    /// must be a `system` (main) package, all built for the device's arch.
+    #[serde(default)]
+    pub local_packages: Vec<String>,
+    /// Install even if the version is below the device's minimum
+    /// (`min_os` of its hello). Off by default: that can brick a device.
+    #[serde(default)]
+    pub allow_below_minimum: bool,
 }
 
 impl Profile {
@@ -194,7 +255,20 @@ impl Profile {
             remove_branding: false,
             license_key: None,
             after_install: AfterInstall::Reboot,
+            package_source: PackageSource::Download,
+            local_packages: Vec::new(),
+            allow_below_minimum: false,
         }
+    }
+
+    /// The registered local files the profile uses: its local packages
+    /// (when it installs them), then its scripts ([`Profile::scripts`]).
+    pub fn local_files(&self) -> Vec<&str> {
+        let packages = match self.package_source {
+            PackageSource::Local => self.local_packages.iter().map(String::as_str).collect(),
+            PackageSource::Download => Vec::new(),
+        };
+        packages.into_iter().chain(self.scripts()).collect()
     }
 
     /// The registered local files the profile uses: its script, then its
@@ -213,7 +287,11 @@ impl Profile {
     /// Check the profile can be stored and used. Codes: `invalid_name`,
     /// `invalid_package_name`, `duplicate_package`, `too_many_packages`,
     /// `invalid_script_name` (`name`), `mode_script_with_keep` (the
-    /// official tool refuses it too), `invalid_license_key` (`max`).
+    /// official tool refuses it too), `invalid_license_key` (`max`),
+    /// `mode_script_needs_7_22` (`version`: a v6 or exact pre-7.22
+    /// version; the mode script needs RouterOS 7.22), and with local
+    /// packages `no_local_packages`, `invalid_package_file` (`name`),
+    /// `duplicate_package`, `too_many_packages`.
     pub fn validate(&self) -> Result<(), Failure> {
         if !valid_name(&self.name) {
             return Err(Failure::new("invalid_name").with("name", &self.name));
@@ -243,11 +321,50 @@ impl Profile {
         if self.mode_script.is_some() && self.config == ConfigMode::Keep {
             return Err(Failure::new("mode_script_with_keep"));
         }
+        if self.mode_script.is_some() && self.package_source == PackageSource::Download {
+            let too_old = match &self.version {
+                VersionSpec::Exact(v) => (!v.supports_mode_script()).then(|| v.to_string()),
+                VersionSpec::Channel(c) if c.is_v6() => Some(c.as_str().to_string()),
+                VersionSpec::Channel(_) => None,
+            };
+            if let Some(version) = too_old {
+                return Err(mode_script_needs_7_22(&version));
+            }
+        }
+        if self.package_source == PackageSource::Local {
+            if self.local_packages.is_empty() {
+                return Err(Failure::new("no_local_packages"));
+            }
+            if self.local_packages.len() > MAX_LOCAL_PACKAGES {
+                return Err(Failure::new("too_many_packages").with("max", MAX_LOCAL_PACKAGES));
+            }
+            for (i, name) in self.local_packages.iter().enumerate() {
+                let ok = name.len() > 4
+                    && name.len() <= MAX_LOCAL_NAME
+                    && name.ends_with(".npk")
+                    && !name.contains(['/', '\\'])
+                    && !name.starts_with('.')
+                    && !name.chars().any(char::is_control)
+                    && *name == name.to_lowercase();
+                if !ok {
+                    return Err(Failure::new("invalid_package_file").with("name", name));
+                }
+                if self.local_packages[..i].contains(name) {
+                    return Err(Failure::new("duplicate_package").with("package", name));
+                }
+            }
+        }
         if let Some(key) = &self.license_key {
             check_license_key(key)?;
         }
         Ok(())
     }
+}
+
+/// `mode_script_needs_7_22` (`version`): the mode script (`mode.scr`) is
+/// run by RouterOS 7.22 and later only.
+pub fn mode_script_needs_7_22(version: &str) -> Failure {
+    Failure::new("mode_script_needs_7_22").with("version", version)
 }
 
 /// Names are also file names: 1-64 bytes of letters, digits, space, `.`,
@@ -420,7 +537,79 @@ mod tests {
             remove_branding: true,
             license_key: Some("KEY-1".into()),
             after_install: AfterInstall::Shutdown,
+            package_source: PackageSource::Download,
+            local_packages: Vec::new(),
+            allow_below_minimum: false,
         }
+    }
+
+    #[test]
+    fn local_package_profiles() {
+        let mut p = sample();
+        p.mode_script = None;
+        p.package_source = PackageSource::Local;
+        p.local_packages = vec!["routeros-7.25.1-arm.npk".into(), "wifi.npk".into()];
+        assert_eq!(p.validate(), Ok(()));
+        assert_eq!(
+            p.local_files(),
+            ["routeros-7.25.1-arm.npk", "wifi.npk", "setup.rsc"]
+        );
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["package_source"], json!("local"));
+        assert_eq!(
+            v["local_packages"],
+            json!(["routeros-7.25.1-arm.npk", "wifi.npk"])
+        );
+        let code = |p: Profile| p.validate().unwrap_err().code;
+        let mut q = p.clone();
+        q.local_packages.clear();
+        assert_eq!(code(q), "no_local_packages");
+        for bad in ["", "A.npk", "x.rsc", "../x.npk", ".npk", "a/b.npk"] {
+            let mut q = p.clone();
+            q.local_packages = vec![bad.into()];
+            assert_eq!(code(q), "invalid_package_file", "{bad:?}");
+        }
+        let mut q = p.clone();
+        q.local_packages = vec!["a.npk".into(), "a.npk".into()];
+        assert_eq!(code(q), "duplicate_package");
+        let mut q = p.clone();
+        q.local_packages = (0..17).map(|i| format!("p{i}.npk")).collect();
+        assert_eq!(code(q), "too_many_packages");
+        // Downloading ignores a remembered list of local files.
+        let mut q = p.clone();
+        q.package_source = PackageSource::Download;
+        q.local_packages = vec!["BAD".into()];
+        assert_eq!(q.validate(), Ok(()));
+        assert_eq!(q.local_files(), ["setup.rsc"]);
+    }
+
+    #[test]
+    fn the_mode_script_needs_7_22_where_the_version_is_known() {
+        let code = |p: Profile| {
+            p.validate()
+                .map_err(|f| (f.code.clone(), f.param("version").map(String::from)))
+        };
+        let mut p = sample();
+        for (spec, ok) in [
+            ("stable", true),
+            ("7.22", true),
+            ("7.25.1", true),
+            ("7.21.3", false),
+            ("6.49.23", false),
+            ("v6-long-term", false),
+        ] {
+            p.version = spec.parse().unwrap();
+            let got = code(p.clone());
+            if ok {
+                assert_eq!(got, Ok(()), "{spec}");
+            } else {
+                assert_eq!(got.unwrap_err().0, "mode_script_needs_7_22", "{spec}");
+            }
+        }
+        p.version = "6.49.23".parse().unwrap();
+        assert_eq!(code(p.clone()).unwrap_err().1.as_deref(), Some("6.49.23"));
+        p.mode_script = None;
+        assert_eq!(p.validate(), Ok(()));
     }
 
     #[test]
@@ -432,7 +621,9 @@ mod tests {
                    "extra_packages": ["wifi-qcom"],
                    "config": {"mode": "script", "local_name": "setup.rsc"},
                    "mode_script": "mode.rsc", "remove_branding": true,
-                   "license_key": "KEY-1", "after_install": "shutdown"})
+                   "license_key": "KEY-1", "after_install": "shutdown",
+                   "package_source": "download", "local_packages": [],
+                   "allow_below_minimum": false})
         );
         let minimal: Profile =
             serde_json::from_value(json!({"name": "x", "version": "7.25.1"})).unwrap();
@@ -441,7 +632,7 @@ mod tests {
             Profile::new("x", VersionSpec::Exact(Version::parse("7.25.1").unwrap()))
         );
         assert!(
-            serde_json::from_value::<Profile>(json!({"name": "x", "version": "6.49"})).is_err()
+            serde_json::from_value::<Profile>(json!({"name": "x", "version": "6.29"})).is_err()
         );
         for (mode, want) in [
             ("keep", ConfigMode::Keep),

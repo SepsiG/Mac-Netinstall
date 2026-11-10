@@ -14,8 +14,8 @@ use crate::prepare::{
     boot_maps, ensure_kernels, prepare, resolve_kernels, served_kernel_version, version_mismatch,
     Prepared, Target,
 };
-use crate::profile::spec_to_string;
 use crate::profile::Profile;
+use crate::profile::{follows_kernels, kernel_spec, spec_to_string};
 use ni_assets::{Assets, Channel, KernelSet, PkgArch, Version, VersionSpec};
 use ni_bootp::{BootpEvent, BootpHandle, IgnoreReason};
 use ni_net::{BroadcastTarget, RecvErrorAction, RecvErrorGuard};
@@ -384,7 +384,7 @@ impl Core {
             .cfg
             .profile
             .as_ref()
-            .map(|p| p.version.clone())
+            .map(kernel_spec)
             .unwrap_or(VersionSpec::Channel(Channel::Stable));
         run.kernel_gen += 1;
         let generation = run.kernel_gen;
@@ -484,7 +484,7 @@ impl Core {
             return Err(kernel_unknown(mac));
         };
         if let VersionSpec::Exact(v) = &profile.version {
-            if v != kernel {
+            if follows_kernels(&profile) && v != kernel {
                 return Err(version_mismatch(v, kernel));
             }
         }
@@ -635,7 +635,7 @@ impl Core {
         };
         // The same spec keeps the kernels, unless they could not be had:
         // then this is how to try again without a restart.
-        let refetch = run.kernel_spec.as_ref() != Some(&profile.version)
+        let refetch = run.kernel_spec.as_ref() != Some(&kernel_spec(&profile))
             || matches!(run.kernels, KernelState::Unavailable { .. });
         run.cfg.profile = Some(profile.clone());
         // Devices queued by auto-repeat take the new profile (and keep
@@ -870,11 +870,15 @@ impl Core {
         let attempt = dev.attempt;
         // Known without resolving: the profile's spec is what the served
         // kernels were resolved from, and the device runs those.
-        let version = served
-            .filter(|v| kernel_spec.as_ref() == Some(&profile.version) && kernel_version == *v);
+        let version = served.filter(|v| {
+            follows_kernels(&profile)
+                && kernel_spec.as_ref() == Some(&profile.version)
+                && kernel_version == *v
+        });
         dev.version = version.clone();
         let shown = version.as_ref().map(|v| v.to_string());
         let config = Some(profile.config.name().to_string());
+        let source = Some(profile.package_source.as_str().to_string());
         run.tasks.retain(|t| !t.is_finished());
         run.tasks.push(tokio::spawn(async move {
             let result = prepare(&assets, &profile, version, Some(&kernel_version), &target).await;
@@ -892,6 +896,7 @@ impl Core {
             DeviceState::Preparing {
                 version: shown,
                 config,
+                source,
             },
         );
     }
@@ -916,6 +921,7 @@ impl Core {
                 ..
             }) => {
                 let info = dev.info.clone().expect("prepared devices have said hello");
+                let shown = version.as_ref().map_or(String::new(), Version::to_string);
                 if let Some(arch) = now_resolved {
                     run.arch_map.insert(arch_key(&info.arch), arch);
                     resolved = Some(
@@ -925,24 +931,24 @@ impl Core {
                             .with("download_arch", arch),
                     );
                 }
-                // The official tool does not enforce the device's minimum
-                // version either; say so and go on.
-                newer = Version::parse(&info.min_os)
-                    .ok()
-                    .filter(|min| *min > version)
-                    .map(|min| {
+                // Below the device's minimum: `prepare` refused it unless
+                // the profile allows it; then say so and go on.
+                newer = version
+                    .as_ref()
+                    .filter(|v| v.below_minimum(&info.min_os))
+                    .map(|v| {
                         Failure::new("min_os_newer")
                             .with("mac", mac)
-                            .with("min_os", min)
-                            .with("version", &version)
+                            .with("min_os", info.min_os.trim())
+                            .with("version", v)
                     });
-                dev.version = Some(version.clone());
+                dev.version = version.clone();
                 match ServerSession::new(info, &plan, session_cfg, Instant::now()) {
                     Ok(session) => {
                         dev.session = Some(session);
                         dev.last_progress = None;
                         DeviceState::Flashing {
-                            version: version.to_string(),
+                            version: shown,
                             phase: "offering".into(),
                             sent: 0,
                             total: plan.total_bytes(),

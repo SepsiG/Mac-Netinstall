@@ -30,6 +30,6 @@ pub use event::{
 };
 pub use preflight::{Finding, PreflightReport, Severity};
 pub use profile::{
-    default_profiles_root, license_key_from_file, AfterInstall, ConfigMode, Listing, Profile,
-    ProfileStore, MAX_LICENSE_KEY,
+    default_profiles_root, follows_kernels, kernel_spec, license_key_from_file, AfterInstall,
+    ConfigMode, Listing, PackageSource, Profile, ProfileStore, MAX_LICENSE_KEY, MAX_LOCAL_PACKAGES,
 };

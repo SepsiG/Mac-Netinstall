@@ -385,6 +385,7 @@ mod tests {
             profile: None,
             config: None,
             version: None,
+            source: None,
             attempt: 1,
             first_seen_ms: 0,
             updated_ms: 0,

@@ -137,7 +137,7 @@ pub enum Command {
 pub enum AssetsCommand {
     /// Download (or verify cached) boot kernels and packages.
     Fetch {
-        /// Channel (stable, long-term, testing, development) or version (7.25.1).
+        /// Channel (stable, long-term, testing, development, v6-long-term) or version (7.25.1, 6.49.23).
         #[arg(long)]
         version: VersionSpec,
         /// Package architecture(s) to fetch packages for (arm64, mipsbe, ...).
@@ -169,7 +169,7 @@ pub enum ProfilesCommand {
 /// What to install, given on the command line.
 #[derive(Debug, Clone, Args)]
 pub struct RecipeArgs {
-    /// Channel (stable, long-term, testing, development) or version (7.25.1).
+    /// Channel (stable, long-term, testing, development, v6-long-term) or version (7.25.1, 6.49.23).
     #[arg(long)]
     pub version: VersionSpec,
     /// Extra package(s) besides routeros, e.g. wifi-qcom.
@@ -494,7 +494,7 @@ mod tests {
             ErrorKind::MissingRequiredArgument
         );
         assert_eq!(
-            kind(&["flash", "--iface", "en7", "--version", "6.49"]),
+            kind(&["flash", "--iface", "en7", "--version", "6.29"]),
             ErrorKind::ValueValidation
         );
         assert_eq!(

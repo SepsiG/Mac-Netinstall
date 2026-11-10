@@ -169,3 +169,86 @@ async fn the_install_version_is_reported_and_must_match_the_kernels() {
     let snap = rig.engine.snapshot().await.unwrap();
     assert_eq!(snap.devices[0].version.as_deref(), Some("7.25.1"));
 }
+
+/// A RouterOS v6 profile boots the stable 7.x kernels and installs the v6
+/// bundle (no version mismatch: v6 never follows the kernels).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_v6_profile_installs_the_bundle_with_the_v7_kernels() {
+    let v6 = ni_assets::testutil::V6;
+    let mut p = profile();
+    p.version = VersionSpec::Exact(Version::parse(v6).unwrap());
+    p.extra_packages = vec!["calea".into()];
+    let mut rig = rig(|cfg| cfg.profile = Some(p)).await;
+    let (bundle, calea) = ni_assets::testutil::mirror_v6(&rig.srv, v6, "arm64", "arm64", true);
+    let snap = rig.engine.snapshot().await.unwrap();
+    assert_eq!(snap.kernel_version.as_deref(), Some("7.25.1"));
+    let mut sim = sim_config(A);
+    sim.info.min_os = "6.40".into();
+    let sim = boot(&rig, A, sim).await;
+    rig.lan.add(sim).await;
+    let seen = until_finished(&mut rig.events, A).await;
+    assert!(
+        matches!(
+            seen.last(),
+            Some(EngineEvent::Device {
+                state: DeviceState::Done,
+                ..
+            })
+        ),
+        "{seen:?}"
+    );
+    let report = rig.lan.wait_terminated(A, WAIT).await.unwrap();
+    let got: Vec<(&str, usize)> = report
+        .received
+        .iter()
+        .map(|f| (f.name.as_str(), f.data.len()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("routeros-arm64-6.49.23.npk", bundle.len()),
+            ("calea-6.49.23-arm64.npk", calea.len())
+        ]
+    );
+    let snap = rig.engine.snapshot().await.unwrap();
+    let dev = snap.devices.iter().find(|d| d.mac == A).unwrap();
+    assert_eq!(dev.version.as_deref(), Some(v6));
+    assert_eq!(dev.source.as_deref(), Some("download"));
+}
+
+/// Local packages: no download, the version from the system package.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_local_package_profile_installs_the_registered_files() {
+    let mut rig = rig(|cfg| cfg.auto_repeat = false).await;
+    let src = tempdir("engine-local-src");
+    let file = src.join("my.npk");
+    let data = ni_assets::testutil::npk_package_version("system", "arm64", (7, 24, 6), 3000, 7);
+    std::fs::write(&file, &data).unwrap();
+    let local = rig
+        .engine
+        .assets()
+        .register_local_file(&file)
+        .await
+        .unwrap();
+    let mut p = profile();
+    p.package_source = ni_engine::PackageSource::Local;
+    p.local_packages = vec![local.name];
+    let sim = boot(&rig, A, sim_config(A)).await;
+    rig.lan.add(sim).await;
+    state(&mut rig.events, A, "waiting").await;
+    rig.engine.flash(A, p).await.unwrap();
+    let preparing = state(&mut rig.events, A, "preparing").await;
+    assert!(
+        matches!(&preparing, EngineEvent::Device { state: DeviceState::Preparing { source: Some(s), .. }, .. } if s == "local"),
+        "{preparing:?}"
+    );
+    let flashing = state(&mut rig.events, A, "flashing").await;
+    assert!(
+        matches!(&flashing, EngineEvent::Device { state: DeviceState::Flashing { version, .. }, .. } if version == "7.24.6"),
+        "{flashing:?}"
+    );
+    state(&mut rig.events, A, "done").await;
+    let report = rig.lan.wait_terminated(A, WAIT).await.unwrap();
+    assert_eq!(report.received[0].name, "my.npk");
+    assert_eq!(report.received[0].data, data);
+}

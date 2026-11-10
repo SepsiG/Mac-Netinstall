@@ -60,6 +60,8 @@ pub struct DeviceView {
     /// RouterOS version of the current (or last) install attempt, once
     /// resolved.
     pub version: Option<String>,
+    /// Where that profile's packages come from: `download` or `local`.
+    pub source: Option<String>,
     /// Install attempts so far (preparations started). Lets a client that
     /// missed events tell "finished twice" from "finished once".
     pub attempt: u64,

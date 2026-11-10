@@ -2,8 +2,8 @@
 //! fetching the boot kernels.
 
 use crate::event::Failure;
-use crate::profile::{ConfigMode, Profile};
-use ni_assets::npk::package_arch;
+use crate::profile::{follows_kernels, mode_script_needs_7_22, ConfigMode, PackageSource, Profile};
+use ni_assets::npk::{package_arch, package_name, package_version};
 use ni_assets::{ArchError, AssetError, Assets, KernelSet, PkgArch, Version, VersionSpec};
 use ni_bootp::BootArch;
 use ni_proto::{DeviceConfig, DeviceInfo, InstallPlan, PlanFile};
@@ -46,11 +46,15 @@ impl Target {
 /// A plan ready to be offered.
 #[derive(Debug, Clone)]
 pub struct Prepared {
-    /// The RouterOS version installed.
-    pub version: Version,
+    /// The RouterOS version installed; `None` for local packages whose
+    /// header names no version this app can read.
+    pub version: Option<Version>,
+    /// Downloaded or local packages.
+    pub source: PackageSource,
     pub plan: InstallPlan,
-    /// The download architecture of the plan's packages.
-    pub arch: PkgArch,
+    /// The download architecture of the plan's packages (`None` for local
+    /// packages).
+    pub arch: Option<PkgArch>,
     /// `Some(arch)` when the hello arch was resolved from package contents
     /// this time (unknown to [`PkgArch::from_device_arch`], or its choice
     /// did not fit): worth remembering for the session and reporting as
@@ -135,7 +139,7 @@ async fn packages_for(
     extras: &[String],
     target: &Target,
 ) -> Result<(Vec<PlanFile>, PkgArch, bool), Failure> {
-    let fail = |e: AssetError| asset_failure("assets_failed", &e);
+    let fail = |e: AssetError| package_failure(&e);
     let hello_arch = target.info.arch.trim();
     let fast = match target.known {
         Some(a) => Some(a),
@@ -191,6 +195,73 @@ async fn packages_for(
     }
 }
 
+/// A package download error as a device failure: `package_not_published`
+/// (`arch`, `version`) for a main package that does not exist for the
+/// device's arch (old v6 releases), `assets_failed` (`cause`) otherwise.
+pub fn package_failure(e: &AssetError) -> Failure {
+    match e {
+        AssetError::PackageNotPublished { arch, version, .. } => {
+            Failure::new("package_not_published")
+                .with("arch", arch)
+                .with("version", version)
+                .with("cause", e.code())
+                .with("detail", e)
+        }
+        e => asset_failure("assets_failed", e),
+    }
+}
+
+/// The registered local packages of `profile`, checked: each must exist
+/// (`package_file_missing`: `name`, `cause`) and be built for the hello
+/// arch (`package_arch_mismatch`); exactly one must be a `system` package
+/// (`missing_system_package`; a second one is `duplicate_package`). The
+/// system package comes first, the rest in profile order. Also returns
+/// the system package's version, if its header names one.
+async fn local_packages(
+    assets: &Assets,
+    profile: &Profile,
+    target: &Target,
+) -> Result<(Vec<PlanFile>, Option<Version>), Failure> {
+    let mut files = Vec::with_capacity(profile.local_packages.len());
+    for name in &profile.local_packages {
+        let data = assets.local_file(name).await.map_err(|e| {
+            Failure::new("package_file_missing")
+                .with("name", name)
+                .with("cause", e.code())
+        })?;
+        files.push(PlanFile {
+            name: name.clone(),
+            data,
+        });
+    }
+    let systems: Vec<usize> = files
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| package_name(&f.data).is_ok_and(|n| n == "system"))
+        .map(|(i, _)| i)
+        .collect();
+    let main = match systems.as_slice() {
+        [] => return Err(Failure::new("missing_system_package")),
+        [i] => *i,
+        [_, second, ..] => {
+            return Err(Failure::new("duplicate_package").with("package", &files[*second].name))
+        }
+    };
+    let system = files.remove(main);
+    let version = package_version(&system.data);
+    files.insert(0, system);
+    verify_package_arches(&target.info.arch, &files)?;
+    Ok((files, version))
+}
+
+/// `version_below_minimum` (`version`, `min_os`): installing a version
+/// older than the device's minimum (its hello's `min_os`) can brick it.
+pub fn version_below_minimum(version: &Version, min_os: &str) -> Failure {
+    Failure::new("version_below_minimum")
+        .with("version", version)
+        .with("min_os", min_os.trim())
+}
+
 /// An asset error as a device/engine failure: `code` with the asset
 /// error's code as `cause`.
 pub fn asset_failure(code: &str, e: &AssetError) -> Failure {
@@ -220,11 +291,16 @@ pub async fn resolve_or_remembered(
 
 /// Resolve the profile's version (or use `version` if the caller resolved
 /// it already; see [`resolve_or_remembered`] for offline), check it against
-/// `kernel_version` (the boot kernels the device runs), then fetch packages
+/// `kernel_version` (the boot kernels the device runs) when the profile
+/// follows them ([`follows_kernels`]: v7 downloads), then fetch packages
 /// and the scripts. The plan carries the profile's configuration options
-/// and sends the system package first. Returns the version installed and
-/// the plan. Every package is checked to be built for the device's hello
-/// arch before anything is offered to it ([`verify_package_arches`]).
+/// and sends the system package first. Every package is checked to be
+/// built for the device's hello arch before anything is offered to it
+/// ([`verify_package_arches`]).
+///
+/// With [`PackageSource::Local`] the packages are the profile's registered
+/// local `.npk` files (see `local_packages`); the version is the one in the
+/// system package's header, if readable.
 ///
 /// The download arch: the remembered resolution ([`Target::known`]) or
 /// [`PkgArch::from_device_arch`]. If that names nothing (an arch string we
@@ -232,12 +308,21 @@ pub async fn resolve_or_remembered(
 /// arches of the device's boot kernel ([`PkgArch::for_boot_arch`]; all of
 /// them without BOOTP): the `routeros` package of each is fetched (and
 /// cached) until one says the hello arch inside, then its extra packages are
-/// fetched and checked too ([`Prepared::resolved`]). Errors:
-/// `assets_failed` (`cause`), `profile_version_mismatch` (`version`,
-/// `kernel_version`), `package_arch_mismatch` (`arch`, `package`,
-/// `package_arch`), `unknown_device_arch` (`arch`, `model`, `boot_arch`,
-/// `candidates`, `hello`), `empty_script` (`name`), `invalid_plan`
-/// (`detail`).
+/// fetched and checked too ([`Prepared::resolved`]).
+///
+/// Before anything is offered: a version below the device's minimum
+/// (`min_os`) is refused unless the profile allows it
+/// (`version_below_minimum`), and a mode script needs a known version
+/// from 7.22 on (`mode_script_needs_7_22`, `version` `?` if unknown).
+///
+/// Errors: `assets_failed` (`cause`), `package_not_published` (`arch`,
+/// `version`), `profile_version_mismatch` (`version`, `kernel_version`),
+/// `package_arch_mismatch` (`arch`, `package`, `package_arch`),
+/// `unknown_device_arch` (`arch`, `model`, `boot_arch`, `candidates`,
+/// `hello`), `package_file_missing` (`name`, `cause`),
+/// `missing_system_package`, `duplicate_package` (`package`),
+/// `version_below_minimum` (`version`, `min_os`), `mode_script_needs_7_22`
+/// (`version`), `empty_script` (`name`), `invalid_plan` (`detail`).
 ///
 /// Why the mismatch is an error: the device already booted the kernel it
 /// was served over TFTP, so the kernel cannot be switched for this install.
@@ -252,20 +337,41 @@ pub async fn prepare(
     if let Err(e @ ArchError::Unsupported(_)) = PkgArch::from_device_arch(&target.info.arch) {
         return Err(fail(e.into()));
     }
-    let version = match version {
-        Some(v) => v,
-        None => {
-            resolve_or_remembered(assets, &profile.version)
-                .await
-                .map_err(fail)?
-                .0
+    let (packages, version, arch, resolved) = match profile.package_source {
+        PackageSource::Local => {
+            let (packages, version) = local_packages(assets, profile, target).await?;
+            (packages, version, None, false)
+        }
+        PackageSource::Download => {
+            let version = match version {
+                Some(v) => v,
+                None => {
+                    resolve_or_remembered(assets, &profile.version)
+                        .await
+                        .map_err(fail)?
+                        .0
+                }
+            };
+            if follows_kernels(profile) {
+                if let Some(k) = kernel_version.filter(|k| **k != version) {
+                    return Err(version_mismatch(&version, k));
+                }
+            }
+            let (packages, arch, resolved) =
+                packages_for(assets, &version, &profile.extra_packages, target).await?;
+            (packages, Some(version), Some(arch), resolved)
         }
     };
-    if let Some(k) = kernel_version.filter(|k| **k != version) {
-        return Err(version_mismatch(&version, k));
+    if let Some(v) = &version {
+        if !profile.allow_below_minimum && v.below_minimum(&target.info.min_os) {
+            return Err(version_below_minimum(v, &target.info.min_os));
+        }
     }
-    let (packages, arch, resolved) =
-        packages_for(assets, &version, &profile.extra_packages, target).await?;
+    if profile.mode_script.is_some() && !version.as_ref().is_some_and(Version::supports_mode_script)
+    {
+        let shown = version.as_ref().map_or("?".to_string(), Version::to_string);
+        return Err(mode_script_needs_7_22(&shown));
+    }
     let config = match &profile.config {
         ConfigMode::Keep => DeviceConfig::Keep,
         ConfigMode::Default => DeviceConfig::Default,
@@ -290,14 +396,18 @@ pub async fn prepare(
         license_key: profile.license_key.clone().unwrap_or_default(),
         after_install: profile.after_install.into(),
     };
-    plan.system_package_first();
+    if profile.package_source == PackageSource::Download {
+        // Local packages are in order already (by content, not name).
+        plan.system_package_first();
+    }
     plan.validate()
         .map_err(|e| Failure::new("invalid_plan").with("detail", e))?;
     Ok(Prepared {
         version,
+        source: profile.package_source,
         plan,
         arch,
-        resolved: resolved.then_some(arch),
+        resolved: resolved.then_some(arch).flatten(),
     })
 }
 
@@ -453,7 +563,7 @@ mod tests {
         };
         let Prepared { version, plan, .. } =
             prepare(&a, &p, None, None, &target("arm64")).await.unwrap();
-        assert_eq!(version, v());
+        assert_eq!(version, Some(v()));
         let names: Vec<&str> = plan.packages.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(
             names,
@@ -550,7 +660,10 @@ mod tests {
         let err = prepare(&a, &profile(), Some(v()), None, &target("mmips"))
             .await
             .unwrap_err();
-        assert_eq!(err.param("cause"), Some("not_found"));
+        assert_eq!(
+            (err.code.as_str(), err.param("arch"), err.param("version")),
+            ("package_not_published", Some("mmips"), Some("7.25.1"))
+        );
     }
 
     #[tokio::test]
@@ -568,7 +681,7 @@ mod tests {
         let Prepared { version, .. } = prepare(&a, &profile(), None, Some(&v()), &target("arm64"))
             .await
             .unwrap();
-        assert_eq!(version, v());
+        assert_eq!(version, Some(v()));
     }
 
     #[tokio::test]
@@ -585,7 +698,7 @@ mod tests {
         let a = offline(&dir);
         let Prepared { version, plan, .. } =
             prepare(&a, &p, None, None, &target("arm64")).await.unwrap();
-        assert_eq!((version, plan.packages.len()), (v(), 1));
+        assert_eq!((version, plan.packages.len()), (Some(v()), 1));
         // Packages that were never cached cannot be had offline.
         p.extra_packages = vec!["wireless".into()];
         let err = prepare(&a, &p, None, None, &target("arm64"))
@@ -704,7 +817,7 @@ mod arch_tests {
             names(&got.plan),
             ["routeros-7.25.1-mipsbe.npk", "wireless-7.25.1-mipsbe.npk"]
         );
-        assert_eq!((got.arch, got.resolved), (PkgArch::Mipsbe, None));
+        assert_eq!((got.arch, got.resolved), (Some(PkgArch::Mipsbe), None));
     }
 
     /// A device saying `smips` whose `smips` downloads say `mips` inside:
@@ -773,12 +886,12 @@ mod arch_tests {
         );
         assert_eq!(
             (got.arch, got.resolved),
-            (PkgArch::Smips, Some(PkgArch::Smips))
+            (Some(PkgArch::Smips), Some(PkgArch::Smips))
         );
         // Known from then on: no second resolution.
         let t = Target::new(hello("XMIPS")).with_known(Some(PkgArch::Smips));
         let got = prepare(&a, &profile(), Some(v()), None, &t).await.unwrap();
-        assert_eq!((got.arch, got.resolved), (PkgArch::Smips, None));
+        assert_eq!((got.arch, got.resolved), (Some(PkgArch::Smips), None));
     }
 
     /// A fast-path choice whose packages do not fit is corrected the same
@@ -795,7 +908,7 @@ mod arch_tests {
         let got = prepare(&a, &profile(), Some(v()), None, &t).await.unwrap();
         assert_eq!(
             (got.arch, got.resolved),
-            (PkgArch::Smips, Some(PkgArch::Smips))
+            (Some(PkgArch::Smips), Some(PkgArch::Smips))
         );
     }
 
@@ -811,7 +924,7 @@ mod arch_tests {
         let got = prepare(&a, &profile(), Some(v()), None, &t).await.unwrap();
         assert_eq!(
             (got.arch, got.resolved),
-            (PkgArch::Tile, Some(PkgArch::Tile))
+            (Some(PkgArch::Tile), Some(PkgArch::Tile))
         );
     }
 
@@ -854,7 +967,224 @@ mod arch_tests {
             .unwrap_err();
         assert_eq!(
             (err.code.as_str(), err.param("cause")),
-            ("assets_failed", Some("not_found"))
+            ("package_not_published", Some("package_not_published"))
         );
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use crate::profile::PackageSource;
+    use ni_assets::testutil::{
+        assets, mirror, mirror_v6, npk_package, npk_package_version, tempdir, TestServer, V6,
+    };
+    use ni_proto::{DeviceInfo, Mac};
+
+    fn hello(arch: &str, min_os: &str) -> Target {
+        Target::new(DeviceInfo {
+            mac: Mac([0x48, 0xa9, 0x8a, 0, 0, 2]),
+            tag: "DSCV".into(),
+            license_id: "LIC".into(),
+            license_key: String::new(),
+            model: "hEX".into(),
+            arch: arch.into(),
+            min_os: min_os.into(),
+            extra: vec!["f7".into(), "f8".into()],
+            hello_dst: Mac::BROADCAST,
+        })
+    }
+
+    fn kernels() -> Version {
+        Version::parse("7.25.1").unwrap()
+    }
+
+    fn names(p: &Prepared) -> Vec<&str> {
+        p.plan.packages.iter().map(|f| f.name.as_str()).collect()
+    }
+
+    /// A v6 install boots the 7.x kernels: no version mismatch, the bundle
+    /// first, bundled extras dropped.
+    #[tokio::test]
+    async fn v6_downloads_install_with_the_v7_kernels() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        let (bundle, _) = mirror_v6(&srv, V6, "mmips", "mmips", true);
+        let dir = tempdir("prepare-v6");
+        let a = assets(&srv, &dir);
+        let mut p = Profile::new("v6", "v6-long-term".parse().unwrap());
+        p.extra_packages = vec!["wireless".into(), "calea".into()];
+        let got = prepare(&a, &p, None, Some(&kernels()), &hello("mmips", "6.40"))
+            .await
+            .unwrap();
+        assert_eq!(got.version.as_ref().map(Version::as_str), Some(V6));
+        assert_eq!(got.source, PackageSource::Download);
+        assert_eq!(
+            names(&got),
+            ["routeros-mmips-6.49.23.npk", "calea-6.49.23-mmips.npk"]
+        );
+        assert_eq!(got.plan.packages[0].data.as_ref(), bundle.as_slice());
+        // The hello's arch is checked in v6 packages too.
+        let err = prepare(&a, &p, None, Some(&kernels()), &hello("smips", "6.40"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "package_not_published");
+        assert_eq!(err.param("arch"), Some("smips"));
+        assert_eq!(err.param("version"), Some(V6));
+    }
+
+    /// Below the device's minimum version: refused before anything is
+    /// offered, unless the profile allows it.
+    #[tokio::test]
+    async fn versions_below_the_device_minimum_are_refused_unless_allowed() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        mirror_v6(&srv, V6, "arm", "arm", true);
+        let dir = tempdir("prepare-min-os");
+        let a = assets(&srv, &dir);
+        let mut p = Profile::new("v6", VersionSpec::Exact(Version::parse(V6).unwrap()));
+        let err = prepare(&a, &p, None, Some(&kernels()), &hello("arm", "7.1"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "version_below_minimum");
+        assert_eq!(err.param("version"), Some(V6));
+        assert_eq!(err.param("min_os"), Some("7.1"));
+        p.allow_below_minimum = true;
+        prepare(&a, &p, None, Some(&kernels()), &hello("arm", "7.1"))
+            .await
+            .unwrap();
+        // An unreadable minimum is no reason to refuse.
+        p.allow_below_minimum = false;
+        prepare(&a, &p, None, Some(&kernels()), &hello("arm", "n/a"))
+            .await
+            .unwrap();
+    }
+
+    async fn register(a: &Assets, dir: &std::path::Path, name: &str, data: &[u8]) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, data).unwrap();
+        a.register_local_file(&path).await.unwrap().name
+    }
+
+    fn local(names: &[String]) -> Profile {
+        let mut p = Profile::new("local", VersionSpec::Channel(ni_assets::Channel::Stable));
+        p.package_source = PackageSource::Local;
+        p.local_packages = names.to_vec();
+        p
+    }
+
+    /// Local packages: no download, the system package first, its version
+    /// read from its header, every file checked against the hello arch.
+    #[tokio::test]
+    async fn local_packages_are_installed_system_first() {
+        let srv = TestServer::start().await;
+        let dir = tempdir("prepare-local");
+        let a = assets(&srv, &dir);
+        let wifi = register(
+            &a,
+            &dir,
+            "Wifi.npk",
+            &npk_package_version("wifi-qcom", "arm", (7, 24, 6), 900, 2),
+        )
+        .await;
+        let main = register(
+            &a,
+            &dir,
+            "my-routeros.npk",
+            &npk_package_version("system", "arm", (7, 24, 6), 1200, 1),
+        )
+        .await;
+        let p = local(&[wifi.clone(), main.clone()]);
+        // Any kernel version: local packages do not follow the kernels.
+        let got = prepare(&a, &p, None, Some(&kernels()), &hello("arm", "7.1"))
+            .await
+            .unwrap();
+        assert_eq!(names(&got), ["my-routeros.npk", "wifi.npk"]);
+        assert_eq!(got.version.as_ref().map(Version::as_str), Some("7.24.6"));
+        assert_eq!(got.source, PackageSource::Local);
+        assert!(srv.paths().is_empty(), "nothing downloaded");
+        // A device of another arch: refused before formatting.
+        let err = prepare(&a, &p, None, Some(&kernels()), &hello("mmips", "7.1"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "package_arch_mismatch");
+        assert_eq!(err.param("package"), Some("my-routeros.npk"));
+        // Extras only: no system package.
+        let err = prepare(
+            &a,
+            &local(std::slice::from_ref(&wifi)),
+            None,
+            None,
+            &hello("arm", "7.1"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "missing_system_package");
+        // A file that is gone from the cache.
+        let err = prepare(
+            &a,
+            &local(&[main.clone(), "gone.npk".into()]),
+            None,
+            None,
+            &hello("arm", "7.1"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("name")),
+            ("package_file_missing", Some("gone.npk"))
+        );
+        // The device minimum applies to the header's version.
+        let err = prepare(&a, &p, None, None, &hello("arm", "7.25"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "version_below_minimum");
+    }
+
+    /// The mode script needs 7.22: checked against the local system
+    /// package's version; an unknown version is refused too.
+    #[tokio::test]
+    async fn the_mode_script_needs_a_known_version_from_7_22() {
+        let srv = TestServer::start().await;
+        let dir = tempdir("prepare-local-mode");
+        let a = assets(&srv, &dir);
+        let mode = register(&a, &dir, "mode.rsc", b":log info x\n").await;
+        let old = register(
+            &a,
+            &dir,
+            "old.npk",
+            &npk_package_version("system", "arm", (7, 21, 3), 900, 1),
+        )
+        .await;
+        let new = register(
+            &a,
+            &dir,
+            "new.npk",
+            &npk_package_version("system", "arm", (7, 22, 0), 900, 1),
+        )
+        .await;
+        let odd = register(&a, &dir, "odd.npk", &npk_package("system", "arm", 900, 1)).await;
+        for (file, want) in [(&old, Some("7.21.3")), (&odd, Some("?")), (&new, None)] {
+            let mut p = local(std::slice::from_ref(file));
+            p.mode_script = Some(mode.clone());
+            let got = prepare(&a, &p, None, None, &hello("arm", "")).await;
+            match want {
+                None => assert!(got.is_ok(), "{file}: {got:?}"),
+                Some(v) => {
+                    let err = got.unwrap_err();
+                    assert_eq!(
+                        (err.code.as_str(), err.param("version")),
+                        ("mode_script_needs_7_22", Some(v)),
+                        "{file}"
+                    );
+                }
+            }
+        }
+        // An unknown version is shown as such and passes without a mode
+        // script.
+        let got = prepare(&a, &local(&[odd]), None, None, &hello("arm", "7.1"))
+            .await
+            .unwrap();
+        assert_eq!(got.version, None);
     }
 }

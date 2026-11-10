@@ -318,6 +318,7 @@ async fn profiles_can_be_saved_listed_shown_and_deleted() {
             "extra_packages": ["wifi-qcom"],
             "config": {"mode": "script", "local_name": "lab.rsc"},
             "mode_script": null, "remove_branding": false, "license_key": null,
+            "package_source": "download", "local_packages": [], "allow_below_minimum": false,
             "after_install": "reboot"}])
     );
     let (_, out, _) = env.run(&["profiles", "list"]).await;

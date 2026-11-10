@@ -38,6 +38,7 @@ pub const FAILURES: &[&str] = &[
     "invalid_name",
     "invalid_netmask",
     "invalid_network",
+    "invalid_package_file",
     "invalid_package_name",
     "invalid_plan",
     "invalid_profile",
@@ -51,8 +52,11 @@ pub const FAILURES: &[&str] = &[
     "link_up",
     "local_network_allowed",
     "local_network_denied",
+    "missing_system_package",
+    "mode_script_needs_7_22",
     "mode_script_with_keep",
     "no_ipv4",
+    "no_local_packages",
     "min_os_newer",
     "no_manual_ipv4",
     "no_profile",
@@ -60,6 +64,8 @@ pub const FAILURES: &[&str] = &[
     "not_failed",
     "not_running",
     "package_arch_mismatch",
+    "package_file_missing",
+    "package_not_published",
     "pool_includes_reserved",
     "pool_inverted",
     "pool_outside_subnet",
@@ -80,6 +86,7 @@ pub const FAILURES: &[&str] = &[
     "unknown_device_arch",
     "unknown_interface",
     "unsuitable_interface",
+    "version_below_minimum",
     "version_unavailable",
 ];
 
@@ -343,6 +350,7 @@ mod tests {
             DeviceState::Preparing {
                 version: None,
                 config: None,
+                source: None,
             },
             DeviceState::Flashing {
                 version: String::new(),
