@@ -99,7 +99,7 @@
   "log.stopped": "Stopped",
   "log.kernels_ready": "Boot kernels {version} ready; waiting for devices",
   "log.download": "Downloading {file}",
-  "log.discovered": "Found {model} ({arch}), license {license}",
+  "log.discovered": "Found {model} ({arch}), license {license}, minimum version {min_os}",
   "log.ignored": "Not served: {reason}",
   "log.forgotten": "Forgotten",
   "log.only_mac": "Serving only {mac}",
@@ -492,5 +492,10 @@
   "code.disclaimer_not_accepted": "Accept the disclaimer before starting.",
   "code.not_a_package": "{name} is not a .npk package.",
   "code.package_failed": "{name} cannot be used: {cause}.",
-  "code.open_link_failed": "Could not open the page ({detail})."
+  "code.open_link_failed": "Could not open the page ({detail}).",
+  "devices.min_os": "Minimum RouterOS version: {min_os}",
+  "code.version_unknown": "{side, select, device {The device's minimum version (“{min_os}”) cannot be read} other {The version of the packages cannot be read}}, so it cannot be checked that RouterOS {version} is not below it. Nothing was installed. To install anyway, turn on “Allow below the device's minimum version (risky)” in the profile.",
+  "code.package_version_mismatch": "{package} is version {package_version}, but the other packages are {version}. Nothing was installed.",
+  "code.package_exists": "Another file named {name} is already in use; rename the file or remove the old one under Settings → Downloaded RouterOS files.",
+  "log.discovered_no_min": "Found {model} ({arch}), license {license}, minimum version unknown"
 }

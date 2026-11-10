@@ -100,7 +100,7 @@
         {@const p = progress(d)}
         <tr data-mac={d.mac} class:failed={d.state.state === "failed"} class:done={d.state.state === "done"}>
           <td class="mono">{d.mac}</td>
-          <td>{d.info?.model ?? ""}</td>
+          <td title={d.info ? $t("devices.min_os", { min_os: d.info.min_os.trim() || $t("versions.unknown") }) : undefined}>{d.info?.model ?? ""}</td>
           <td>{d.info?.arch ?? d.boot_arch ?? ""}</td>
           <td class="status-col" title={d.attempt > 1 ? $t("devices.attempt", { attempt: d.attempt }) : undefined}>
             <span class="state state-{d.state.state}">{status(d)}</span>

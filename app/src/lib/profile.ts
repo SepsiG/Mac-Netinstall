@@ -102,6 +102,7 @@ export function formErrors(f: ProfileForm): Partial<Record<Field, string>> {
   const out: Partial<Record<Field, string>> = {};
   if (!validName(f.name)) out.name = "profile.err_name";
   const local = f.source === "local";
+  // Local packages carry their own version: a half-typed one is ignored.
   if (!local && f.custom && !validVersion(f.exact.trim())) out.version = "profile.err_version";
   if (local && f.localPackages.length === 0) out.local = "profile.err_local_none";
   else if (local) {
@@ -123,7 +124,7 @@ export function fromForm(f: ProfileForm): Profile {
     f.config === "script" ? { mode: "script", local_name: f.script ?? "" } : { mode: f.config };
   return {
     name: f.name,
-    version: formSpec(f),
+    version: f.source === "local" && f.custom && !validVersion(f.exact.trim()) ? f.version : formSpec(f),
     extra_packages: [...f.packages],
     config,
     mode_script: f.useModeScript ? f.modeScript : null,

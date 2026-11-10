@@ -30,6 +30,8 @@ describe("profile rules", () => {
     expect(validVersion("6.30")).toBe(true);
     expect(validVersion("6.29")).toBe(false);
     expect(validVersion("5.26")).toBe(false);
+    expect(validVersion("06.49")).toBe(false);
+    expect(validVersion("7.025")).toBe(false);
   });
 
   it("round-trips profiles through the form", () => {
@@ -296,6 +298,17 @@ describe("version picker", () => {
 });
 
 describe("local packages", () => {
+  it("ignores a half-typed version in local mode", () => {
+    const f = toForm(null);
+    f.name = "x";
+    f.custom = true;
+    f.exact = "7.";
+    f.source = "local";
+    f.localPackages = ["a.npk"];
+    expect(formErrors(f)).toEqual({});
+    expect(fromForm(f).version).toBe("stable");
+  });
+
   it("installs picked .npk files instead of downloading", async () => {
     const { backend } = open(null);
     await userEvent.type(screen.getByLabelText("Name"), "offline");

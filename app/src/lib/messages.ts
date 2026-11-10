@@ -82,8 +82,8 @@ export function logEntry(e: EngineEvent, at: number): LogEntry | null {
         at,
         level: "info",
         mac: e.mac,
-        key: "log.discovered",
-        values: { model: e.model, arch: e.arch, license: e.license_id },
+        key: e.min_os.trim() ? "log.discovered" : "log.discovered_no_min",
+        values: { model: e.model, arch: e.arch, license: e.license_id, min_os: e.min_os.trim() },
       };
     case "ignored":
       return { at, level: "info", mac: e.mac, key: "log.ignored", values: { reason: e.reason } };

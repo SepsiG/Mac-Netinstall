@@ -32,6 +32,15 @@ describe("messages", () => {
     );
   });
 
+  it("explains why an unknown version is refused", () => {
+    expect(text("en", { code: "version_unknown", params: { side: "device", version: "7.25.1", min_os: "x" } })).toMatch(
+      /minimum version \(“x”\).*Allow below the device's minimum version/,
+    );
+    expect(text("hu", { code: "version_unknown", params: { side: "package", version: "?", min_os: "7.1" } })).toMatch(
+      /nem olvasható ki.*Telepítés az eszköz minimális verziója alá is/,
+    );
+  });
+
   it("has hints for actionable codes only", () => {
     expect(hint("en", "port_in_use")).toContain("Internet Sharing");
     expect(hint("hu", "no_ipv4")).toContain("Rendszerbeállítások");
@@ -75,7 +84,9 @@ describe("messages", () => {
       { event: "discovered", mac: MAC, model: "hEX", arch: "mmips", license_id: "AB", min_os: "7" },
       at,
     )!;
-    expect(logText("en", found)).toBe("Found hEX (mmips), license AB");
+    expect(logText("en", found)).toBe("Found hEX (mmips), license AB, minimum version 7");
+    const odd = logEntry({ event: "discovered", mac: MAC, model: "hEX", arch: "mmips", license_id: "AB", min_os: "" }, at)!;
+    expect(logText("hu", odd)).toBe("Új eszköz: hEX (mmips), licenc: AB, min. verzió: ismeretlen");
   });
 });
 

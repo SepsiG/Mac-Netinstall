@@ -29,6 +29,8 @@ export function compareVersions(a: string, b: string): number {
 
 /** A version the app accepts: 7.x and later, or 6.x from 6.30. */
 export function acceptedVersion(v: string): boolean {
+  // One spelling per version: no leading zeros (`06.49`, `7.025`).
+  if (/(^|\D)0\d/.test(v.trim())) return false;
   const k = key(v);
   if (!k) return false;
   const [major, minor] = k[0];

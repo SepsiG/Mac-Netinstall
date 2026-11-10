@@ -69,6 +69,11 @@ describe("DeviceTable", () => {
     expect(await within(row()).findByText("üres konfiguráció")).toBeInTheDocument();
   });
 
+  it("shows the device's minimum version as a tooltip on its model", () => {
+    show([dev({ state: "discovered" })]);
+    expect(within(row()).getByText("RB5009UG+S+")).toHaveAttribute("title", "Minimum RouterOS version: 7");
+  });
+
   it("shows where the packages come from", async () => {
     show([dev({ state: "done" }, { source: "local", version: "7.24.6" })]);
     expect(within(row()).getByText("local file")).toBeInTheDocument();
