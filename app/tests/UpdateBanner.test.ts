@@ -71,11 +71,51 @@ describe("UpdateBanner", () => {
     const banner = screen.getByRole("status");
     await waitFor(() => expect(banner).toHaveTextContent("Downloading Mac Netinstall 0.1.3… 25%"));
     expect(within(banner).queryByRole("button", { name: "Download" })).toBeNull();
-    finish({ file_name: "Mac-Netinstall_0.1.3_aarch64.dmg", opened: true });
+    finish({ file_name: "Mac-Netinstall_0.1.3_aarch64.dmg" });
     await waitFor(() => expect(banner).toHaveTextContent("Downloaded and verified: Mac-Netinstall_0.1.3_aarch64.dmg"));
     expect(banner).toHaveTextContent("Drag Mac Netinstall to the Applications folder");
     expect(banner).toHaveTextContent("Local Network permission");
+    expect(banner).toHaveTextContent("Gatekeeper");
+    // Idle: opened at once (once), and it can be opened again.
+    await waitFor(() => expect(backend.openDownloadedUpdate).toHaveBeenCalledTimes(1));
+    await userEvent.click(within(banner).getByRole("button", { name: "Open" }));
+    expect(backend.openDownloadedUpdate).toHaveBeenCalledTimes(2);
     expect(banner).not.toHaveTextContent("Open it from the Downloads folder");
+  });
+
+  it("opens the DMG only once no device is busy", async () => {
+    let finish: (v: DownloadedView) => void = () => {};
+    const backend = mockBackend({
+      downloadUpdate: vi.fn(() => new Promise<DownloadedView>((resolve) => (finish = resolve))),
+    });
+    const { rerender } = show(backend);
+    await userEvent.click(screen.getByRole("button", { name: "Download" }));
+    // Flashing started meanwhile: the download finishes while hidden.
+    await rerender({ hidden: true });
+    finish({ file_name: "Mac-Netinstall_0.1.3_aarch64.dmg" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(backend.openDownloadedUpdate).not.toHaveBeenCalled();
+    await rerender({ hidden: false });
+    await waitFor(() => expect(backend.openDownloadedUpdate).toHaveBeenCalledTimes(1));
+  });
+
+  it("says where the file is if it cannot be opened", async () => {
+    const backend = mockBackend({
+      openDownloadedUpdate: vi.fn(async () => {
+        throw { code: "update_open_busy" };
+      }),
+    });
+    show(backend);
+    await userEvent.click(screen.getByRole("button", { name: "Download" }));
+    expect(await screen.findByText("Open it from the Downloads folder.")).toBeInTheDocument();
+  });
+
+  it("hides the release notes while devices are busy", async () => {
+    const { rerender } = show();
+    await userEvent.click(screen.getByRole("button", { name: "What's new?" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await rerender({ hidden: true });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("shows a failed download as a coded error and allows a retry", async () => {

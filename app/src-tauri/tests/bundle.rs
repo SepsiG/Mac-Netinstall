@@ -59,6 +59,21 @@ fn info_plist_explains_local_network_use() {
     assert!(description.contains("local network"), "{description}");
 }
 
+#[test]
+fn files_the_app_creates_are_quarantined() {
+    // Belt and braces next to ni-update's own `com.apple.quarantine` on
+    // the downloaded DMG: everything this app writes is marked as coming
+    // from it, so Gatekeeper checks anything that gets opened later.
+    let plist = read("Info.plist");
+    let key = plist
+        .find("<key>LSFileQuarantineEnabled</key>")
+        .expect("LSFileQuarantineEnabled");
+    assert!(plist[key..]
+        .trim_start_matches("<key>LSFileQuarantineEnabled</key>")
+        .trim_start()
+        .starts_with("<true/>"));
+}
+
 /// `"key" = "value";` lines of an `InfoPlist.strings`.
 fn strings_file(path: &str) -> std::collections::BTreeMap<String, String> {
     read(path)

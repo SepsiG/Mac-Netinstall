@@ -11,5 +11,11 @@
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<!-- Files this app creates (the downloaded update, exported logs,
+	     cached RouterOS files) carry com.apple.quarantine, so Gatekeeper
+	     checks anything opened from them. The update DMG is also marked
+	     explicitly (ni-update). -->
+	<key>LSFileQuarantineEnabled</key>
+	<true/>
 </dict>
 </plist>

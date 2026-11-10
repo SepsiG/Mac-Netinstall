@@ -26,6 +26,13 @@ use tokio::sync::watch;
 
 /// Largest key file read (MikroTik key files are a few hundred bytes).
 pub const MAX_KEY_FILE: u64 = 64 * 1024;
+/// Shortest time between two manual update checks (a quicker one is
+/// answered from what is known).
+pub const MANUAL_CHECK_COOLDOWN: Duration = Duration::from_secs(60);
+/// Partial update downloads older than this are leftovers (removed at
+/// start).
+const STALE_UPDATE_PART: Duration = Duration::from_secs(60 * 60);
+
 /// How long the stored version list is used before it is fetched again.
 pub const VERSION_LIST_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -43,6 +50,8 @@ pub struct Paths {
     pub update_state: PathBuf,
     /// Where a new version's DMG is downloaded (`~/Downloads`).
     pub downloads: PathBuf,
+    /// Where it is staged and checked first (`<cache>/updates`).
+    pub update_staging: PathBuf,
 }
 
 impl Paths {
@@ -56,6 +65,7 @@ impl Paths {
             .map(PathBuf::from)
             .ok_or_else(|| Failure::new("no_home"))?;
         Ok(Paths {
+            update_staging: cache.join("updates"),
             cache,
             profiles,
             settings: support.join("settings.json"),
@@ -72,6 +82,7 @@ impl Paths {
             settings: root.join("settings.json"),
             update_state: root.join("update-check.json"),
             downloads: root.join("downloads"),
+            update_staging: root.join("cache").join("updates"),
         }
     }
 }
@@ -131,6 +142,20 @@ pub struct AppCore {
     update_state: Mutex<UpdateState>,
     /// A new version is being downloaded.
     update_downloading: AtomicBool,
+    /// When the last manual check asked GitHub.
+    last_manual_check: Mutex<Option<std::time::Instant>>,
+    manual_check_cooldown: Duration,
+    /// The last verified download, to open once no device is busy.
+    downloaded_update: Mutex<Option<PathBuf>>,
+}
+
+/// Clears the "downloading" flag however the download ends.
+struct DownloadingGuard<'a>(&'a AtomicBool);
+
+impl Drop for DownloadingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -146,6 +171,10 @@ impl AppCore {
         let settings = store.load();
         let timeout = settings.download_timeout();
         let update_state = UpdateState::load(&paths.update_state);
+        let swept = ni_update::sweep_partials(&paths.update_staging, STALE_UPDATE_PART);
+        if swept > 0 {
+            tracing::info!(swept, "removed unfinished update downloads");
+        }
         let engine = EngineHandle::spawn(
             &paths.cache,
             HttpConfig {
@@ -166,7 +195,16 @@ impl AppCore {
             update_cfg: ni_update::UpdateConfig::default(),
             update_state: Mutex::new(update_state),
             update_downloading: AtomicBool::new(false),
+            last_manual_check: Mutex::new(None),
+            manual_check_cooldown: MANUAL_CHECK_COOLDOWN,
+            downloaded_update: Mutex::new(None),
         })
+    }
+
+    /// Another cooldown between manual update checks (tests).
+    pub fn with_manual_check_cooldown(mut self, cooldown: Duration) -> Self {
+        self.manual_check_cooldown = cooldown;
+        self
     }
 
     /// Look for updates at `cfg` instead of GitHub (tests).
@@ -799,13 +837,21 @@ impl AppCore {
     /// Ask GitHub for the latest release. Automatic checks (`manual` false)
     /// ask only if turned on and at most once a day
     /// ([`ni_update::check_due`]), and fail quietly (the last known state
-    /// is returned). A manual check always asks. Error (manual only):
+    /// is returned). A manual check asks unless another one did less than
+    /// [`MANUAL_CHECK_COOLDOWN`] ago. Error (manual only):
     /// `update_check_failed` (`problem`: an [`ni_update::PROBLEMS`] code).
     pub async fn check_for_updates(&self, manual: bool) -> Result<UpdateView, Failure> {
         let last = lock(&self.update_state).last_check_unix;
         let now = update::now_unix();
         if !manual && (!self.settings().check_updates || !ni_update::check_due(last, now)) {
             return Ok(self.update_status());
+        }
+        if manual {
+            let mut last = lock(&self.last_manual_check);
+            if last.is_some_and(|t| t.elapsed() < self.manual_check_cooldown) {
+                return Ok(self.update_status());
+            }
+            *last = Some(std::time::Instant::now());
         }
         let result = match self.updater() {
             Ok(u) => u.latest().await,
@@ -834,6 +880,7 @@ impl AppCore {
             );
             let mut st = lock(&self.update_state);
             st.last_check_unix = Some(now);
+            st.last_success_unix = Some(now);
             st.latest = latest;
             st.save(&self.paths.update_state);
         }
@@ -875,21 +922,44 @@ impl AppCore {
         if self.update_downloading.swap(true, Ordering::SeqCst) {
             return Err(Failure::new("update_busy"));
         }
+        let _guard = DownloadingGuard(&self.update_downloading);
         let result = async {
             std::fs::create_dir_all(&self.paths.downloads)
                 .map_err(|e| ni_update::UpdateError::Io(e.to_string()))?;
             self.updater()?
-                .download(&release, &self.paths.downloads, progress)
+                .download(
+                    &release,
+                    &self.paths.update_staging,
+                    &self.paths.downloads,
+                    progress,
+                )
                 .await
         }
         .await;
-        self.update_downloading.store(false, Ordering::SeqCst);
         result
-            .inspect(|p| tracing::info!(path = %p.display(), "update downloaded and verified"))
+            .inspect(|p| {
+                tracing::info!(path = %p.display(), "update downloaded and verified");
+                *lock(&self.downloaded_update) = Some(p.clone());
+            })
             .map_err(|e| {
                 tracing::warn!(problem = e.code(), "update download failed: {e}");
                 Failure::new("update_download_failed").with("problem", e.code())
             })
+    }
+
+    /// The verified DMG to open now. Errors: `update_not_available` (none
+    /// downloaded, or it is gone), `update_open_busy` (devices are being
+    /// prepared or flashed: opened later).
+    pub async fn downloaded_update(&self) -> Result<PathBuf, Failure> {
+        let path = lock(&self.downloaded_update)
+            .clone()
+            .filter(|p| p.is_file())
+            .ok_or_else(|| Failure::new("update_not_available"))?;
+        let snap = self.snapshot().await?;
+        if snap.devices.iter().any(|d| d.state.is_active()) {
+            return Err(Failure::new("update_open_busy"));
+        }
+        Ok(path)
     }
 
     /// The release page to open: the latest release's, if it is one of the

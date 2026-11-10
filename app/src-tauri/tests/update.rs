@@ -9,6 +9,7 @@ use ni_update::UpdateConfig;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 const API: &str = "/repos/SepsiG/Mac-Netinstall/releases/latest";
 
@@ -63,6 +64,38 @@ fn core(srv: &TestServer, dir: &Path) -> AppCore {
             download_prefix: format!("{}/SepsiG/Mac-Netinstall/releases/download/", srv.base),
             ..UpdateConfig::default()
         })
+        .with_manual_check_cooldown(Duration::ZERO)
+}
+
+fn xattr(path: &Path, name: &str) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let n = std::ffi::CString::new(name).unwrap();
+    let mut buf = vec![0u8; 256];
+    // SAFETY: valid C strings and a buffer of the given length.
+    let len = unsafe {
+        libc_getxattr(
+            c.as_ptr(),
+            n.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            0,
+            0,
+        )
+    };
+    (len >= 0).then(|| String::from_utf8_lossy(&buf[..len as usize]).into_owned())
+}
+
+extern "C" {
+    #[link_name = "getxattr"]
+    fn libc_getxattr(
+        path: *const std::ffi::c_char,
+        name: *const std::ffi::c_char,
+        value: *mut std::ffi::c_void,
+        size: usize,
+        position: u32,
+        options: i32,
+    ) -> isize;
 }
 
 fn api_requests(srv: &TestServer) -> usize {
@@ -194,6 +227,14 @@ async fn the_download_is_verified_and_lands_in_downloads() {
         .unwrap();
     assert_eq!(path, dir.join("downloads").join(dmg("99.0.0")));
     assert_eq!(std::fs::read(&path).unwrap(), body);
+    // Staged in the cache, quarantined, and remembered for opening later.
+    let staging = dir.join("cache").join("updates");
+    assert!(staging.is_dir());
+    assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+    assert!(xattr(&path, "com.apple.quarantine")
+        .unwrap()
+        .starts_with("0083;"));
+    assert_eq!(c.downloaded_update().await.unwrap(), path);
     assert_eq!(seen.lock().unwrap().last(), Some(&600_000));
     // Tampered: deleted, and a code.
     publish(
@@ -245,4 +286,68 @@ async fn the_release_page_is_one_of_the_projects() {
         c.release_page_url(),
         "https://github.com/SepsiG/Mac-Netinstall/releases/latest"
     );
+}
+
+#[tokio::test]
+async fn only_successful_checks_count_as_last_checked() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-last");
+    let c = core(&srv, &dir);
+    srv.route(API, Reply::Status(429));
+    let v = c.check_for_updates(false).await.unwrap();
+    assert_eq!(
+        v.last_checked_unix, None,
+        "a rate-limited check is not a check"
+    );
+    assert!(c.check_for_updates(true).await.is_err());
+    assert_eq!(c.update_status().last_checked_unix, None);
+    publish(&srv, "0.0.1", b"dmg", None);
+    let v = c.check_for_updates(true).await.unwrap();
+    assert!(v.last_checked_unix.is_some());
+    // And it survives a restart.
+    assert!(core(&srv, &dir).update_status().last_checked_unix.is_some());
+}
+
+#[tokio::test]
+async fn manual_checks_have_a_cooldown() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-cooldown");
+    publish(&srv, "99.0.0", b"dmg", None);
+    let c = core(&srv, &dir).with_manual_check_cooldown(Duration::from_secs(60));
+    assert!(c.check_for_updates(true).await.unwrap().available);
+    // Answered from what is known, without asking again.
+    assert!(c.check_for_updates(true).await.unwrap().available);
+    assert_eq!(api_requests(&srv), 1);
+    assert_eq!(
+        mac_netinstall_app::core::MANUAL_CHECK_COOLDOWN,
+        Duration::from_secs(60)
+    );
+}
+
+#[tokio::test]
+async fn stale_partial_downloads_are_swept_at_start() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-sweep");
+    let staging = dir.join("cache").join("updates");
+    std::fs::create_dir_all(&staging).unwrap();
+    let old = staging.join(".Mac-Netinstall_9.9.9_aarch64.dmg.1-0.part");
+    let young = staging.join(".Mac-Netinstall_9.9.9_aarch64.dmg.2-0.part");
+    std::fs::write(&old, b"x").unwrap();
+    std::fs::write(&young, b"x").unwrap();
+    let f = std::fs::File::options().write(true).open(&old).unwrap();
+    f.set_modified(SystemTime::now() - Duration::from_secs(2 * 3600))
+        .unwrap();
+    drop(f);
+    let _c = core(&srv, &dir);
+    assert!(!old.exists());
+    assert!(young.exists(), "maybe another download in progress");
+}
+
+#[tokio::test]
+async fn nothing_to_open_before_a_download() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-open");
+    let c = core(&srv, &dir);
+    let err = c.downloaded_update().await.unwrap_err();
+    assert_eq!(err.code, "update_not_available");
 }

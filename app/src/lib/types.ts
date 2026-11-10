@@ -315,11 +315,9 @@ export interface UpdateView {
   auto: boolean;
 }
 
-/** A downloaded and verified DMG (in Downloads). */
+/** A downloaded and verified DMG (in Downloads; opened separately). */
 export interface DownloadedView {
   file_name: string;
-  /** Finder opened it. */
-  opened: boolean;
 }
 
 /** The `update-progress` event. */

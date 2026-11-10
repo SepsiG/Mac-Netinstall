@@ -96,8 +96,10 @@ export interface Backend {
   skipUpdate(version: string): Promise<UpdateView>;
   /** Announce the skipped version again. */
   clearSkippedUpdate(): Promise<UpdateView>;
-  /** Download the new DMG into Downloads, verify it and open it. */
+  /** Download the new DMG into Downloads and verify it. */
   downloadUpdate(): Promise<DownloadedView>;
+  /** Open the verified DMG (refused while devices are busy). */
+  openDownloadedUpdate(): Promise<void>;
   /** Open the latest release's page on GitHub (the URL stays in Rust). */
   openReleasePage(): Promise<void>;
   onUpdateProgress(cb: (p: UpdateProgress) => void): Promise<Unlisten>;
@@ -167,6 +169,7 @@ export function tauriBackend(): Backend {
     skipUpdate: (version) => invoke("skip_update", { version }),
     clearSkippedUpdate: () => invoke("clear_skipped_update"),
     downloadUpdate: () => invoke("download_update"),
+    openDownloadedUpdate: () => invoke("open_downloaded_update"),
     openReleasePage: () => invoke("open_release_page"),
     onUpdateProgress: (cb) => on<UpdateProgress>("update-progress", cb),
     onEvent: (cb) => on<EngineEvent>("engine-event", cb),

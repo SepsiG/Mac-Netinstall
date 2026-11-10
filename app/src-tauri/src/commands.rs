@@ -221,9 +221,10 @@ pub fn clear_skipped_update(core: State<'_, AppCore>) -> R<UpdateView> {
     core.clear_skipped_update()
 }
 
-/// Download the announced release's DMG into Downloads, verify its SHA-256
-/// (`update-progress` events on the way) and open it in Finder. The app
-/// keeps running: the user replaces it in Applications.
+/// Download the announced release's DMG, verify its SHA-256 and place it
+/// in Downloads (`update-progress` events on the way). It is not opened
+/// here: the window asks with `open_downloaded_update` once no device is
+/// being prepared or flashed. The app keeps running.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn download_update(app: AppHandle, core: State<'_, AppCore>) -> R<DownloadedView> {
     let emit = |done, total| {
@@ -234,35 +235,48 @@ pub async fn download_update(app: AppHandle, core: State<'_, AppCore>) -> R<Down
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // A constant program and a path this app just created.
-    let opened = std::process::Command::new("/usr/bin/open")
-        .arg(&path)
-        .status()
-        .is_ok_and(|s| s.success());
-    if !opened {
-        tracing::warn!(path = %path.display(), "cannot open the downloaded DMG");
-    }
-    Ok(DownloadedView { file_name, opened })
+    Ok(DownloadedView { file_name })
 }
 
-/// Open the latest release's page on GitHub (only the project's release
-/// pages; the window never passes a URL).
-#[tauri::command(rename_all = "snake_case")]
-pub fn open_release_page(core: State<'_, AppCore>) -> R<()> {
-    let url = core.release_page_url();
+/// `/usr/bin/open <arg>` off the async runtime. Error: `update_open_failed`
+/// (`detail`).
+async fn open_with_finder(arg: std::ffi::OsString) -> R<()> {
     let failed = |d: String| Failure::new("update_open_failed").with("detail", d);
-    if !ni_update::release_page_allowed(&url) {
-        return Err(failed("not a release page".into()));
-    }
-    let status = std::process::Command::new("/usr/bin/open")
-        .arg(&url)
-        .status()
-        .map_err(|e| failed(e.to_string()))?;
+    let status = tokio::task::spawn_blocking(move || {
+        // A constant program; the argument is a path this app created or
+        // a checked release page.
+        std::process::Command::new("/usr/bin/open")
+            .arg(arg)
+            .status()
+    })
+    .await
+    .map_err(|e| failed(e.to_string()))?
+    .map_err(|e| failed(e.to_string()))?;
     if status.success() {
         Ok(())
     } else {
         Err(failed(status.to_string()))
     }
+}
+
+/// Open the verified DMG (the last download; the window never passes a
+/// path). Errors: `update_not_available`, `update_open_busy` (devices are
+/// being prepared or flashed), `update_open_failed`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn open_downloaded_update(core: State<'_, AppCore>) -> R<()> {
+    let path = core.downloaded_update().await?;
+    open_with_finder(path.into_os_string()).await
+}
+
+/// Open the latest release's page on GitHub (only the project's release
+/// pages; the window never passes a URL).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn open_release_page(core: State<'_, AppCore>) -> R<()> {
+    let url = core.release_page_url();
+    if !ni_update::release_page_allowed(&url) {
+        return Err(Failure::new("update_open_failed").with("detail", "not a release page"));
+    }
+    open_with_finder(url.into()).await
 }
 
 /// Let the user pick a `.rsc` file and register it (`None`: cancelled).

@@ -49,6 +49,7 @@ const COMMANDS: &[&str] = &[
     "clear_skipped_update",
     "download_update",
     "open_release_page",
+    "open_downloaded_update",
 ];
 
 fn main() {

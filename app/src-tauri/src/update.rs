@@ -33,15 +33,20 @@ pub fn now_unix() -> u64 {
 /// What the last check found.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateState {
-    /// When GitHub was last asked (successfully, or rate limited).
+    /// When GitHub was last asked (successfully, or rate limited): the
+    /// once-a-day throttle.
     pub last_check_unix: Option<u64>,
+    /// When GitHub last answered (what "Last checked" shows).
+    #[serde(default)]
+    pub last_success_unix: Option<u64>,
     /// The latest release then (`None`: none, or a prerelease).
     pub latest: Option<Release>,
 }
 
 impl UpdateState {
     /// The stored state; a missing or unusable file is an empty state, and
-    /// a release whose version is not `X.Y.Z` is dropped.
+    /// a release whose version is not `X.Y.Z`, or whose file names are not
+    /// that version's DMG and checksum, is dropped.
     pub fn load(path: &Path) -> UpdateState {
         let Ok(data) = std::fs::read(path) else {
             return UpdateState::default();
@@ -49,7 +54,11 @@ impl UpdateState {
         let mut state: UpdateState = serde_json::from_slice(&data).unwrap_or_default();
         state.latest = state
             .latest
-            .filter(|r| SemVer::parse(&r.version).is_some() && !r.version.starts_with('v'));
+            .filter(|r| SemVer::parse(&r.version).is_some() && !r.version.starts_with('v'))
+            .filter(|r| {
+                r.dmg.name == Release::dmg_name(&r.version)
+                    && r.checksum.name == format!("{}.sha256", r.dmg.name)
+            });
         if let Some(r) = &mut state.latest {
             if r.notes.chars().count() > MAX_NOTES_CHARS + 1 {
                 r.notes = r.notes.chars().take(MAX_NOTES_CHARS).collect();
@@ -119,18 +128,17 @@ pub fn view(state: &UpdateState, current: &str, auto: bool, skipped: Option<&str
             size: r.dmg.size,
         }),
         available,
-        last_checked_unix: state.last_check_unix,
+        last_checked_unix: state.last_success_unix,
         skipped: skipped.map(str::to_string),
         auto,
     }
 }
 
-/// A finished download, for the window: the file name (in Downloads) and
-/// whether the DMG could be opened.
+/// A finished, verified download, for the window: the file name (in
+/// Downloads).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DownloadedView {
     pub file_name: String,
-    pub opened: bool,
 }
 
 /// Download progress (`update-progress` event).
@@ -166,8 +174,10 @@ mod tests {
     fn only_newer_unskipped_releases_are_available() {
         let state = UpdateState {
             last_check_unix: Some(5),
+            last_success_unix: Some(4),
             latest: Some(release("0.2.0")),
         };
+        assert_eq!(view(&state, "0.1.2", true, None).last_checked_unix, Some(4));
         assert!(view(&state, "0.1.2", true, None).available);
         assert!(!view(&state, "0.2.0", true, None).available);
         assert!(!view(&state, "0.3.0", true, None).available);
@@ -185,14 +195,30 @@ mod tests {
         assert_eq!(UpdateState::load(&path), UpdateState::default());
         let mut bad = UpdateState {
             last_check_unix: Some(7),
+            last_success_unix: None,
             latest: Some(release("0.2.0")),
         };
         bad.latest.as_mut().unwrap().version = "../../x".into();
         bad.save(&path);
         let back = UpdateState::load(&path);
         assert_eq!((back.last_check_unix, back.latest), (Some(7), None));
+        // File names that do not belong to the version are dropped.
+        for broken in [
+            |r: &mut Release| r.dmg.name = "Other.dmg".into(),
+            |r: &mut Release| r.checksum.name = "x.sha256".into(),
+        ] {
+            let mut r = release("0.2.0");
+            broken(&mut r);
+            UpdateState {
+                latest: Some(r),
+                ..UpdateState::default()
+            }
+            .save(&path);
+            assert_eq!(UpdateState::load(&path).latest, None);
+        }
         let good = UpdateState {
             last_check_unix: Some(8),
+            last_success_unix: Some(8),
             latest: Some(release("0.2.0")),
         };
         good.save(&path);
