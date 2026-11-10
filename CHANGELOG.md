@@ -7,6 +7,25 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+### Added
+
+- Update notice: at most once a day (10 s after start-up, never while
+  devices are being prepared or flashed) the app asks GitHub's API for the
+  latest release; a newer one is announced in a banner with **What's
+  new?** (the release notes as plain text), **Download**, **Later** and
+  **Skip this version**. The download goes to `~/Downloads` (never
+  overwriting a file), is checked against the published `.sha256` (a
+  mismatch deletes it), and the DMG is opened; replace the app in
+  Applications and restart it. Only the project's GitHub release URLs (and
+  GitHub's download hosts) are accepted, at most 200 MB. No data is sent
+  besides that one request (no telemetry).
+- Settings → About: **Check for updates automatically** (on by default),
+  the time of the last check, **Check for updates now**, and the skipped
+  version with **Announce it again**. Settings file version 8
+  (`check_updates`, `skipped_update_version`; older files are migrated).
+- `ni-cli version [--check]`: prints the version and, with `--check`,
+  compares it with the latest release on GitHub.
+
 ## [0.1.2] - 2026-11-10
 
 This release adds RouterOS 6, a version picker and installs from local

@@ -32,6 +32,8 @@
 12. [Feedback](#12-feedback)
 13. [Disclaimer](#13-disclaimer)
 
+Updates: see [Updates](#updates) in section 8.
+
 ## 1. What it is
 
 Mac Netinstall is a macOS app (Apple Silicon) that re-installs RouterOS on MikroTik
@@ -390,9 +392,35 @@ Opened with the **Settings** button in the toolbar.
   the setting also deletes what `ni-cli` downloaded; a version another program is using at
   that moment is skipped.
 - **About** – the app's version, its license (GNU GPL v3), the disclaimer and links to the
-  GitHub page, the full disclaimer and the license.
+  GitHub page, the full disclaimer and the license; and the update controls (see below).
 
 **Save** stores the settings, **Cancel** discards the changes.
+
+### Updates
+
+About 10 seconds after start-up, and at most once a day, the app asks GitHub
+(`api.github.com`) for the latest Mac Netinstall release. That single request is all that
+is sent: no data about you, your Mac or your devices (no telemetry). Prereleases are
+ignored. If a newer version exists, a banner appears at the top of the window: **"A new
+version is available: X.Y.Z"**. It never appears while devices are being prepared or
+flashed; it waits until they are done.
+
+- **What's new?** – the release notes (shown as plain text); **Open on GitHub** opens the
+  release page.
+- **Download** – downloads `Mac-Netinstall_<version>_aarch64.dmg` into your **Downloads**
+  folder (an existing file is never replaced: `… (1).dmg`), checks it against the published
+  `.sha256` checksum and opens it. A file that does not match is deleted and an error is
+  shown. Then drag **Mac Netinstall** onto **Applications**, replace the old one, and
+  restart the app. The app does not quit by itself. On the first launch macOS may ask for
+  the **Local Network** permission again (and, on macOS 15 and later, **Open Anyway** may
+  be needed again, see [section 3](#3-installing-the-app)).
+- **Later** – hides the banner until the next start.
+- **Skip this version** – this version is not announced again, only a newer one.
+
+In **Settings → About**: **Check for updates automatically** (on by default) turns the
+daily check off; **Check for updates now** asks at once (and says whether you have the
+latest version); the time of the last check is shown; a skipped version is listed with
+**Announce it again**.
 
 ## 9. Log and troubleshooting
 
@@ -452,7 +480,8 @@ cargo build --release -p ni-cli
 # the binary: target/release/ni-cli
 ```
 
-Main commands: `interfaces`, `preflight`, `assets`, `profiles`, `flash`. `flash` prints
+Main commands: `interfaces`, `preflight`, `assets`, `profiles`, `flash`, `version`
+(`ni-cli version --check` compares with the latest release on GitHub). `flash` prints
 the disclaimer and refuses to run until you accept it with `--accept-disclaimer` (or by
 setting `MAC_NETINSTALL_ACCEPT_DISCLAIMER=1`). It shares the
 profiles and downloaded files with the app. Examples:

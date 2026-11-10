@@ -32,6 +32,8 @@
 12. [Visszajelzés](#12-visszajelzés)
 13. [Felelősség kizárása](#13-felelősség-kizárása)
 
+Frissítések: lásd a 8. fejezet [Frissítések](#frissítések) részét.
+
 ## 1. Mi ez?
 
 A Mac Netinstall egy macOS-alkalmazás (Apple Silicon), amellyel MikroTik RouterBOARD
@@ -409,9 +411,36 @@ Az eszköztár **Beállítások** gombjával nyílik.
   beállítás az általa letöltött fájlokat is törli; azt a verziót, amelyet épp egy másik
   program használ, kihagyja.
 - **Névjegy** – az alkalmazás verziója, licence (GNU GPL v3), a felelősségkizárás, és
-  hivatkozások a GitHub-oldalra, a teljes felelősségkizárásra és a licencre.
+  hivatkozások a GitHub-oldalra, a teljes felelősségkizárásra és a licencre; valamint a
+  frissítések beállításai (lásd lent).
 
 A **Mentés** gomb menti a beállításokat, a **Mégse** elveti a módosításokat.
+
+### Frissítések
+
+Indítás után kb. 10 másodperccel, naponta legfeljebb egyszer az alkalmazás lekérdezi a
+GitHubtól (`api.github.com`) a Mac Netinstall legújabb kiadását. Csak ez az egy kérés megy
+ki: rólad, a Macedről és az eszközeidről semmilyen adat (nincs telemetria). Az előzetes
+(pre-release) kiadásokat figyelmen kívül hagyja. Ha van újabb verzió, az ablak tetején sáv
+jelenik meg: **„Új verzió érhető el: X.Y.Z”**. Eszköz előkészítése vagy telepítése közben
+soha nem jelenik meg, megvárja, amíg végeznek.
+
+- **Mi újság?** – a kiadási megjegyzések (egyszerű szövegként); a **Megnyitás a GitHubon**
+  a kiadás oldalát nyitja meg.
+- **Letöltés** – a `Mac-Netinstall_<verzió>_aarch64.dmg` fájlt a **Letöltések** mappába
+  tölti (meglévő fájlt sosem ír felül: `… (1).dmg`), ellenőrzi a közzétett `.sha256`
+  ellenőrzőösszeggel, majd megnyitja. Ha nem egyezik, a fájlt törli és hibát jelez. Ezután
+  húzd a **Mac Netinstall**-t az **Alkalmazások** mappába, a régit cseréld le, és indítsd
+  újra az appot. Az alkalmazás magától nem lép ki. Az első indításnál a macOS újra kérheti
+  a **Helyi hálózat** engedélyt (macOS 15-től pedig újra szükség lehet az Adatvédelem és
+  biztonság oldali megnyitás gombra, lásd a [3. fejezetet](#3-telepítés)).
+- **Később** – a sávot a következő indításig elrejti.
+- **Ezt a verziót kihagyom** – erről a verzióról nem szól többet, csak egy újabbról.
+
+A **Beállítások → Névjegy** részben: a **Frissítések automatikus keresése** (alapból
+bekapcsolva) kikapcsolja a napi ellenőrzést; a **Frissítések keresése most** azonnal
+lekérdez (és megmondja, ha a legfrissebb verzió fut); látszik az utolsó ellenőrzés ideje;
+a kihagyott verzió a **Jelezze újra** gombbal együtt jelenik meg.
 
 ## 9. Napló és hibaelhárítás
 
@@ -474,7 +503,8 @@ cargo build --release -p ni-cli
 # a bináris: target/release/ni-cli
 ```
 
-Fő parancsok: `interfaces`, `preflight`, `assets`, `profiles`, `flash`. A `flash` kiírja a
+Fő parancsok: `interfaces`, `preflight`, `assets`, `profiles`, `flash`, `version` (az
+`ni-cli version --check` összeveti a GitHub legújabb kiadásával). A `flash` kiírja a
 felelősségkizárást, és csak akkor fut, ha a `--accept-disclaimer` kapcsolóval (vagy a
 `MAC_NETINSTALL_ACCEPT_DISCLAIMER=1` környezeti változóval) elfogadod. A profilokat és a
 letöltött fájlokat az alkalmazással közösen használja. Példák:
