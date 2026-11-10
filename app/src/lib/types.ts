@@ -315,6 +315,13 @@ export interface UpdateView {
   auto: boolean;
 }
 
+/** The state after asking GitHub again ("What's new?", "Download"). */
+export interface RefreshView {
+  update: UpdateView;
+  /** GitHub could not be asked: the last known release is used. */
+  stale: boolean;
+}
+
 /** A downloaded and verified DMG (in Downloads; opened separately). */
 export interface DownloadedView {
   file_name: string;

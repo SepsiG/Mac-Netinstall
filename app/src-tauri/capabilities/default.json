@@ -52,6 +52,7 @@
     "allow-clear-skipped-update",
     "allow-download-update",
     "allow-open-release-page",
-    "allow-open-downloaded-update"
+    "allow-open-downloaded-update",
+    "allow-refresh-update"
   ]
 }

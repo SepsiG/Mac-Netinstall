@@ -546,5 +546,7 @@
 
   "code.update_open_busy": "Az új verziót akkor nyitjuk meg, amikor egyetlen eszköz sincs előkészítés vagy telepítés alatt.",
   "update.open": "Megnyitás",
-  "about.check_again_in": "Újra keresés {seconds} mp múlva"
+  "about.check_again_in": "Újra keresés {seconds} mp múlva",
+
+  "update.stale": "A legutóbb ismert kiadást használjuk ({version}): a GitHub nem érhető el."
 }

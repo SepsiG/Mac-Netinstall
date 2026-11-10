@@ -512,3 +512,19 @@ fn stale_partial_downloads_are_swept() {
         0
     );
 }
+
+#[tokio::test]
+async fn every_request_answers_with_the_release_published_now() {
+    // The app's "Download" relies on this: no caching in the client.
+    let srv = TestServer::start().await;
+    let u = updater(&srv);
+    serve_json(&srv, &release_json(&srv, "v0.1.3"));
+    assert_eq!(u.latest().await.unwrap().unwrap().version, "0.1.3");
+    serve_json(&srv, &release_json(&srv, "v0.1.4"));
+    let r = u.latest().await.unwrap().unwrap();
+    assert_eq!(r.version, "0.1.4");
+    assert!(r
+        .dmg
+        .url
+        .ends_with("/v0.1.4/Mac-Netinstall_0.1.4_aarch64.dmg"));
+}

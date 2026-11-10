@@ -50,6 +50,7 @@ const COMMANDS: &[&str] = &[
     "download_update",
     "open_release_page",
     "open_downloaded_update",
+    "refresh_update",
 ];
 
 fn main() {

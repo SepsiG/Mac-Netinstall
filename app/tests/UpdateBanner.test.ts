@@ -141,4 +141,40 @@ describe("UpdateBanner", () => {
       expect(within(banner).getByRole("button", { name })).toBeInTheDocument();
     }
   });
+
+  it("asks GitHub again before the notes and the download, and shows the newer release", async () => {
+    const newer = { ...AVAILABLE, latest: { ...AVAILABLE.latest!, version: "0.1.4", notes: "## Fixed\n- newest" } };
+    const backend = mockBackend({ refreshUpdate: vi.fn(async () => ({ update: structuredClone(newer), stale: false })) });
+    const { onupdate, rerender } = show(backend);
+    await userEvent.click(screen.getByRole("button", { name: "What's new?" }));
+    expect(backend.refreshUpdate).toHaveBeenCalled();
+    expect(onupdate).toHaveBeenCalledWith(newer);
+    await rerender({ update: newer });
+    const dialog = await screen.findByRole("dialog", { name: "What's new in 0.1.4" });
+    expect(dialog).toHaveTextContent("newest");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.getByRole("status")).toHaveTextContent("A new version is available: 0.1.4");
+    await userEvent.click(screen.getByRole("button", { name: "Download" }));
+    expect(backend.refreshUpdate).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(backend.downloadUpdate).toHaveBeenCalled());
+    expect(screen.queryByText(/last known release/)).toBeNull();
+  });
+
+  it("says when it uses the last known release", async () => {
+    const backend = mockBackend({ refreshUpdate: vi.fn(async () => ({ update: structuredClone(AVAILABLE), stale: true })) });
+    show(backend);
+    await userEvent.click(screen.getByRole("button", { name: "Download" }));
+    expect(await screen.findByText("Using the last known release (0.1.3): GitHub could not be reached.")).toBeInTheDocument();
+    await waitFor(() => expect(backend.downloadUpdate).toHaveBeenCalled());
+  });
+
+  it("downloads nothing if the refreshed state has no newer release", async () => {
+    const backend = mockBackend({
+      refreshUpdate: vi.fn(async () => ({ update: { ...structuredClone(AVAILABLE), available: false, latest: null }, stale: false })),
+    });
+    show(backend);
+    await userEvent.click(screen.getByRole("button", { name: "Download" }));
+    await waitFor(() => expect(backend.refreshUpdate).toHaveBeenCalled());
+    expect(backend.downloadUpdate).not.toHaveBeenCalled();
+  });
 });

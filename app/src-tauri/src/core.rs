@@ -4,7 +4,7 @@
 //! this is tested directly (see `tests/bridge.rs`).
 
 use crate::settings::{Settings, SettingsStore};
-use crate::update::{self, UpdateState, UpdateView, CURRENT_VERSION};
+use crate::update::{self, RefreshView, UpdateState, UpdateView, CURRENT_VERSION};
 use crate::views::{
     without_paths, BrokenProfile, CacheView, ChannelView, InterfaceView, LicenseKeyView,
     PackageFileView, PackagesView, ProfilesView, ScriptView, StartRequest, VersionsView,
@@ -29,6 +29,9 @@ pub const MAX_KEY_FILE: u64 = 64 * 1024;
 /// Shortest time between two manual update checks (a quicker one is
 /// answered from what is known).
 pub const MANUAL_CHECK_COOLDOWN: Duration = Duration::from_secs(60);
+/// "What's new?" and "Download" ask GitHub again unless they did less than
+/// this ago (a double click is one request).
+pub const REFRESH_DEDUPE: Duration = Duration::from_secs(10);
 /// Partial update downloads older than this are leftovers (removed at
 /// start).
 const STALE_UPDATE_PART: Duration = Duration::from_secs(60 * 60);
@@ -147,6 +150,9 @@ pub struct AppCore {
     manual_check_cooldown: Duration,
     /// The last verified download, to open once no device is busy.
     downloaded_update: Mutex<Option<PathBuf>>,
+    /// When "What's new?" / "Download" last asked GitHub, and whether that
+    /// failed; held while asking, so concurrent asks wait for one answer.
+    last_refresh: tokio::sync::Mutex<Option<(std::time::Instant, bool)>>,
 }
 
 /// Clears the "downloading" flag however the download ends.
@@ -170,7 +176,8 @@ impl AppCore {
         let store = SettingsStore::new(&paths.settings);
         let settings = store.load();
         let timeout = settings.download_timeout();
-        let update_state = UpdateState::load(&paths.update_state);
+        let mut update_state = UpdateState::load(&paths.update_state);
+        update_state.drop_not_newer(CURRENT_VERSION);
         let swept = ni_update::sweep_partials(&paths.update_staging, STALE_UPDATE_PART);
         if swept > 0 {
             tracing::info!(swept, "removed unfinished update downloads");
@@ -198,6 +205,7 @@ impl AppCore {
             last_manual_check: Mutex::new(None),
             manual_check_cooldown: MANUAL_CHECK_COOLDOWN,
             downloaded_update: Mutex::new(None),
+            last_refresh: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -838,7 +846,9 @@ impl AppCore {
     /// ask only if turned on and at most once a day
     /// ([`ni_update::check_due`]), and fail quietly (the last known state
     /// is returned). A manual check asks unless another one did less than
-    /// [`MANUAL_CHECK_COOLDOWN`] ago. Error (manual only):
+    /// [`MANUAL_CHECK_COOLDOWN`] ago: then the freshest known state is
+    /// returned (what the last check or [`AppCore::refresh_update`]
+    /// found). Error (manual only):
     /// `update_check_failed` (`problem`: an [`ni_update::PROBLEMS`] code).
     pub async fn check_for_updates(&self, manual: bool) -> Result<UpdateView, Failure> {
         let last = lock(&self.update_state).last_check_unix;
@@ -887,6 +897,51 @@ impl AppCore {
         Ok(self.update_status())
     }
 
+    /// Ask GitHub for the latest release again, past the once-a-day
+    /// throttle ("What's new?" and "Download" always use the newest
+    /// published release); at most once per [`REFRESH_DEDUPE`]. A newer
+    /// answer replaces what is remembered. If GitHub cannot be asked, the
+    /// last known release is kept (`stale`).
+    pub async fn refresh_update(&self) -> Result<RefreshView, Failure> {
+        let mut last = self.last_refresh.lock().await;
+        if let Some((at, stale)) = *last {
+            if at.elapsed() < REFRESH_DEDUPE {
+                return Ok(RefreshView {
+                    update: self.update_status(),
+                    stale,
+                });
+            }
+        }
+        let result = match self.updater() {
+            Ok(u) => u.latest().await,
+            Err(e) => Err(e),
+        };
+        let stale = match result {
+            Ok(latest) => {
+                let now = update::now_unix();
+                let mut st = lock(&self.update_state);
+                st.last_check_unix = Some(now);
+                st.last_success_unix = Some(now);
+                st.latest = latest;
+                st.drop_not_newer(CURRENT_VERSION);
+                st.save(&self.paths.update_state);
+                false
+            }
+            Err(e) => {
+                tracing::info!(
+                    problem = e.code(),
+                    "update refresh failed, using the last known release: {e}"
+                );
+                true
+            }
+        };
+        *last = Some((std::time::Instant::now(), stale));
+        Ok(RefreshView {
+            update: self.update_status(),
+            stale,
+        })
+    }
+
     /// Do not announce `version` (`X.Y.Z`) again, only newer ones. Error:
     /// `invalid_setting` (`field`: `skipped_update_version`).
     pub fn skip_update(&self, version: &str) -> Result<UpdateView, Failure> {
@@ -905,7 +960,9 @@ impl AppCore {
         Ok(self.update_status())
     }
 
-    /// Download the announced release's DMG into the Downloads folder and
+    /// Ask GitHub again ([`AppCore::refresh_update`]), then download the
+    /// newest known release's DMG (only if it is newer than the running
+    /// version) into the Downloads folder and
     /// check it against its published SHA-256 (`progress`: bytes done,
     /// total). Returns the DMG's path. Errors: `update_not_available` (no
     /// newer release known), `update_busy` (already downloading),
@@ -914,6 +971,7 @@ impl AppCore {
         &self,
         progress: &(dyn Fn(u64, Option<u64>) + Sync),
     ) -> Result<PathBuf, Failure> {
+        self.refresh_update().await?;
         let release = lock(&self.update_state)
             .latest
             .clone()

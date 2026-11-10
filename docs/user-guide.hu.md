@@ -441,6 +441,9 @@ soha nem jelenik meg, megvárja, amíg végeznek.
   újra szükség lehet az Adatvédelem és biztonság oldali megnyitás gombra (**Open Anyway**,
   lásd a [3. fejezetet](#3-telepítés)), és a macOS újra kérheti a **Helyi hálózat**
   engedélyt.
+  A **Mi újság?** és a **Letöltés** előbb újra lekérdezi a GitHubot, így mindig a legújabb
+  közzétett kiadást mutatja és tölti le (internet nélkül a legutóbb ismertet használja, ha
+  az még újabb a futó verziónál, és ezt a sáv jelzi is).
 - **Később** – a sávot a következő indításig elrejti.
 - **Ezt a verziót kihagyom** – erről a verzióról nem szól többet, csak egy újabbról.
 

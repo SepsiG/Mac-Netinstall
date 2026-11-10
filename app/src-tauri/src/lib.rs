@@ -461,6 +461,7 @@ pub fn run() {
             commands::download_update,
             commands::open_release_page,
             commands::open_downloaded_update,
+            commands::refresh_update,
         ])
         .build(tauri::generate_context!())
         .expect("cannot build the Tauri app");

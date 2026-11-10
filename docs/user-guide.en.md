@@ -421,6 +421,9 @@ flashed; it waits until they are done.
   Anyway** again (System Settings → Privacy & Security, see
   [section 3](#3-installing-the-app)), and macOS may ask for the **Local Network**
   permission again.
+  **What's new?** and **Download** ask GitHub again first, so they always show and
+  download the newest published release (offline, the last known one is used if it is
+  still newer than your version, and the banner says so).
 - **Later** – hides the banner until the next start.
 - **Skip this version** – this version is not announced again, only a newer one.
 
