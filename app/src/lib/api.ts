@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CacheView,
   DeleteScope,
+  DownloadedView,
   EngineEvent,
   Failure,
   InterfaceView,
@@ -22,6 +23,8 @@ import type {
   Snapshot,
   StartInfo,
   StartRequest,
+  UpdateProgress,
+  UpdateView,
   VersionsView,
 } from "./types";
 
@@ -84,6 +87,20 @@ export interface Backend {
   exportLog(text: string): Promise<boolean>;
   preferredLanguages(): Promise<string[]>;
   quit(): Promise<void>;
+  /** What the last update check found (no network). */
+  updateStatus(): Promise<UpdateView>;
+  /** Ask GitHub for a new release (`manual`: always, errors reported;
+   *  otherwise at most once a day if turned on, quietly). */
+  checkForUpdates(manual: boolean): Promise<UpdateView>;
+  /** Do not announce this version again. */
+  skipUpdate(version: string): Promise<UpdateView>;
+  /** Announce the skipped version again. */
+  clearSkippedUpdate(): Promise<UpdateView>;
+  /** Download the new DMG into Downloads, verify it and open it. */
+  downloadUpdate(): Promise<DownloadedView>;
+  /** Open the latest release's page on GitHub (the URL stays in Rust). */
+  openReleasePage(): Promise<void>;
+  onUpdateProgress(cb: (p: UpdateProgress) => void): Promise<Unlisten>;
   onEvent(cb: (e: EngineEvent) => void): Promise<Unlisten>;
   /** Events were missed (or the engine restarted): reload the snapshot. */
   onLagged(cb: () => void): Promise<Unlisten>;
@@ -145,6 +162,13 @@ export function tauriBackend(): Backend {
     exportLog: (text) => invoke("export_log", { text }),
     preferredLanguages: () => invoke("preferred_languages"),
     quit: () => invoke("quit"),
+    updateStatus: () => invoke("update_status"),
+    checkForUpdates: (manual) => invoke("check_for_updates", { manual }),
+    skipUpdate: (version) => invoke("skip_update", { version }),
+    clearSkippedUpdate: () => invoke("clear_skipped_update"),
+    downloadUpdate: () => invoke("download_update"),
+    openReleasePage: () => invoke("open_release_page"),
+    onUpdateProgress: (cb) => on<UpdateProgress>("update-progress", cb),
     onEvent: (cb) => on<EngineEvent>("engine-event", cb),
     onLagged: (cb) => on<number>("engine-lagged", () => cb()),
     onCloseRequested: (cb) => on<number>("close-requested", cb),

@@ -43,6 +43,13 @@ Requires an Apple Silicon Mac with macOS 13 or later.
    device; allow it. If it was denied, turn it on in System Settings →
    Privacy & Security → Local Network.
 
+**Updates:** the app checks GitHub for a newer release at most once a day
+(one request to `api.github.com`, nothing else is sent; turn it off in
+Settings → About). A newer version is announced in a banner; **Download**
+saves the DMG to `~/Downloads`, verifies it against the published
+`.sha256` and opens it; replace the app in Applications and restart it.
+`ni-cli version --check` does the same comparison from the command line.
+
 While it runs, the app is in the Dock; the Dock icon's badge shows how many
 devices are being prepared or flashed.
 

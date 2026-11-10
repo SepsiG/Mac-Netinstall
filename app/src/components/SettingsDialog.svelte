@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { toFailure } from "../lib/api";
   import { useBackend } from "../lib/context";
   import { LANGS, locale, t } from "../lib/i18n";
+  import { dateTime } from "../lib/format";
   import { describe, hint } from "../lib/messages";
   import { fromSettingsForm, settingsErrors, toSettingsForm, type FieldError } from "../lib/settingsForm";
-  import type { Failure, InterfaceView, Link, Settings } from "../lib/types";
+  import type { Failure, InterfaceView, Link, Settings, UpdateView } from "../lib/types";
   import { APP_VERSION } from "../lib/version";
   import CachePanel from "./CachePanel.svelte";
   import Modal from "./Modal.svelte";
@@ -15,6 +16,7 @@
     iface = null,
     onclose,
     onpermissions,
+    onupdate,
   }: {
     settings: Settings;
     /** The selected adapter: its configured subnet and automatic pool. */
@@ -23,6 +25,8 @@
     onclose: (saved: Settings | null) => void;
     /** Open the macOS permissions sheet (on top of this one). */
     onpermissions?: () => void;
+    /** A new update state (a manual check, a skip reset), for the notice. */
+    onupdate?: (v: UpdateView) => void;
   } = $props();
 
   const backend = useBackend();
@@ -38,6 +42,45 @@
   const errors = $derived(settingsErrors(form, subnet));
   // Open when a value in it was changed from the default.
   const advancedOpen = base.pool_start !== null || base.download_timeout_secs !== 30 * 60;
+
+  /** What the update check knows; `checked`: a manual check just ran. */
+  let update = $state<UpdateView | null>(null);
+  let checked = $state(false);
+  let checking = $state(false);
+
+  onMount(() => {
+    backend.updateStatus().then(
+      (v) => (update = v),
+      () => {},
+    );
+  });
+
+  function updated(v: UpdateView) {
+    update = v;
+    onupdate?.(v);
+  }
+
+  async function checkNow() {
+    checking = true;
+    error = null;
+    try {
+      updated(await backend.checkForUpdates(true));
+      checked = true;
+    } catch (e) {
+      error = toFailure(e);
+      checked = false;
+    } finally {
+      checking = false;
+    }
+  }
+
+  async function announceSkipped() {
+    try {
+      updated(await backend.clearSkippedUpdate());
+    } catch (e) {
+      error = toFailure(e);
+    }
+  }
 
   async function open(link: Link) {
     try {
@@ -131,6 +174,34 @@
       <p>{$t("about.version", { version: APP_VERSION })} · {$t("about.license")}</p>
       <p class="help">{$t("disclaimer.text")}</p>
       <p class="help">{$t("disclaimer.trademarks")}</p>
+      <label class="check">
+        <input type="checkbox" bind:checked={form.check_updates} aria-describedby="s-updates-help" />
+        {$t("about.check_updates")}
+      </label>
+      <p class="help" id="s-updates-help">{$t("about.check_updates_help")}</p>
+      <div class="row">
+        <button type="button" class="small" onclick={checkNow} disabled={checking}>
+          {checking ? $t("about.checking") : $t("about.check_now")}
+        </button>
+        <span class="help">
+          {update?.last_checked_unix
+            ? $t("about.last_checked", { when: dateTime(update.last_checked_unix * 1000, $locale) })
+            : $t("about.never_checked")}
+        </span>
+      </div>
+      {#if checked && update}
+        <p>
+          {update.available && update.latest
+            ? $t("about.update_available", { version: update.latest.version })
+            : $t("about.up_to_date", { version: update.current })}
+        </p>
+      {/if}
+      {#if update?.skipped}
+        <div class="row">
+          <span>{$t("about.skipped", { version: update.skipped })}</span>
+          <button type="button" class="small" onclick={announceSkipped}>{$t("about.skipped_reset")}</button>
+        </div>
+      {/if}
       <div class="row">
         <button type="button" class="small" onclick={() => open("repository")}>{$t("about.repository")}</button>
         <button type="button" class="small" onclick={() => open("disclaimer")}>{$t("about.disclaimer")}</button>
@@ -170,6 +241,15 @@
   .about p {
     margin: 4px 0;
     white-space: normal;
+  }
+  .about .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .about .row {
+    margin: 4px 0;
   }
   .advanced summary {
     cursor: default;

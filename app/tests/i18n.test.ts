@@ -76,6 +76,16 @@ describe("locales", () => {
     expect(HU["profile.remove_branding_help"]).toMatch(/nem ellenőriztük/);
   });
 
+  it("words the update notice as agreed", () => {
+    expect(HU["update.available"]).toBe("Új verzió érhető el: {version}");
+    expect(HU["update.whats_new"]).toBe("Mi újság?");
+    expect(HU["update.skip"]).toBe("Ezt a verziót kihagyom");
+    expect(HU["about.check_now"]).toBe("Frissítések keresése most");
+    expect(HU["about.check_updates"]).toBe("Frissítések automatikus keresése");
+    expect(HU["update.install_hint"]).toMatch(/Alkalmazások mappába.*Helyi hálózat engedélyt/);
+    expect(EN["update.available"]).toBe("A new version is available: {version}");
+  });
+
   it("hu has exactly the keys of en", () => {
     expect(Object.keys(HU).sort()).toEqual(Object.keys(EN).sort());
   });
@@ -101,6 +111,7 @@ describe("locales", () => {
     const need: string[] = [
       ...[...codes.failures, ...codes.app_failures, ...FRONTEND_CODES].map((c) => `code.${c}`),
       ...codes.asset_causes.map((c) => `cause.${c}`),
+      ...codes.update_problems.map((c) => `update_problem.${c}`),
       ...codes.ignored_reasons.map((c) => `ignored.${c}`),
       ...codes.link_reasons.map((c) => `link.${c}`),
       ...codes.device_states.map((c) => `state.${c}`),

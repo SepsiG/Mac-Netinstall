@@ -35,7 +35,8 @@ count is reached are waited for. With --json, errors are also printed to stdout 
 pub const TESTING_ENV: &str = "NI_CLI_TESTING";
 
 /// Hidden testing flags that redirect downloads or frames
-/// (`--download-base`, `--upgrade-base`, `--netinstall-dest`) are refused
+/// (`--download-base`, `--upgrade-base`, `--netinstall-dest`,
+/// `--update-base`) are refused
 /// unless [`TESTING_ENV`] is `1`: pointed at the wrong place they would
 /// install foreign files or send frames elsewhere. Error: `testing_flag_not_allowed` (`flag`, `env`).
 pub fn check_testing_flags(cli: &Cli, allowed: bool) -> Result<(), ni_engine::Failure> {
@@ -47,7 +48,15 @@ pub fn check_testing_flags(cli: &Cli, allowed: bool) -> Result<(), ni_engine::Fa
         Command::Flash(f) => Some(&f.net),
         _ => None,
     };
+    let update_base = matches!(
+        &cli.command,
+        Command::Version {
+            update_base: Some(_),
+            ..
+        }
+    );
     let used = [
+        ("--update-base", update_base),
         ("--download-base", cli.download_base.is_some()),
         ("--upgrade-base", cli.upgrade_base.is_some()),
         (
@@ -131,6 +140,17 @@ pub enum Command {
     /// the command exits. With it, every new device is flashed until
     /// Ctrl-C (or --count devices have finished).
     Flash(FlashArgs),
+    /// Print ni-cli's version; with --check, also the latest Mac Netinstall
+    /// release on GitHub (one request, nothing else is sent).
+    Version {
+        /// Ask GitHub for the latest release and compare.
+        #[arg(long)]
+        check: bool,
+        /// Testing: base URL replacing `https://api.github.com` and
+        /// `https://github.com` for the check.
+        #[arg(long, hide = true, value_name = "URL")]
+        update_base: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

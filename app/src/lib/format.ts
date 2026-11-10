@@ -40,6 +40,11 @@ export function clock(ms: number, lang: Lang): string {
   }).format(ms);
 }
 
+/** Date and time, e.g. `Nov 20, 2026, 10:00 AM`, from Unix milliseconds. */
+export function dateTime(ms: number, lang: Lang): string {
+  return new Intl.DateTimeFormat(lang, { dateStyle: "medium", timeStyle: "short" }).format(ms);
+}
+
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
 export function isIpv4(s: string): boolean {

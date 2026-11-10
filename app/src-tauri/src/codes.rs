@@ -24,6 +24,11 @@ pub const APP_FAILURES: &[&str] = &[
     "script_failed",
     "settings_io",
     "settings_newer",
+    "update_busy",
+    "update_check_failed",
+    "update_download_failed",
+    "update_not_available",
+    "update_open_failed",
 ];
 
 /// The engine's catalog plus [`APP_FAILURES`].
@@ -32,6 +37,8 @@ pub struct AppCatalog {
     #[serde(flatten)]
     pub engine: ni_engine::codes::Catalog,
     pub app_failures: Vec<&'static str>,
+    /// The `problem` codes of the update failures ([`ni_update::PROBLEMS`]).
+    pub update_problems: Vec<&'static str>,
     /// The disclaimer text version the window asks to accept
     /// ([`ni_engine::DISCLAIMER_VERSION`]).
     pub disclaimer_version: &'static str,
@@ -41,6 +48,7 @@ pub fn catalog() -> AppCatalog {
     AppCatalog {
         engine: ni_engine::codes::catalog(),
         app_failures: APP_FAILURES.to_vec(),
+        update_problems: ni_update::PROBLEMS.to_vec(),
         disclaimer_version: ni_engine::DISCLAIMER_VERSION,
     }
 }
@@ -63,6 +71,7 @@ mod tests {
         include_str!("settings.rs"),
         include_str!("lib.rs"),
         include_str!("permissions.rs"),
+        include_str!("update.rs"),
     ];
 
     #[test]

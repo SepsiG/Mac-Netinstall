@@ -2100,9 +2100,11 @@ dependencies = [
  "ni-net",
  "ni-proto",
  "ni-sim",
+ "ni-update",
  "objc2",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -2281,6 +2283,7 @@ dependencies = [
  "ni-net",
  "ni-proto",
  "ni-sim",
+ "ni-update",
  "serde",
  "serde_json",
  "tokio",
@@ -2348,6 +2351,19 @@ dependencies = [
  "bytes",
  "ni-net",
  "proptest",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "ni-update"
+version = "0.1.2"
+dependencies = [
+ "ni-assets",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
 ]

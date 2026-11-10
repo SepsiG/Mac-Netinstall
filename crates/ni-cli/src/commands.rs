@@ -86,7 +86,61 @@ pub async fn run(cli: Cli) -> Outcome {
         } => fetch(&ctx, &version, &archs, &packages).await,
         Command::Profiles { command } => profiles(&ctx, command).await,
         Command::Flash(args) => crate::flash::flash(&ctx, args).await,
+        Command::Version { check, update_base } => {
+            version(&ctx, check, update_base.as_deref()).await
+        }
     }
+}
+
+// --------------------------------------------------------------- version
+
+/// `ni-cli <version>`; with `check`, the latest release on GitHub (or at
+/// `base`, testing) too. Error: `update_check_failed` (`problem`).
+async fn version(ctx: &Ctx, check: bool, base: Option<&str>) -> Outcome {
+    let current = env!("CARGO_PKG_VERSION");
+    if !check {
+        if ctx.json {
+            print_json(&json!({ "current": current }));
+        } else {
+            println!("ni-cli {current}");
+        }
+        return Ok(exit::OK);
+    }
+    let mut cfg = ni_update::UpdateConfig::default();
+    if let Some(b) = base {
+        let b = b.trim_end_matches('/');
+        cfg.api_url = format!("{b}/repos/SepsiG/Mac-Netinstall/releases/latest");
+        cfg.download_prefix = format!("{b}/SepsiG/Mac-Netinstall/releases/download/");
+    }
+    let failed = |e: ni_update::UpdateError| {
+        Failure::new("update_check_failed")
+            .with("problem", e.code())
+            .with("detail", e)
+    };
+    let latest = ni_update::Updater::new(cfg)
+        .map_err(failed)?
+        .latest()
+        .await
+        .map_err(failed)?;
+    let version = latest.as_ref().map(|r| r.version.clone());
+    let newer = version
+        .as_deref()
+        .is_some_and(|v| ni_update::is_newer(v, current));
+    let page = latest.as_ref().map_or_else(
+        || format!("{}latest", ni_update::RELEASES_PAGE),
+        |r| r.page_url.clone(),
+    );
+    if ctx.json {
+        print_json(&json!({ "current": current, "latest": version, "newer": newer, "page": page }));
+    } else if newer {
+        println!(
+            "ni-cli {current}; Mac Netinstall {} is available: {page}",
+            version.unwrap_or_default()
+        );
+    } else {
+        println!("ni-cli {current} is up to date");
+    }
+    Ok(exit::OK)
 }
 
 /// Engine settings from the network arguments (including the hidden

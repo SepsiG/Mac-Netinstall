@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/svelte";
+import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsDialog from "../src/components/SettingsDialog.svelte";
@@ -6,7 +6,7 @@ import { backendContext } from "../src/lib/context";
 import { locale } from "../src/lib/i18n";
 import { fromSettingsForm, settingsErrors, toSettingsForm } from "../src/lib/settingsForm";
 import type { InterfaceView, Settings } from "../src/lib/types";
-import { CACHE, mockBackend, SETTINGS } from "./mock";
+import { AVAILABLE, CACHE, mockBackend, SETTINGS } from "./mock";
 
 beforeEach(() => locale.set("en"));
 
@@ -253,5 +253,60 @@ describe("SettingsDialog", () => {
     open(mockBackend(), { ...SETTINGS, pool_start: "172.30.1.10", pool_end: "172.30.1.20" });
     expect(screen.getByLabelText("Address pool 1")).toHaveValue("172.30.1.10");
     expect(screen.getByRole("button", { name: "Reset to automatic" })).toBeInTheDocument();
+  });
+});
+
+describe("SettingsDialog updates", () => {
+  function about() {
+    return screen.getByRole("region", { name: "About" });
+  }
+
+  it("turns the automatic check off", async () => {
+    const { backend } = open();
+    const box = within(about()).getByLabelText("Check for updates automatically");
+    expect(box).toBeChecked();
+    await userEvent.click(box);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(backend.setSettings).toHaveBeenCalledWith({ ...SETTINGS, check_updates: false });
+  });
+
+  it("shows when it last checked and checks now", async () => {
+    const backend = mockBackend({
+      updateStatus: vi.fn(async () => ({ ...AVAILABLE, available: false, latest: null, last_checked_unix: null })),
+      checkForUpdates: vi.fn(async () => ({ ...AVAILABLE, available: false, latest: { ...AVAILABLE.latest!, version: "0.1.2" } })),
+    });
+    const onupdate = vi.fn();
+    render(SettingsDialog, { props: { settings: { ...SETTINGS }, iface: null, onclose: vi.fn(), onupdate }, context: backendContext(backend) });
+    expect(await within(about()).findByText("Not checked yet")).toBeInTheDocument();
+    await userEvent.click(within(about()).getByRole("button", { name: "Check for updates now" }));
+    expect(backend.checkForUpdates).toHaveBeenCalledWith(true);
+    expect(await within(about()).findByText(/is the latest version/)).toBeInTheDocument();
+    expect(within(about()).getByText(/^Last checked: /)).toBeInTheDocument();
+    expect(onupdate).toHaveBeenCalled();
+  });
+
+  it("names a newer version, and reports a failed check", async () => {
+    const backend = mockBackend({
+      checkForUpdates: vi
+        .fn()
+        .mockResolvedValueOnce(structuredClone(AVAILABLE))
+        .mockRejectedValueOnce({ code: "update_check_failed", params: { problem: "network" } }),
+    });
+    open(backend);
+    await userEvent.click(within(about()).getByRole("button", { name: "Check for updates now" }));
+    expect(await within(about()).findByText("New version available: 0.1.3")).toBeInTheDocument();
+    await userEvent.click(within(about()).getByRole("button", { name: "Check for updates now" }));
+    expect(await screen.findByText("Could not check for updates: no connection to GitHub.")).toBeInTheDocument();
+  });
+
+  it("shows a skipped version and announces it again on request", async () => {
+    const backend = mockBackend({
+      updateStatus: vi.fn(async () => ({ ...AVAILABLE, available: false, skipped: "0.1.3" })),
+    });
+    open(backend);
+    expect(await within(about()).findByText("Skipped version: 0.1.3")).toBeInTheDocument();
+    await userEvent.click(within(about()).getByRole("button", { name: "Announce it again" }));
+    expect(backend.clearSkippedUpdate).toHaveBeenCalled();
+    await waitFor(() => expect(within(about()).queryByText("Skipped version: 0.1.3")).toBeNull());
   });
 });

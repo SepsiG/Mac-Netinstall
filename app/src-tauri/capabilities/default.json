@@ -45,6 +45,12 @@
     "allow-delete-cached",
     "allow-export-log",
     "allow-preferred-languages",
-    "allow-quit"
+    "allow-quit",
+    "allow-update-status",
+    "allow-check-for-updates",
+    "allow-skip-update",
+    "allow-clear-skipped-update",
+    "allow-download-update",
+    "allow-open-release-page"
   ]
 }
