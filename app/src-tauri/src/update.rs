@@ -67,6 +67,13 @@ impl UpdateState {
         state
     }
 
+    /// Forget a remembered release that is not newer than `current` (after
+    /// the app was updated, the cache must not offer the same or an older
+    /// version again).
+    pub fn drop_not_newer(&mut self, current: &str) {
+        self.latest = self.latest.take().filter(|r| is_newer(&r.version, current));
+    }
+
     /// Store it (a temporary file renamed over the old one); failures are
     /// only logged: the next check simply happens sooner.
     pub fn save(&self, path: &Path) {
@@ -134,6 +141,15 @@ pub fn view(state: &UpdateState, current: &str, auto: bool, skipped: Option<&str
     }
 }
 
+/// The answer to "What's new?" / "Download": the state after asking GitHub
+/// again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RefreshView {
+    pub update: UpdateView,
+    /// GitHub could not be asked: the last known release is used.
+    pub stale: bool,
+}
+
 /// A finished, verified download, for the window: the file name (in
 /// Downloads).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -184,6 +200,18 @@ mod tests {
         assert!(!view(&state, "0.1.2", true, Some("0.2.0")).available);
         assert!(view(&state, "0.1.2", true, Some("0.1.9")).available);
         assert!(!view(&UpdateState::default(), "0.1.2", true, None).available);
+    }
+
+    #[test]
+    fn releases_not_newer_than_the_app_are_forgotten() {
+        let mut st = UpdateState {
+            latest: Some(release("0.2.0")),
+            ..UpdateState::default()
+        };
+        st.drop_not_newer("0.1.9");
+        assert!(st.latest.is_some());
+        st.drop_not_newer("0.2.0");
+        assert_eq!(st.latest, None);
     }
 
     #[test]

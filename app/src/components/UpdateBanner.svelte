@@ -42,6 +42,32 @@
   /** The DMG was opened automatically (or that failed). */
   let autoOpened = $state(false);
   let openFailed = $state(false);
+  /** GitHub could not be asked again: the last known release (version). */
+  let staleVersion = $state<string | null>(null);
+  let refreshing = $state(false);
+
+  /** Ask GitHub again, so the notes and the download are the newest
+   *  release; the window shows what came back. */
+  async function refresh(): Promise<UpdateView | null> {
+    refreshing = true;
+    try {
+      const r = await backend.refreshUpdate();
+      staleVersion = r.stale ? (r.update.latest?.version ?? null) : null;
+      onupdate(r.update);
+      return r.update;
+    } catch (e) {
+      error = toFailure(e);
+      return null;
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  async function whatsNew() {
+    error = null;
+    await refresh();
+    notesOpen = true;
+  }
 
   const version = $derived(update.latest?.version ?? "");
   const blocks = $derived(noteBlocks(update.latest?.notes ?? ""));
@@ -76,6 +102,8 @@
     progress = null;
     autoOpened = false;
     openFailed = false;
+    const fresh = await refresh();
+    if (!fresh?.available) return; // nothing newer than this app
     downloading = true;
     try {
       done = await backend.downloadUpdate();
@@ -135,6 +163,9 @@
     {:else}
       <div>{$t("update.available", { version })}</div>
     {/if}
+    {#if staleVersion}
+      <div class="secondary">{$t("update.stale", { version: staleVersion })}</div>
+    {/if}
     {#if error}
       <div class="error" role="alert">
         {describe($locale, error)}
@@ -144,8 +175,8 @@
   </div>
   <div class="actions">
     {#if !done && !downloading}
-      <button class="small" onclick={() => (notesOpen = true)}>{$t("update.whats_new")}</button>
-      <button class="small primary" onclick={download}>{$t("update.download")}</button>
+      <button class="small" onclick={whatsNew} disabled={refreshing}>{$t("update.whats_new")}</button>
+      <button class="small primary" onclick={download} disabled={refreshing}>{$t("update.download")}</button>
       <button class="small" onclick={skip}>{$t("update.skip")}</button>
     {/if}
     {#if done}

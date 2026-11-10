@@ -15,6 +15,7 @@ import type {
   PackagesView,
   PermissionsView,
   PreflightReport,
+  RefreshView,
   Profile,
   ProfilesView,
   ScriptView,
@@ -96,7 +97,9 @@ export interface Backend {
   skipUpdate(version: string): Promise<UpdateView>;
   /** Announce the skipped version again. */
   clearSkippedUpdate(): Promise<UpdateView>;
-  /** Download the new DMG into Downloads and verify it. */
+  /** Ask GitHub for the latest release again (past the daily throttle). */
+  refreshUpdate(): Promise<RefreshView>;
+  /** Download the newest DMG into Downloads and verify it. */
   downloadUpdate(): Promise<DownloadedView>;
   /** Open the verified DMG (refused while devices are busy). */
   openDownloadedUpdate(): Promise<void>;
@@ -168,6 +171,7 @@ export function tauriBackend(): Backend {
     checkForUpdates: (manual) => invoke("check_for_updates", { manual }),
     skipUpdate: (version) => invoke("skip_update", { version }),
     clearSkippedUpdate: () => invoke("clear_skipped_update"),
+    refreshUpdate: () => invoke("refresh_update"),
     downloadUpdate: () => invoke("download_update"),
     openDownloadedUpdate: () => invoke("open_downloaded_update"),
     openReleasePage: () => invoke("open_release_page"),

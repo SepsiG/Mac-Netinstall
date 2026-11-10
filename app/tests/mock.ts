@@ -239,6 +239,7 @@ export function mockBackend(overrides: Partial<Backend> = {}): MockBackend {
     checkForUpdates: vi.fn(async (_manual: boolean) => structuredClone(UP_TO_DATE)),
     skipUpdate: vi.fn(async (version: string) => ({ ...structuredClone(AVAILABLE), available: false, skipped: version })),
     clearSkippedUpdate: vi.fn(async () => ({ ...structuredClone(UP_TO_DATE), skipped: null })),
+    refreshUpdate: vi.fn(async () => ({ update: structuredClone(AVAILABLE), stale: false })),
     downloadUpdate: vi.fn(async () => ({ file_name: "Mac-Netinstall_0.1.3_aarch64.dmg" })),
     openDownloadedUpdate: vi.fn(async () => {}),
     openReleasePage: vi.fn(async () => {}),

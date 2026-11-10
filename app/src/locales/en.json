@@ -546,5 +546,7 @@
 
   "code.update_open_busy": "The new version is opened once no device is being prepared or flashed.",
   "update.open": "Open",
-  "about.check_again_in": "Check again in {seconds} s"
+  "about.check_again_in": "Check again in {seconds} s",
+
+  "update.stale": "Using the last known release ({version}): GitHub could not be reached."
 }

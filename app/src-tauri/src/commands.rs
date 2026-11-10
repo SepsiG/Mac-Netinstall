@@ -7,7 +7,7 @@
 use crate::core::{self, AppCore};
 use crate::permissions::{self, PermissionsView, SettingsPane};
 use crate::settings::Settings;
-use crate::update::{DownloadedView, UpdateProgress, UpdateView, UPDATE_PROGRESS};
+use crate::update::{DownloadedView, RefreshView, UpdateProgress, UpdateView, UPDATE_PROGRESS};
 use crate::views::{
     CacheView, InterfaceView, LicenseKeyView, PackageFileView, PackagesView, ProfilesView,
     ScriptView, StartRequest, VersionsView,
@@ -221,7 +221,15 @@ pub fn clear_skipped_update(core: State<'_, AppCore>) -> R<UpdateView> {
     core.clear_skipped_update()
 }
 
-/// Download the announced release's DMG, verify its SHA-256 and place it
+/// Ask GitHub for the latest release again ("What's new?", before
+/// "Download"): past the daily throttle, at most once per 10 s; `stale`
+/// if GitHub could not be asked and the last known release is used.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn refresh_update(core: State<'_, AppCore>) -> R<RefreshView> {
+    core.refresh_update().await
+}
+
+/// Download the newest release's DMG (asking GitHub again first), verify its SHA-256 and place it
 /// in Downloads (`update-progress` events on the way). It is not opened
 /// here: the window asks with `open_downloaded_update` once no device is
 /// being prepared or flashed. The app keeps running.

@@ -351,3 +351,97 @@ async fn nothing_to_open_before_a_download() {
     let err = c.downloaded_update().await.unwrap_err();
     assert_eq!(err.code, "update_not_available");
 }
+
+#[tokio::test]
+async fn download_and_notes_use_the_newest_published_release() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-newest");
+    publish(&srv, "99.0.0", b"old", None);
+    core(&srv, &dir).check_for_updates(true).await.unwrap();
+    // Published within the day the cached answer is used for.
+    publish(&srv, "99.0.1", b"newer", None);
+    let c = core(&srv, &dir);
+    assert_eq!(c.update_status().latest.unwrap().version, "99.0.0");
+    let r = c.refresh_update().await.unwrap();
+    assert!(!r.stale);
+    assert_eq!(r.update.latest.as_ref().unwrap().version, "99.0.1");
+    assert!(r.update.available);
+    // Remembered for the next start too.
+    assert_eq!(
+        core(&srv, &dir).update_status().latest.unwrap().version,
+        "99.0.1"
+    );
+    // The download itself asks again too (a restart: no recent refresh).
+    publish(&srv, "99.0.2", b"newest", None);
+    let c = core(&srv, &dir);
+    let path = c.download_update(&|_, _| {}).await.unwrap();
+    assert_eq!(path.file_name().unwrap().to_string_lossy(), dmg("99.0.2"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"newest");
+    assert_eq!(c.update_status().latest.unwrap().version, "99.0.2");
+}
+
+#[tokio::test]
+async fn a_failed_refresh_falls_back_to_a_still_newer_cached_release() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-fallback");
+    publish(&srv, "99.0.0", b"dmg", None);
+    core(&srv, &dir).check_for_updates(true).await.unwrap();
+    srv.route(API, Reply::Status(403));
+    let c = core(&srv, &dir);
+    let r = c.refresh_update().await.unwrap();
+    assert!(r.stale, "said so in the UI");
+    assert_eq!(r.update.latest.as_ref().unwrap().version, "99.0.0");
+    let path = c.download_update(&|_, _| {}).await.unwrap();
+    assert_eq!(path.file_name().unwrap().to_string_lossy(), dmg("99.0.0"));
+}
+
+#[tokio::test]
+async fn a_cached_release_not_newer_than_the_app_is_dropped() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-drop");
+    publish(&srv, "0.0.1", b"dmg", None);
+    let c = core(&srv, &dir);
+    c.check_for_updates(true).await.unwrap();
+    // As after updating the app: the cache holds an older version.
+    let restarted = core(&srv, &dir);
+    assert!(restarted.update_status().latest.is_none());
+    // Nothing newer anywhere: never downloaded.
+    srv.route(API, Reply::Status(500));
+    let err = restarted.download_update(&|_, _| {}).await.unwrap_err();
+    assert_eq!(err.code, "update_not_available");
+    publish(&srv, env!("CARGO_PKG_VERSION"), b"dmg", None);
+    let err = core(&srv, &dir)
+        .download_update(&|_, _| {})
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "update_not_available");
+}
+
+#[tokio::test]
+async fn rapid_refreshes_ask_github_once() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-dedupe");
+    publish(&srv, "99.0.0", b"dmg", None);
+    let c = core(&srv, &dir);
+    let (a, b) = tokio::join!(c.refresh_update(), c.refresh_update());
+    assert_eq!(a.unwrap().update.latest, b.unwrap().update.latest);
+    c.refresh_update().await.unwrap();
+    c.download_update(&|_, _| {}).await.unwrap();
+    assert_eq!(api_requests(&srv), 1, "a double click is one request");
+}
+
+#[tokio::test]
+async fn a_newer_release_than_the_skipped_one_is_announced() {
+    let srv = TestServer::start().await;
+    let dir = tempdir("app-update-skip-newer");
+    publish(&srv, "99.0.0", b"dmg", None);
+    let c = core(&srv, &dir);
+    c.check_for_updates(true).await.unwrap();
+    assert!(!c.skip_update("99.0.0").unwrap().available);
+    publish(&srv, "99.1.0", b"dmg", None);
+    let c = core(&srv, &dir);
+    let r = c.refresh_update().await.unwrap();
+    assert!(r.update.available);
+    assert_eq!(r.update.skipped.as_deref(), Some("99.0.0"));
+    assert!(c.check_for_updates(false).await.unwrap().available);
+}
