@@ -74,6 +74,13 @@ describe("ProfileEditor", () => {
     expect(onclose).toHaveBeenCalledWith({ saved: "hAP lab" });
   });
 
+  it("explains that the package-list architecture is only for display", async () => {
+    open(null);
+    const select = screen.getByLabelText("List for");
+    const hint = document.getElementById(select.getAttribute("aria-describedby") ?? "");
+    expect(hint?.textContent).toContain("device's own architecture");
+  });
+
   it("refuses an empty script and points to the empty configuration", async () => {
     const backend = mockBackend();
     vi.mocked(backend.pickScript).mockResolvedValueOnce({ name: "empty.rsc", size: 0 });

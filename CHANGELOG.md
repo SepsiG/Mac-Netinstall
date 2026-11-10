@@ -7,6 +7,18 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+### Fixed
+
+- Devices that report plain `mips` in their Netinstall hello (seen on a
+  CRS125-24G-1S-2HnD, big-endian MIPS) failed with "unknown architecture";
+  `mips` now maps to the `mipsbe` packages.
+
+### Changed
+
+- Profile editor: the architecture next to the extra-package list now says it
+  only selects which list is shown; packages are installed for the device's
+  own architecture.
+
 ## [0.1.1] - 2026-11-09
 
 The first release validated on real hardware: a MikroTik hEX RB750Gr3 (mmips)

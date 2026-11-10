@@ -116,6 +116,7 @@
   "profile.exact_placeholder": "pl. 7.25.1",
   "profile.packages": "További csomagok",
   "profile.packages_for": "Lista ehhez",
+  "profile.packages_for_hint": "Csak a lista megjelenítéséhez. A profil a csomagok nevét menti; telepítéskor az app az eszköz saját architektúrájához tölti le őket.",
   "profile.packages_loading": "Csomaglista betöltése…",
   "profile.packages_none": "Ehhez a verzióhoz nincs további csomag.",
   "profile.config": "Konfiguráció",

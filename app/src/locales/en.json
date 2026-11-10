@@ -116,6 +116,7 @@
   "profile.exact_placeholder": "e.g. 7.25.1",
   "profile.packages": "Extra packages",
   "profile.packages_for": "List for",
+  "profile.packages_for_hint": "Only for showing the list. The profile stores package names; when installing, the app downloads them for the device's own architecture.",
   "profile.packages_loading": "Loading the package list…",
   "profile.packages_none": "No extra packages are published for this version.",
   "profile.config": "Configuration",

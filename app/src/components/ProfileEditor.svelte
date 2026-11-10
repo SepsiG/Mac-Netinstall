@@ -185,10 +185,11 @@
     <div class="stack">
       <label class="row secondary">
         {$t("profile.packages_for")}
-        <select bind:value={arch} aria-label={$t("profile.packages_for")}>
+        <select bind:value={arch} aria-label={$t("profile.packages_for")} aria-describedby="packages-for-hint">
           {#each ARCHES as a (a)}<option value={a}>{a}</option>{/each}
         </select>
       </label>
+      <span id="packages-for-hint" class="secondary hint">{$t("profile.packages_for_hint")}</span>
       <div class="packages">
         {#if available === null}
           <span class="secondary">{$t("profile.packages_loading")}</span>
