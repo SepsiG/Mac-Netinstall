@@ -93,11 +93,15 @@ describe("LogPanel order", () => {
     expect(list().scrollTop).toBe(0);
   });
 
-  it("shows at most the newest MAX_SHOWN lines but exports all", async () => {
+  // Rendering MAX_SHOWN (2000) rows in jsdom is CPU-bound: about 1 s
+  // alone, several seconds when every test file runs in parallel on a busy
+  // machine. The time limit is raised for that, not for any waiting.
+  it("shows at most the newest MAX_SHOWN lines but exports all", { timeout: 30_000 }, async () => {
     const log = buffer(Array.from({ length: MAX_SHOWN + 10 }, (_, i) => numbered(i)));
     const { backend } = show(log);
-    expect(items()).toHaveLength(MAX_SHOWN);
-    expect(items()[0]).toHaveTextContent(`v${MAX_SHOWN + 9} `);
+    const shown = items();
+    expect(shown).toHaveLength(MAX_SHOWN);
+    expect(shown[0]).toHaveTextContent(`v${MAX_SHOWN + 9} `);
     await fireEvent.click(screen.getByRole("button", { name: "Export…" }));
     const text = vi.mocked(backend.exportLog).mock.calls[0]![0];
     const lines = text.trim().split("\n");
@@ -218,24 +222,29 @@ describe("LogPanel pause", () => {
 });
 
 describe("LogPanel bursts", () => {
-  it("renders a burst of 5000 lines in one frame and loses none", async () => {
+  // Deterministic: the frame is a fake timer. The DOM is checked every
+  // 250 lines (a render in between would still show at the next check),
+  // not after each of the 5000, which took seconds under load. The time
+  // limit covers the final 2000-row render on a busy machine.
+  it("renders a burst of 5000 lines in one frame and loses none", { timeout: 30_000 }, async () => {
     vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
     const log = buffer([]);
     const { backend } = show(log);
     let changes = 0;
-    let top = list().firstElementChild?.textContent;
+    const top = list().firstElementChild?.textContent;
     for (let i = 0; i < 5000; i++) {
       log.push(numbered(i));
-      flushSync();
-      const now = list().firstElementChild?.textContent;
-      if (now !== top) changes++;
-      top = now;
+      if (i % 250 === 0 || i === 4999) {
+        flushSync();
+        if (list().firstElementChild?.textContent !== top) changes++;
+      }
     }
     expect(changes).toBe(0);
     vi.advanceTimersToNextFrame();
     flushSync();
-    expect(items()).toHaveLength(MAX_SHOWN);
-    expect(items()[0]).toHaveTextContent("v4999 ");
+    const shown = items();
+    expect(shown).toHaveLength(MAX_SHOWN);
+    expect(shown[0]).toHaveTextContent("v4999 ");
     vi.useRealTimers();
     await fireEvent.click(screen.getByRole("button", { name: "Export…" }));
     const lines = vi.mocked(backend.exportLog).mock.calls[0]![0].trim().split("\n");
