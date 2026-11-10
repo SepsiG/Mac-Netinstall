@@ -174,9 +174,12 @@ RouterOS 6 (6.30 to 6.49.x) can be installed too. Things to know:
 - **RouterOS 6 is end of life.** Use it only when you have a reason to (e.g. an old
   device or a configuration that needs v6).
 - **Never install a version older than the device's minimum (factory) version.** That can
-  leave the device unusable. The device reports its minimum version when it is discovered;
-  the app **refuses** an older version before anything is erased: **“RouterOS … is older
-  than this device's minimum version …”**. Newer devices often do not support v6 at all.
+  leave the device unusable. The device reports its minimum version in its Netinstall hello
+  when it is discovered (the log line and the model's tooltip show it; how real devices fill
+  this field is still being verified on hardware); the app **refuses** an older version
+  before anything is erased: **“RouterOS … is older than this device's minimum version …”**.
+  If either version cannot be read (e.g. a local package of an unknown version), the install
+  is refused too. Some newer devices do not support v6 at all.
 - Old releases do not exist for every architecture (e.g. 6.30.4 has no `arm` or `mmips`
   package; `arm64` starts around 6.45): **“RouterOS … is not published for the …
   architecture.”**
@@ -234,7 +237,8 @@ configuration**.
   user can read.
 - **Allow below the device's minimum version (risky)** – off by default. Normally a version
   older than the minimum version the device reports is refused before anything is erased,
-  because it can make the device unusable. Turn it on only if you know the device supports
+  because it can make the device unusable; so is an install whose version, or the device's
+  minimum, cannot be read. Turn it on only if you know the device supports
   that version.
 
 **Save** stores the profile, **Cancel** closes the editor (it asks first if there are
@@ -379,7 +383,10 @@ Opened with the **Settings** button in the toolbar.
   leftovers at the next launch). Your own files (scripts, packages) and the version lists
   are always kept. Turn it on for offline work or when you install many devices over
   several days: without kept files the app cannot fall back to the last used version
-  offline.
+  offline. **Upgrading from 0.1.1:** an existing settings file keeps the downloads (the
+  box is ticked); untick it if you want them deleted. The cache is shared with `ni-cli`, so
+  the setting also deletes what `ni-cli` downloaded; a version another program is using at
+  that moment is skipped.
 - **About** – the app's version, its license (GNU GPL v3), the disclaimer and links to the
   GitHub page, the full disclaimer and the license.
 

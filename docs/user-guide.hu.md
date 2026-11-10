@@ -183,10 +183,13 @@ RouterOS 6 (6.30-tól 6.49.x-ig) is telepíthető. Amit érdemes tudni:
 - **A RouterOS 6 életciklusa véget ért.** Csak akkor használd, ha okod van rá (pl. régi
   eszköz vagy v6-ot igénylő konfiguráció).
 - **Soha ne telepíts az eszköz minimális (gyári) verziójánál régebbit.** Ettől az eszköz
-  használhatatlanná válhat. Az eszköz a felismeréskor jelzi a minimális verzióját; az
+  használhatatlanná válhat. Az eszköz a minimális verzióját a felismeréskor, a Netinstall
+  bejelentkezésében (hello) küldi el (a naplósor és a típus melletti buborék mutatja; hogy
+  a valódi eszközök mit írnak ebbe a mezőbe, azt még hardveren ellenőrizzük); az
   alkalmazás a régebbit **megtagadja**, mielőtt bármit törölne: **„A RouterOS …
-  régebbi, mint az eszköz minimális verziója …”**. Újabb eszközök a v6-ot sokszor
-  egyáltalán nem támogatják.
+  régebbi, mint az eszköz minimális verziója …”**. Ha valamelyik verzió nem olvasható ki
+  (pl. ismeretlen verziójú saját csomag), a telepítést szintén megtagadja. Egyes újabb
+  eszközök a v6-ot egyáltalán nem támogatják.
 - Régi kiadások nem minden architektúrára jelentek meg (pl. a 6.30.4-hez nincs `arm` és
   `mmips` csomag; `arm64` nagyjából 6.45-től van): **„A RouterOS … nem jelent meg …
   architektúrára.”**
@@ -248,7 +251,8 @@ gombbal eltávolíthatsz egyet.
   tárolja, amelyet csak a te felhasználód olvashat.
 - **Telepítés az eszköz minimális verziója alá is (kockázatos)** – alapból kikapcsolva.
   Az eszköz által jelzett minimális verziónál régebbit az alkalmazás nem telepíti, és
-  semmit sem töröl, mert az eszköz használhatatlanná válhat. Csak akkor kapcsold be, ha
+  semmit sem töröl, mert az eszköz használhatatlanná válhat; akkor sem, ha a telepítendő
+  verzió vagy az eszköz minimális verziója nem olvasható ki. Csak akkor kapcsold be, ha
   biztosan tudod, hogy az eszköz támogatja az adott verziót.
 
 A **Mentés** elmenti, a **Mégse** bezárja a szerkesztőt (mentetlen módosításoknál
@@ -398,7 +402,11 @@ Az eszköztár **Beállítások** gombjával nyílik.
   maradékuk a következő indításkor). A saját fájljaidat (szkriptek, csomagok) és a
   verziólistákat mindig megtartjuk. Kapcsold be, ha internet nélkül dolgozol, vagy több
   napon át sok eszközt telepítesz: megtartott fájlok nélkül internet nélkül nem lehet az
-  utoljára használt verzióra visszaállni.
+  utoljára használt verzióra visszaállni. **Frissítés a 0.1.1-ről:** meglévő
+  beállításfájl esetén a letöltések megmaradnak (a négyzet be van jelölve); ha törölni
+  szeretnéd őket, vedd ki a jelet. A gyorsítótárat az `ni-cli` is használja, ezért a
+  beállítás az általa letöltött fájlokat is törli; azt a verziót, amelyet épp egy másik
+  program használ, kihagyja.
 - **Névjegy** – az alkalmazás verziója, licence (GNU GPL v3), a felelősségkizárás, és
   hivatkozások a GitHub-oldalra, a teljes felelősségkizárásra és a licencre.
 

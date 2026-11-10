@@ -15,6 +15,11 @@ Mac Netinstall is provided "as is", without any warranty (GPL-3.0 sections
 15–16): Netinstall erases the device, use it at your own risk (see the
 README's Disclaimer).
 
+**Upgrading from 0.1.1:** your downloaded files are kept: an existing
+settings file keeps them after quitting. Turn off "Keep downloaded files
+after quitting" in Settings if you want them deleted on quit (new installs
+start with it off).
+
 ### Added
 
 - Version picker in the profile editor: "Always the newest" channels with
@@ -42,7 +47,8 @@ README's Disclaimer).
   guides have a Disclaimer section.
 - The device table shows where the packages came from (downloaded or local
   file) under the version.
-
+- The log line of a discovered device and the model's tooltip show the
+  device's minimum RouterOS version.
 - Package architecture check before formatting: every package of an install
   is checked against the architecture the device reports in its Netinstall
   hello (the RouterOS package names the architecture it is built for inside
@@ -73,8 +79,19 @@ README's Disclaimer).
   (risky)"), then it is a warning as before.
 - The mode script (`mode.scr`) is refused for versions before 7.22,
   including RouterOS 6.
+- If the version to install or the device's minimum version cannot be read
+  (e.g. a local package of an unknown version), the install is refused
+  before formatting (`version_unknown`) unless the profile allows going
+  below the minimum.
+- Local packages must all be the same version (`package_version_mismatch`),
+  and a local extra already inside a local v6 bundle is refused.
+- Deleting downloads on quit skips versions another process (`ni-cli`, a
+  second app) is using; the setting also covers files `ni-cli` downloaded.
+- A picked `.npk` is checked before it is registered; another file of the
+  same name is refused instead of replacing it.
+- Versions with leading zeros (`06.49`) are invalid.
+- The application log shows a device's license key only as its length.
 - Settings file version 7 (`keep_downloads`, `disclaimer_accepted_version`).
-
 - Profile editor: the architecture next to the extra-package list now says it
   only selects which list is shown; packages are installed for the device's
   own architecture.
@@ -189,6 +206,6 @@ Not affiliated with MikroTik.
   not supported.
 
 [Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.2...HEAD
-[0.1.2]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/SepsiG/Mac-Netinstall/releases/tag/v0.1.0
+[0.1.2]: https://github.com/SepsiG/Mac-Netinstall/compare/013a829...v0.1.2
+[0.1.1]: https://github.com/SepsiG/Mac-Netinstall/compare/33a4fbd...013a829
+[0.1.0]: https://github.com/SepsiG/Mac-Netinstall/commit/33a4fbd

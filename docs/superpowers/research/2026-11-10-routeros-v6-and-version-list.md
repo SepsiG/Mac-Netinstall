@@ -81,8 +81,12 @@ Part type 1 (and the bundle's type 18): 16 bytes of NUL-padded name, then
 | routeros-mipsbe-6.49.23.npk | `17 66 31 06` | 6.49.23 |
 | calea-6.49.23-arm.npk | `17 66 31 06` | 6.49.23 |
 
-`kind` `0x66` (`f`) is a final release. Other kinds (betas, rcs) are not
-decoded: a local package of such a version is shown as "local".
+`kind` `0x66` (`f`) is a final release; `0x62` (`b`) a beta and `0x63` (`c`)
+an rc, where the first byte is the beta/rc number (headers fetched with range
+requests: 7.26beta5 `05 62 1a 07`, 7.25rc3 `03 63 19 07`, 7.24rc1
+`01 63 18 07`, 6.49rc2 `02 63 31 06`). Other kinds are not decoded: such a
+local package has an unknown version, and the minimum-version check refuses
+it unless the profile allows going below the minimum.
 
 ## 6. Availability of old versions
 
