@@ -7,24 +7,48 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-10
+
+This release adds an update notification with a verified download of new
+versions. Mac Netinstall is provided "as is", without any warranty
+(GPL-3.0 sections 15–16): Netinstall erases the device, use it at your own
+risk (see the README's Disclaimer).
+
 ### Added
 
-- Update notice: at most once a day (10 s after start-up, never while
-  devices are being prepared or flashed) the app asks GitHub's API for the
-  latest release; a newer one is announced in a banner with **What's
-  new?** (the release notes as plain text), **Download**, **Later** and
-  **Skip this version**. The download goes to `~/Downloads` (never
-  overwriting a file), is checked against the published `.sha256` (a
-  mismatch deletes it), and the DMG is opened; replace the app in
-  Applications and restart it. Only the project's GitHub release URLs (and
-  GitHub's download hosts) are accepted, at most 200 MB. No data is sent
-  besides that one request (no telemetry).
+- Update notice: at most once a day (10 s after start-up) the app asks
+  GitHub's API for the latest release; a newer one is announced in a
+  banner with **What's new?** (the release notes as plain text),
+  **Download**, **Later** and **Skip this version**. The banner, the
+  release notes and opening the DMG wait while devices are being prepared
+  or flashed. No data is sent besides that one request (no telemetry).
+- Verified download: the DMG is staged in the app's cache
+  (`~/Library/Caches/io.github.sepsig.mac-netinstall/updates`), checked
+  against the published `.sha256` (a mismatch deletes it), marked as
+  downloaded from the Internet (`com.apple.quarantine`, so macOS Gatekeeper
+  checks the new app; it is not notarized, so **Open Anyway** may be needed
+  again), placed in `~/Downloads` without overwriting a file and opened;
+  replace the app in Applications and restart it. Only the project's exact
+  GitHub release asset URLs (and GitHub's download hosts for redirects) are
+  accepted, at most 200 MB. The checksum protects against corrupted or
+  incomplete downloads, not against a compromised release.
 - Settings → About: **Check for updates automatically** (on by default),
-  the time of the last check, **Check for updates now**, and the skipped
-  version with **Announce it again**. Settings file version 8
-  (`check_updates`, `skipped_update_version`; older files are migrated).
+  the time of the last successful check, **Check for updates now** (at most
+  once a minute), and the skipped version with **Announce it again**.
+  Settings file version 8 (`check_updates`, `skipped_update_version`; older
+  files are migrated).
 - `ni-cli version [--check]`: prints the version and, with `--check`,
   compares it with the latest release on GitHub.
+
+### Changed
+
+- Files the app creates carry the quarantine attribute
+  (`LSFileQuarantineEnabled`).
+
+### Fixed
+
+- A log panel test that could time out on a busy machine is now
+  deterministic.
 
 ## [0.1.2] - 2026-11-10
 
@@ -230,7 +254,8 @@ Not affiliated with MikroTik.
 - Apple Silicon only; x86 (`X86_64__boot`, PXE) and ARM64 UEFI devices are
   not supported.
 
-[Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/SepsiG/Mac-Netinstall/compare/013a829...v0.1.2
 [0.1.1]: https://github.com/SepsiG/Mac-Netinstall/compare/33a4fbd...013a829
 [0.1.0]: https://github.com/SepsiG/Mac-Netinstall/commit/33a4fbd
