@@ -41,7 +41,11 @@ impl Version {
             && s.contains('.')
             && !s.contains("..")
             && !s.ends_with('.');
-        if !well_formed {
+        // No leading zeros (`06.49`, `7.025`): one spelling per version.
+        let leading_zero = s
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|n| n.len() > 1 && n.starts_with('0'));
+        if !well_formed || leading_zero {
             return Err(invalid());
         }
         let major: u32 = s
@@ -82,6 +86,12 @@ impl Version {
     /// loosely (`7` is 7.0); one that cannot be read is never a reason to
     /// refuse, so this is `false` then.
     pub fn below_minimum(&self, min_os: &str) -> bool {
+        self.below_minimum_checked(min_os).unwrap_or(false)
+    }
+
+    /// [`Version::below_minimum`], with `None` when the minimum cannot be
+    /// read (empty, not dotted digits, out of range).
+    pub fn below_minimum_checked(&self, min_os: &str) -> Option<bool> {
         let min = min_os.trim();
         let ok = !min.is_empty()
             && min.len() <= 32
@@ -89,21 +99,18 @@ impl Version {
                 .split('.')
                 .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
         if !ok {
-            return false;
+            return None;
         }
-        let Some(mut min_nums) = min
+        let mut min_nums = min
             .split('.')
             .map(|p| p.parse::<u64>().ok())
-            .collect::<Option<Vec<u64>>>()
-        else {
-            return false;
-        };
+            .collect::<Option<Vec<u64>>>()?;
         while min_nums.last() == Some(&0) {
             min_nums.pop();
         }
         // A minimum is a release: the same numbers with a pre-release tag
         // are still below it.
-        self.sort_key() < (min_nums, 3, 0)
+        Some(self.sort_key() < (min_nums, 3, 0))
     }
 
     pub fn as_str(&self) -> &str {
@@ -346,6 +353,11 @@ mod tests {
             "7.25.1-arm",
             "7.25.X",
             "77777777777777777777777777777.1",
+            "06.49",
+            "007.25",
+            "7.025",
+            "7.25.01",
+            "7.26rc01",
         ] {
             assert!(
                 matches!(Version::parse(v), Err(VersionError::Invalid(_))),
@@ -440,6 +452,16 @@ mod tests {
             "99999999999999999999999",
         ] {
             assert!(!p("6.49.23").below_minimum(odd), "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn unreadable_minimums_are_unknown() {
+        let p = |s: &str| Version::parse(s).unwrap();
+        assert_eq!(p("6.49.23").below_minimum_checked("7.1"), Some(true));
+        assert_eq!(p("7.25.1").below_minimum_checked(" 7 "), Some(false));
+        for odd in ["", "x", "7.a", "v7", "7..1", "99999999999999999999999"] {
+            assert_eq!(p("7.25.1").below_minimum_checked(odd), None, "{odd:?}");
         }
     }
 

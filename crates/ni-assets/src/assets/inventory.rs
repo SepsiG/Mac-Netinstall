@@ -512,7 +512,7 @@ fn delete_kernels(root: &Path, version: &Version, id: &str) -> Result<u64, Asset
 /// Delete a whole version directory, holding every lock its writers use.
 /// With `only_if_empty`, nothing is deleted (`None`) unless the directory
 /// has no index entry and no part file (checked under the locks).
-fn delete_version(
+pub(super) fn delete_version(
     root: &Path,
     version: &Version,
     only_if_empty: bool,

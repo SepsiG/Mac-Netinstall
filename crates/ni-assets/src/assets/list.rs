@@ -72,8 +72,11 @@ impl Assets {
     pub async fn version_list(&self, max_age: Duration, refresh: bool) -> VersionsAnswer {
         let stored = self.stored_versions().await;
         if let Some(list) = &stored {
-            let age = unix_now().saturating_sub(list.fetched_unix);
-            if !refresh && age < max_age.as_secs() {
+            let now = unix_now();
+            // A time in the future (clock changed, edited file) is stale.
+            let future = list.fetched_unix > now.saturating_add(60);
+            let age = now.saturating_sub(list.fetched_unix);
+            if !refresh && !future && age < max_age.as_secs() {
                 return VersionsAnswer {
                     list: list.clone(),
                     source: ListSource::Cached,
@@ -170,6 +173,27 @@ mod tests {
         a.version_list(day, true).await;
         a.version_list(Duration::ZERO, false).await;
         assert_eq!(srv.paths().len(), requests + 4);
+    }
+
+    /// A list "fetched" in the future (clock changed, hand-edited) is
+    /// stale, not fresh forever.
+    #[tokio::test]
+    async fn a_list_from_the_future_is_stale() {
+        let srv = TestServer::start().await;
+        serve_pages(&srv);
+        let root = tempdir("versions-future");
+        std::fs::create_dir_all(&*root).unwrap();
+        let mut future = crate::versions::seed();
+        future.fetched_unix = unix_now() + 365 * 24 * 3600;
+        std::fs::write(
+            root.join(VERSIONS_FILE),
+            serde_json::to_vec(&future).unwrap(),
+        )
+        .unwrap();
+        let a = assets(&srv, &root);
+        let got = a.version_list(Duration::from_secs(24 * 3600), false).await;
+        assert_eq!(got.source, ListSource::Fresh);
+        assert_eq!(srv.paths().len(), 2);
     }
 
     #[tokio::test]

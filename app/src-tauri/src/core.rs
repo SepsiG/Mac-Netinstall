@@ -342,19 +342,33 @@ impl AppCore {
     }
 
     /// Delete the downloaded RouterOS files unless the settings keep them
-    /// (`keep_downloads`) or the engine is running (it may need them).
-    /// Registered local files and the version lists stay. Best-effort:
-    /// returns whether anything was attempted.
+    /// (`keep_downloads`) or the engine is running (it may need them; an
+    /// engine that does not answer counts as running). Registered local
+    /// files and the version lists stay. The cache is shared with `ni-cli`:
+    /// this also deletes what it downloaded, except versions another
+    /// process is using right now (skipped and logged). Best-effort:
+    /// returns whether deleting was attempted.
     pub async fn purge_downloads_if_wanted(&self) -> bool {
         if self.settings().keep_downloads {
             return false;
         }
         let engine = self.engine();
-        if engine.snapshot().await.is_ok_and(|s| s.running) {
-            return false;
+        match engine.snapshot().await {
+            Ok(s) if !s.running => {}
+            Ok(_) => return false,
+            Err(f) => {
+                tracing::warn!("not deleting downloads: the engine does not answer ({f})");
+                return false;
+            }
         }
         match engine.assets().clear_downloads().await {
-            Ok(()) => tracing::info!("downloaded RouterOS files deleted"),
+            Ok(skipped) if skipped.is_empty() => {
+                tracing::info!("downloaded RouterOS files deleted")
+            }
+            Ok(skipped) => tracing::info!(
+                ?skipped,
+                "downloaded RouterOS files deleted, except versions in use by another process"
+            ),
             Err(e) => tracing::warn!("cannot delete downloaded files: {e}"),
         }
         true
@@ -573,9 +587,12 @@ impl AppCore {
             .map_err(fail)
     }
 
-    /// Register picked `.npk` files (each checked like a download and its
-    /// header read). Errors: `not_a_package` (`name`), `package_failed`
-    /// (`name`, `cause`).
+    /// Register picked `.npk` files. Each is read once and checked first
+    /// (complete NPK, readable header): a malformed file is never
+    /// registered. A registered file of the same name (names ignore case)
+    /// with other contents is not overwritten. Errors: `not_a_package`
+    /// (`name`), `package_failed` (`name`, `cause`), `package_exists`
+    /// (`name`).
     pub async fn register_packages(
         &self,
         paths: &[PathBuf],
@@ -596,16 +613,38 @@ impl AppCore {
                     .with("name", &name)
                     .with("cause", e.code())
             };
+            let max = self.http.max_download_bytes;
+            let read_path = path.clone();
+            let data =
+                tokio::task::spawn_blocking(move || ni_assets::read_regular_file(&read_path, max))
+                    .await
+                    .map_err(|e| {
+                        Failure::new("package_failed")
+                            .with("name", &name)
+                            .with("detail", e)
+                    })?
+                    .map_err(|e| {
+                        let cause = match e {
+                            ni_assets::ReadFileError::Io(_) => "io",
+                            ni_assets::ReadFileError::NotAFile => "local_not_file",
+                            ni_assets::ReadFileError::TooLarge => "local_too_large",
+                        };
+                        Failure::new("package_failed")
+                            .with("name", &name)
+                            .with("cause", cause)
+                    })?;
+            ni_assets::npk::check_npk(&name, &data).map_err(|e| failed(&e.into()))?;
+            let header = ni_assets::npk::package_header(&data).map_err(|e| failed(&e.into()))?;
+            let key = name.to_lowercase();
+            if let Ok(existing) = assets.local_file(&key).await {
+                if existing.as_ref() != data.as_slice() {
+                    return Err(Failure::new("package_exists").with("name", key));
+                }
+            }
             let file = assets
                 .register_local_file(path)
                 .await
                 .map_err(|e| failed(&e))?;
-            let data = assets
-                .local_file(&file.name)
-                .await
-                .map_err(|e| failed(&e))?;
-            let header =
-                ni_assets::npk::package_header(&data).map_err(|e| failed(&AssetError::from(e)))?;
             out.push(PackageFileView {
                 name: file.name,
                 size: file.size,

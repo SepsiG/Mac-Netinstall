@@ -67,6 +67,7 @@ pub const FAILURES: &[&str] = &[
     "package_arch_mismatch",
     "package_file_missing",
     "package_not_published",
+    "package_version_mismatch",
     "pool_includes_reserved",
     "pool_inverted",
     "pool_outside_subnet",
@@ -89,6 +90,7 @@ pub const FAILURES: &[&str] = &[
     "unsuitable_interface",
     "version_below_minimum",
     "version_unavailable",
+    "version_unknown",
 ];
 
 /// `reason` of an `ignored` event.

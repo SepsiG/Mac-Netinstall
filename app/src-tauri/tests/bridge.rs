@@ -331,6 +331,60 @@ fn versions_and_local_packages() {
             (err.code.as_str(), err.param("cause")),
             ("package_failed", Some("not_npk"))
         );
+        // A complete NPK without a readable header is never registered.
+        let headless = rig.dir.join("headless.npk");
+        std::fs::write(&headless, ni_assets::testutil::npk(300, 1)).unwrap();
+        let err = rig.core.register_packages(&[headless]).await.unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("cause")),
+            ("package_failed", Some("npk_malformed"))
+        );
+        assert!(rig
+            .core
+            .engine()
+            .assets()
+            .local_file("headless.npk")
+            .await
+            .is_err());
+        // Another file of the same name (any case) is refused, not
+        // overwritten; the same file again is fine.
+        let again = rig.dir.join("sub");
+        std::fs::create_dir_all(&again).unwrap();
+        let same = again.join("MINE.npk");
+        std::fs::write(
+            &same,
+            ni_assets::testutil::npk_package_version("system", "arm", (7, 24, 6), 600, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            rig.core
+                .register_packages(std::slice::from_ref(&same))
+                .await
+                .unwrap()[0]
+                .name,
+            "mine.npk"
+        );
+        std::fs::write(
+            &same,
+            ni_assets::testutil::npk_package_version("system", "arm", (7, 25, 1), 600, 4),
+        )
+        .unwrap();
+        let err = rig.core.register_packages(&[same]).await.unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("name")),
+            ("package_exists", Some("mine.npk"))
+        );
+        let kept = rig
+            .core
+            .engine()
+            .assets()
+            .local_file("mine.npk")
+            .await
+            .unwrap();
+        assert_eq!(
+            ni_assets::npk::package_version(&kept).unwrap().as_str(),
+            "7.24.6"
+        );
     });
 }
 

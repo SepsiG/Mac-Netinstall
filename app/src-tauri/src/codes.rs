@@ -17,6 +17,7 @@ pub const APP_FAILURES: &[&str] = &[
     "not_a_script",
     "open_link_failed",
     "open_settings_failed",
+    "package_exists",
     "package_failed",
     "packages_unavailable",
     "profile_exists",

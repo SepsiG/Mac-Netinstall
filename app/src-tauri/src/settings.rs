@@ -38,8 +38,9 @@ pub const MAX_DOWNLOAD_TIMEOUT: u64 = 24 * 60 * 60;
 /// update too (those users were never asked up front either).
 ///
 /// Version 7 adds `keep_downloads` (keep downloaded RouterOS files after
-/// quitting; older files get `false`, the new default: downloads are
-/// deleted on quit) and `disclaimer_accepted_version` (the disclaimer text
+/// quitting; `false` for a new install: downloads are deleted on quit, but
+/// older files, and any existing file whose value is unusable, get `true`,
+/// so an upgrade never wipes an offline cache) and `disclaimer_accepted_version` (the disclaimer text
 /// version the user accepted; older files get `null`, so it is asked once).
 pub const SETTINGS_VERSION: u32 = 7;
 
@@ -426,6 +427,9 @@ impl SettingsStore {
         let Ok(data) = std::fs::read(&self.path) else {
             return loaded;
         };
+        // An existing file is an existing user: never delete their
+        // downloads unless they turned that on (see `KEEP_DOWNLOADS_SINCE`).
+        loaded.settings.keep_downloads = true;
         let obj = match serde_json::from_slice::<serde_json::Value>(&data) {
             Ok(serde_json::Value::Object(obj)) => obj,
             _ => {
@@ -964,17 +968,20 @@ mod tests {
         let loaded = store.load_checked();
         assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
         assert!(
-            !loaded.settings.keep_downloads,
-            "deleted on quit by default"
+            loaded.settings.keep_downloads,
+            "an upgrade keeps the existing offline cache"
         );
         assert_eq!(loaded.settings.disclaimer_accepted_version, None);
         assert!(loaded.settings.onboarding_done);
         let stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(stored["version"], 7);
-        assert_eq!(stored["keep_downloads"], json!(false));
+        assert_eq!(stored["keep_downloads"], json!(true));
         assert_eq!(stored["disclaimer_accepted_version"], json!(null));
         let mut s = loaded.settings.clone();
+        s.keep_downloads = false;
+        store.save(&s).unwrap();
+        assert!(!store.load().keep_downloads, "opting in to deletion sticks");
         s.keep_downloads = true;
         s.disclaimer_accepted_version = Some("1".into());
         store.save(&s).unwrap();
@@ -995,6 +1002,15 @@ mod tests {
             ["keep_downloads", "disclaimer_accepted_version"]
         );
         assert_eq!(loaded.settings.language.as_deref(), Some("hu"));
+        assert!(loaded.settings.keep_downloads, "a broken value keeps files");
+        // Unversioned and unparsable files are existing users too.
+        std::fs::write(&path, json!({"language": "hu"}).to_string()).unwrap();
+        assert!(SettingsStore::new(&path).load().keep_downloads);
+        std::fs::write(&path, b"{oops").unwrap();
+        assert!(SettingsStore::new(&path).load().keep_downloads);
+        // A new install (no file) deletes on quit.
+        let fresh = SettingsStore::new(dir.join("none.json")).load();
+        assert!(!fresh.keep_downloads);
         // The settings dialog cannot accept (or revoke) the disclaimer, but
         // sets keep_downloads.
         let current = Settings {
@@ -1104,7 +1120,7 @@ mod tests {
         std::fs::write(&path, b"{not json").unwrap();
         let store = SettingsStore::new(&path);
         let loaded = store.load_checked();
-        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.settings, existing_user_defaults());
         assert_eq!(loaded.problems, ["unparsable"]);
         assert_eq!(backup(&path).as_deref(), Some(&b"{not json"[..]));
         store.save(&Settings::default()).unwrap();
@@ -1166,9 +1182,18 @@ mod tests {
         let dir = tempdir("settings-broken");
         let path = dir.join("settings.json");
         std::fs::write(&path, b"{not json").unwrap();
-        assert_eq!(SettingsStore::new(&path).load(), Settings::default());
+        assert_eq!(SettingsStore::new(&path).load(), existing_user_defaults());
         std::fs::write(&path, br#"{"max_parallel": 0}"#).unwrap();
-        assert_eq!(SettingsStore::new(&path).load(), Settings::default());
+        assert_eq!(SettingsStore::new(&path).load(), existing_user_defaults());
+    }
+
+    /// The defaults for a settings file that exists but is unusable: an
+    /// existing user, whose downloads are kept.
+    fn existing_user_defaults() -> Settings {
+        Settings {
+            keep_downloads: true,
+            ..Settings::default()
+        }
     }
 
     #[test]

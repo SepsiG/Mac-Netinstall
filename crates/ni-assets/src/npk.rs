@@ -132,22 +132,23 @@ fn parts(data: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
 pub const PART_BUNDLE: u16 = 18;
 
 /// The version in an NPK's header (the first type-1 or type-18 part: 16
-/// bytes of name, then `patch, kind, minor, major`). Only final releases
-/// (`kind` `f`) are decoded (`7.25.1`, `7.25` when the patch is 0,
-/// `6.49.23`); anything else, or a version this app does not accept, is
-/// `None`.
+/// bytes of name, then `patch, kind, minor, major`). Kinds: `f` final
+/// (`7.25.1`, `7.25` when the patch is 0, `6.49.23`), `b` beta and `c` rc
+/// (the patch byte is their number: `7.26beta5`, `7.25rc3`; verified on
+/// 2026-11-10 packages). Other kinds, or a version this app does not
+/// accept, are `None`.
 pub fn package_version(data: &[u8]) -> Option<crate::Version> {
     let body = parts(data)
         .find(|(kind, _)| *kind == PART_HEADER || *kind == PART_BUNDLE)
         .map(|(_, body)| body)?;
     let [patch, kind, minor, major] = <[u8; 4]>::try_from(body.get(16..20)?).ok()?;
-    if kind != b'f' {
-        return None;
-    }
-    let text = if patch == 0 {
-        format!("{major}.{minor}")
-    } else {
-        format!("{major}.{minor}.{patch}")
+    let text = match kind {
+        b'f' if patch == 0 => format!("{major}.{minor}"),
+        b'f' => format!("{major}.{minor}.{patch}"),
+        // Pre-releases: the "patch" byte is the beta/rc number.
+        b'b' => format!("{major}.{minor}beta{patch}"),
+        b'c' => format!("{major}.{minor}rc{patch}"),
+        _ => return None,
     };
     crate::Version::parse(&text).ok()
 }
@@ -411,7 +412,24 @@ mod tests {
             package_version(&real).map(|v| v.to_string()),
             Some("6.49.23".into())
         );
-        // Pre-releases and odd bytes are not decoded.
+        // Betas and rcs: real header bytes (fetched 2026-11-10).
+        for (bytes, want) in [
+            ([0x05, 0x62, 0x1a, 0x07], "7.26beta5"),
+            ([0x03, 0x63, 0x19, 0x07], "7.25rc3"),
+            ([0x01, 0x63, 0x18, 0x07], "7.24rc1"),
+            ([0x02, 0x63, 0x31, 0x06], "6.49rc2"),
+        ] {
+            let mut name = b"system".to_vec();
+            name.resize(16, 0);
+            name.extend_from_slice(&bytes);
+            name.resize(36, 0);
+            let data = with_parts(&[(1, &name), (16, b"arm")]);
+            assert_eq!(
+                package_version(&data).map(|v| v.to_string()).as_deref(),
+                Some(want)
+            );
+        }
+        // Unknown kinds and odd bytes are not decoded.
         let synthetic = npk_package("system", "arm", 300, 0);
         assert_eq!(package_version(&synthetic), None);
         let old = crate::testutil::npk_package_version("system", "arm", (5, 26, 0), 400, 0);

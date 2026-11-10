@@ -990,13 +990,14 @@ impl Core {
         }
         dev.info = Some(info.clone());
         // The whole hello, so an unknown model can be diagnosed from the
-        // log file (the event carries only what the UI shows).
+        // log file (the event carries only what the UI shows); the license
+        // key only as its length.
         info!(
             %mac,
             model = %info.model,
             arch = %info.arch,
             license_id = %info.license_id,
-            license_key = %info.license_key,
+            license_key = %crate::prepare::redacted_key(&info.license_key),
             min_os = %info.min_os,
             extra = ?info.extra,
             hello_dst = %info.hello_dst,

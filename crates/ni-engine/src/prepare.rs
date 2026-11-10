@@ -3,7 +3,7 @@
 
 use crate::event::Failure;
 use crate::profile::{follows_kernels, mode_script_needs_7_22, ConfigMode, PackageSource, Profile};
-use ni_assets::npk::{package_arch, package_name, package_version};
+use ni_assets::npk::{contained_packages, package_arch, package_name, package_version};
 use ni_assets::{ArchError, AssetError, Assets, KernelSet, PkgArch, Version, VersionSpec};
 use ni_bootp::BootArch;
 use ni_proto::{DeviceConfig, DeviceInfo, InstallPlan, PlanFile};
@@ -89,6 +89,15 @@ pub fn verify_package_arches(hello_arch: &str, packages: &[PlanFile]) -> Result<
     Ok(())
 }
 
+/// A license key as logs and reports show it: only its length
+/// (`<license key, 12 chars>`; empty for none).
+pub fn redacted_key(key: &str) -> String {
+    match key.len() {
+        0 => String::new(),
+        n => format!("<license key, {n} chars>"),
+    }
+}
+
 /// `unknown_device_arch`: no candidate download arch has packages built
 /// for the device's hello arch. Carries everything a bug report needs:
 /// `arch`, `model`, `boot_arch` (`?` without BOOTP), `candidates` and the
@@ -97,10 +106,7 @@ pub fn verify_package_arches(hello_arch: &str, packages: &[PlanFile]) -> Result<
 /// issue (the log file has the hello in full).
 fn unknown_device_arch(target: &Target, candidates: &[PkgArch]) -> Failure {
     let info = &target.info;
-    let key = match info.license_key.len() {
-        0 => String::new(),
-        n => format!("<license key, {n} chars>"),
-    };
+    let key = redacted_key(&info.license_key);
     let hello: Vec<&str> = [
         &info.tag,
         &info.license_id,
@@ -249,9 +255,56 @@ async fn local_packages(
     };
     let system = files.remove(main);
     let version = package_version(&system.data);
+    // A v6 bundle holds several packages; one of them again would be
+    // installed twice.
+    let bundled = contained_packages(&system.data);
+    if let Some(dup) = files
+        .iter()
+        .find(|f| package_name(&f.data).is_ok_and(|n| bundled.contains(&n)))
+    {
+        return Err(Failure::new("duplicate_package").with("package", &dup.name));
+    }
+    // Packages of different versions do not work together.
+    if let Some(v) = &version {
+        for f in &files {
+            if let Some(other) = package_version(&f.data).filter(|o| o != v) {
+                return Err(Failure::new("package_version_mismatch")
+                    .with("package", &f.name)
+                    .with("package_version", other)
+                    .with("version", v));
+            }
+        }
+    } else {
+        let known: Vec<(Version, &str)> = files
+            .iter()
+            .filter_map(|f| package_version(&f.data).map(|v| (v, f.name.as_str())))
+            .collect();
+        if let Some((first, _)) = known.first() {
+            if let Some((other, name)) = known.iter().find(|(v, _)| v != first) {
+                return Err(Failure::new("package_version_mismatch")
+                    .with("package", name)
+                    .with("package_version", other)
+                    .with("version", first));
+            }
+        }
+    }
     files.insert(0, system);
     verify_package_arches(&target.info.arch, &files)?;
     Ok((files, version))
+}
+
+/// `version_unknown` (`side`: `package` or `device`, `version` (`?` if
+/// unknown), `min_os` as the device sent it): the version to install or the
+/// device's minimum version cannot be read, so the minimum cannot be
+/// checked; refused unless the profile allows going below the minimum.
+pub fn version_unknown(side: &str, version: Option<&Version>, min_os: &str) -> Failure {
+    Failure::new("version_unknown")
+        .with("side", side)
+        .with(
+            "version",
+            version.map_or("?".to_string(), Version::to_string),
+        )
+        .with("min_os", min_os)
 }
 
 /// `version_below_minimum` (`version`, `min_os`): installing a version
@@ -362,9 +415,17 @@ pub async fn prepare(
             (packages, Some(version), Some(arch), resolved)
         }
     };
-    if let Some(v) = &version {
-        if !profile.allow_below_minimum && v.below_minimum(&target.info.min_os) {
-            return Err(version_below_minimum(v, &target.info.min_os));
+    if !profile.allow_below_minimum {
+        // Fails closed: what cannot be compared is not installed.
+        let min_os = &target.info.min_os;
+        match version
+            .as_ref()
+            .map(|v| (v, v.below_minimum_checked(min_os)))
+        {
+            Some((v, Some(true))) => return Err(version_below_minimum(v, min_os)),
+            Some((_, Some(false))) => {}
+            Some((v, None)) => return Err(version_unknown("device", Some(v), min_os)),
+            None => return Err(version_unknown("package", None, min_os)),
         }
     }
     if profile.mode_script.is_some() && !version.as_ref().is_some_and(Version::supports_mode_script)
@@ -546,6 +607,12 @@ mod tests {
             ..Default::default()
         };
         Assets::new(root, http).unwrap()
+    }
+
+    #[test]
+    fn license_keys_are_never_shown() {
+        assert_eq!(redacted_key(""), "");
+        assert_eq!(redacted_key("SECRET-KEY"), "<license key, 10 chars>");
     }
 
     #[tokio::test]
@@ -1006,6 +1073,33 @@ mod source_tests {
     /// A v6 install boots the 7.x kernels: no version mismatch, the bundle
     /// first, bundled extras dropped.
     #[tokio::test]
+    async fn v6_extras_already_in_the_downloaded_bundle_are_dropped() {
+        let srv = TestServer::start().await;
+        mirror(&srv);
+        mirror_v6(&srv, V6, "arm", "arm", true);
+        // This bundle holds `gps` too (not one of the usual parts).
+        let bundle =
+            ni_assets::testutil::npk_bundle("arm", "arm", (6, 49, 23), &["system", "gps"], 2000);
+        let file = "routeros-arm-6.49.23.npk";
+        srv.route(
+            &format!("/dl/{V6}/{file}"),
+            ni_assets::testutil::Reply::Body(bundle.clone()),
+        );
+        srv.route(
+            &format!("/dl/{V6}/{file}.sha256"),
+            ni_assets::testutil::sum_file(&bundle, file),
+        );
+        let dir = tempdir("prepare-v6-contained");
+        let a = assets(&srv, &dir);
+        let mut p = Profile::new("v6", VersionSpec::Exact(Version::parse(V6).unwrap()));
+        p.extra_packages = vec!["gps".into(), "calea".into()];
+        let got = prepare(&a, &p, None, None, &hello("arm", "6.40"))
+            .await
+            .unwrap();
+        assert_eq!(names(&got), [file, "calea-6.49.23-arm.npk"]);
+    }
+
+    #[tokio::test]
     async fn v6_downloads_install_with_the_v7_kernels() {
         let srv = TestServer::start().await;
         mirror(&srv);
@@ -1053,8 +1147,18 @@ mod source_tests {
         prepare(&a, &p, None, Some(&kernels()), &hello("arm", "7.1"))
             .await
             .unwrap();
-        // An unreadable minimum is no reason to refuse.
+        // An unreadable minimum fails closed: it cannot be checked.
         p.allow_below_minimum = false;
+        for raw in ["n/a", ""] {
+            let err = prepare(&a, &p, None, Some(&kernels()), &hello("arm", raw))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, "version_unknown", "{raw:?}");
+            assert_eq!(err.param("side"), Some("device"));
+            assert_eq!(err.param("min_os"), Some(raw));
+            assert_eq!(err.param("version"), Some(V6));
+        }
+        p.allow_below_minimum = true;
         prepare(&a, &p, None, Some(&kernels()), &hello("arm", "n/a"))
             .await
             .unwrap();
@@ -1167,7 +1271,8 @@ mod source_tests {
         for (file, want) in [(&old, Some("7.21.3")), (&odd, Some("?")), (&new, None)] {
             let mut p = local(std::slice::from_ref(file));
             p.mode_script = Some(mode.clone());
-            let got = prepare(&a, &p, None, None, &hello("arm", "")).await;
+            p.allow_below_minimum = true;
+            let got = prepare(&a, &p, None, None, &hello("arm", "7.1")).await;
             match want {
                 None => assert!(got.is_ok(), "{file}: {got:?}"),
                 Some(v) => {
@@ -1180,11 +1285,101 @@ mod source_tests {
                 }
             }
         }
-        // An unknown version is shown as such and passes without a mode
-        // script.
-        let got = prepare(&a, &local(&[odd]), None, None, &hello("arm", "7.1"))
+        // An unknown version cannot be checked against the device's
+        // minimum: refused unless allowed, then shown as unknown.
+        let err = prepare(
+            &a,
+            &local(std::slice::from_ref(&odd)),
+            None,
+            None,
+            &hello("arm", "7.1"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "version_unknown");
+        assert_eq!(
+            (err.param("side"), err.param("version"), err.param("min_os")),
+            (Some("package"), Some("?"), Some("7.1"))
+        );
+        let mut allowed = local(&[odd]);
+        allowed.allow_below_minimum = true;
+        let got = prepare(&a, &allowed, None, None, &hello("arm", "7.1"))
             .await
             .unwrap();
         assert_eq!(got.version, None);
+    }
+
+    /// Local files: a bundle's own parts are not installed again, and all
+    /// known versions must agree.
+    #[tokio::test]
+    async fn local_bundles_and_versions_must_be_consistent() {
+        let srv = TestServer::start().await;
+        let dir = tempdir("prepare-local-consistent");
+        let a = assets(&srv, &dir);
+        let bundle = ni_assets::testutil::npk_bundle(
+            "arm",
+            "arm",
+            (6, 49, 23),
+            &["system", "wireless@", "ppp"],
+            2000,
+        );
+        let main = register(&a, &dir, "routeros-arm-6.49.23.npk", &bundle).await;
+        let wl = register(
+            &a,
+            &dir,
+            "wireless-6.49.23-arm.npk",
+            &npk_package_version("wireless", "arm", (6, 49, 23), 500, 2),
+        )
+        .await;
+        let calea = register(
+            &a,
+            &dir,
+            "calea-6.49.23-arm.npk",
+            &npk_package_version("calea", "arm", (6, 49, 23), 500, 3),
+        )
+        .await;
+        let new_calea = register(
+            &a,
+            &dir,
+            "calea-6.49.22-arm.npk",
+            &npk_package_version("calea", "arm", (6, 49, 22), 500, 4),
+        )
+        .await;
+        let odd = register(&a, &dir, "gps.npk", &npk_package("gps", "arm", 500, 5)).await;
+        let target = || hello("arm", "6.40");
+        let err = prepare(&a, &local(&[main.clone(), wl]), None, None, &target())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.param("package")),
+            ("duplicate_package", Some("wireless-6.49.23-arm.npk"))
+        );
+        let err = prepare(
+            &a,
+            &local(&[main.clone(), new_calea]),
+            None,
+            None,
+            &target(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "package_version_mismatch");
+        assert_eq!(
+            (
+                err.param("package"),
+                err.param("package_version"),
+                err.param("version")
+            ),
+            (
+                Some("calea-6.49.22-arm.npk"),
+                Some("6.49.22"),
+                Some("6.49.23")
+            )
+        );
+        // Unknown versions do not count against the others.
+        let got = prepare(&a, &local(&[main, calea, odd]), None, None, &target())
+            .await
+            .unwrap();
+        assert_eq!(names(&got).len(), 3);
     }
 }

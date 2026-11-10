@@ -114,6 +114,11 @@ impl Assets {
             }
             other => other?,
         };
+        if version.is_v6() {
+            // What this bundle really holds (not only the usual parts).
+            let bundled = crate::npk::contained_packages(&main);
+            names.retain(|n| n == MAIN_PACKAGE || !bundled.contains(n));
+        }
         if names.len() > 1 {
             let available = self.available_packages(version, arch).await?;
             if let Some(missing) = names[1..].iter().find(|n| !available.contains(n)) {

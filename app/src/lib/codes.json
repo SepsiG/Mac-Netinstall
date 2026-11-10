@@ -57,6 +57,7 @@
     "package_arch_mismatch",
     "package_file_missing",
     "package_not_published",
+    "package_version_mismatch",
     "pool_includes_reserved",
     "pool_inverted",
     "pool_outside_subnet",
@@ -78,7 +79,8 @@
     "unknown_interface",
     "unsuitable_interface",
     "version_below_minimum",
-    "version_unavailable"
+    "version_unavailable",
+    "version_unknown"
   ],
   "asset_causes": [
     "invalid_version",
@@ -190,6 +192,7 @@
     "not_a_script",
     "open_link_failed",
     "open_settings_failed",
+    "package_exists",
     "package_failed",
     "packages_unavailable",
     "profile_exists",
