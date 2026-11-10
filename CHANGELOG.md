@@ -277,8 +277,8 @@ Not affiliated with MikroTik.
   not supported.
 
 [Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.4...HEAD
-[0.1.4]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.3...v0.1.4
-[0.1.3]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/SepsiG/Mac-Netinstall/compare/013a829...v0.1.2
+[0.1.4]: https://github.com/SepsiG/Mac-Netinstall/compare/6cbc1a9...v0.1.4
+[0.1.3]: https://github.com/SepsiG/Mac-Netinstall/compare/6898237...6cbc1a9
+[0.1.2]: https://github.com/SepsiG/Mac-Netinstall/compare/013a829...6898237
 [0.1.1]: https://github.com/SepsiG/Mac-Netinstall/compare/33a4fbd...013a829
 [0.1.0]: https://github.com/SepsiG/Mac-Netinstall/commit/33a4fbd
