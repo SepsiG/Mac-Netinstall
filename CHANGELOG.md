@@ -7,6 +7,28 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-10
+
+This release makes the update notice always use the newest published
+release. Mac Netinstall is provided "as is", without any warranty (GPL-3.0
+sections 15–16): Netinstall erases the device, use it at your own risk (see
+the README's Disclaimer).
+
+**Verified:** the first real in-app update, 0.1.2 → 0.1.3, worked end to end
+(GitHub's `releases/latest`, the `release-assets.githubusercontent.com`
+redirect, the SHA-256 check, opening the DMG, installing the new app).
+
+### Fixed
+
+- The update banner and download always use the newest published release:
+  **What's new?** and **Download** ask GitHub again first (past the daily
+  check, at most once per 10 s), so a release published after the last
+  check is shown and downloaded instead of the older cached one. If GitHub
+  cannot be reached, the last known release is used only if it is still
+  newer than the running app, and the banner says so. A remembered release
+  that is not newer than the running app (e.g. after updating) is no longer
+  offered.
+
 ## [0.1.3] - 2026-11-10
 
 This release adds an update notification with a verified download of new
@@ -254,7 +276,8 @@ Not affiliated with MikroTik.
 - Apple Silicon only; x86 (`X86_64__boot`, PXE) and ARM64 UEFI devices are
   not supported.
 
-[Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/SepsiG/Mac-Netinstall/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/SepsiG/Mac-Netinstall/compare/013a829...v0.1.2
 [0.1.1]: https://github.com/SepsiG/Mac-Netinstall/compare/33a4fbd...013a829
