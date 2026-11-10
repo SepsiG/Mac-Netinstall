@@ -7,7 +7,39 @@ The release workflow takes a version's notes from its section below.
 
 ## [Unreleased]
 
+This release adds RouterOS 6, a version picker and installs from local
+`.npk` files, and refuses versions below a device's minimum version.
+Mac Netinstall is provided "as is", without any warranty (GPL-3.0 sections
+15–16): Netinstall erases the device, use it at your own risk (see the
+README's Disclaimer).
+
 ### Added
+
+- Version picker in the profile editor: "Always the newest" channels with
+  the version each names now (including RouterOS v6 long-term), RouterOS 7
+  releases and the 6.x archive from MikroTik's changelog (with channel tags
+  and dates), search, the list's age with a refresh button, and a custom
+  version checked against download.mikrotik.com. The list is kept for a day
+  (`versions.json`); offline the last list or a built-in one is used.
+- RouterOS 6 (6.30 to 6.49.x): v6 file names (`routeros-<arch>-<version>.npk`,
+  `powerpc` for ppc), the `v6-long-term` channel (`NEWEST6.long-term`),
+  bundle-aware extra packages, checksums from 6.49.13 on. v6 installs boot
+  the current RouterOS 7 netinstall kernels. A main package missing for the
+  device's architecture (old releases) is a clear "not published" error.
+- Install from local `.npk` files: a profile can use picked package files
+  instead of downloads. Each must be built for the device's architecture
+  (checked before formatting), one must be the main (system) package; the
+  version is read from its header.
+- Downloaded files are deleted when the app quits (and leftovers at the next
+  launch), unless "Keep downloaded files after quitting" is on in Settings.
+  Your own scripts and packages are always kept.
+- Disclaimer: accepted once in the app before the first start (asked again
+  if its text changes); `ni-cli flash` needs `--accept-disclaimer` or
+  `MAC_NETINSTALL_ACCEPT_DISCLAIMER=1`. Settings has an About section with
+  the version, license, disclaimer and links. The README and the user
+  guides have a Disclaimer section.
+- The device table shows where the packages came from (downloaded or local
+  file) under the version.
 
 - Package architecture check before formatting: every package of an install
   is checked against the architecture the device reports in its Netinstall
@@ -31,6 +63,15 @@ The release workflow takes a version's notes from its section below.
   `mips` now maps to the `mipsbe` packages.
 
 ### Changed
+
+- A version older than the device's minimum version (the `min_os` of its
+  Netinstall hello) is now refused before anything is erased
+  (`version_below_minimum`), because it can leave the device unusable; a
+  profile can still allow it ("Allow below the device's minimum version
+  (risky)"), then it is a warning as before.
+- The mode script (`mode.scr`) is refused for versions before 7.22,
+  including RouterOS 6.
+- Settings file version 7 (`keep_downloads`, `disclaimer_accepted_version`).
 
 - Profile editor: the architecture next to the extra-package list now says it
   only selects which list is shown; packages are installed for the device's

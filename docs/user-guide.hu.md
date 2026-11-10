@@ -9,6 +9,11 @@
 > telepítés utáni leállítással **még nem tesztelt** hardveren. Ilyen típusoknál tarts kéznél
 > tartalékot: olyan eszközt, amelyet szükség esetén a MikroTik hivatalos Netinstalljával
 > (Windows/Linux) helyre tudsz állítani.
+>
+> **Felelősség kizárása:** a szoftvert „ahogy van” alapon, mindenféle garancia nélkül
+> biztosítjuk. A Netinstall törli az eszközt: saját felelősségedre használd. A szerzők nem
+> vállalnak felelősséget semmilyen kárért, azért sem, ha az eszköz használhatatlanná válik
+> („téglásodás”). Részletek: [Felelősség kizárása](#13-felelősség-kizárása).
 
 ## Tartalom
 
@@ -24,6 +29,7 @@
 10. [Parancssor (ni-cli)](#10-parancssor-ni-cli)
 11. [Ismert korlátok](#11-ismert-korlátok)
 12. [Visszajelzés](#12-visszajelzés)
+13. [Felelősség kizárása](#13-felelősség-kizárása)
 
 ## 1. Mi ez?
 
@@ -145,11 +151,71 @@ módosíthatod. A profillista elemei „név · verzió” formában jelennek me
 | Mező | Leírás |
 |---|---|
 | **Név** | 1–64 karakter: betű, szám, szóköz vagy `. _ - +`; nem kezdődhet ponttal vagy szóközzel. |
-| **RouterOS-verzió** | **Csatorna** (**Stabil**, **Hosszú távú**, **Teszt**, **Fejlesztői**) – mindig az adott csatorna aktuális verziója; vagy **Pontos verzió**, pl. `7.25.1` vagy `7.26rc1`. Csak RouterOS 7 támogatott. |
+| **Csomagok forrása** | **Letöltés a MikroTiktől** (alapértelmezett) vagy **Saját csomagfájlok (.npk)** (lásd [Telepítés saját .npk fájlokból](#telepítés-saját-npk-fájlokból)). |
+| **RouterOS-verzió** | A verzióválasztóban választod ki (lásd [A verzió kiválasztása](#a-verzió-kiválasztása)): olyan csatornát, amely mindig az aktuális verzióját telepíti, egy konkrét RouterOS 7 vagy archív 6.x verziót, vagy kézzel beírt verziót. |
 | **További csomagok** | A `routeros` rendszercsomag mindig települ; itt jelölheted be a további csomagokat (pl. `wifi-qcom`). A **Lista ehhez** választóval nézheted meg, mely csomagok érhetők el egy adott architektúrára – ez csak a lista szűrése, az eszköz architektúráját az alkalmazás magától felismeri. |
 | **Konfiguráció** | Mi legyen a konfigurációval (lásd alább). |
 | **Telepítés után** | **Újraindítás**, **Újraindítás „Installation successful” üzenettel** vagy **Leállítás**. |
-| **Haladó** | Módszkript, márkajelzés eltávolítása, licenckulcs (lásd alább). |
+| **Haladó** | Módszkript, márkajelzés eltávolítása, licenckulcs, telepítés az eszköz minimális verziója alá (lásd alább). |
+
+### A verzió kiválasztása
+
+A **RouterOS-verzió** lista három csoportból áll, és kereshető (**Verzió keresése**):
+
+- **Mindig a legújabb** – **Stabil**, **Hosszú távú**, **Teszt**, **Fejlesztői** és
+  **RouterOS v6 (hosszú távú)**, mindegyik mellett zárójelben az a verzió, amelyet épp
+  jelent. A csatornát használó profil mindig a csatorna aktuális verzióját telepíti.
+- **RouterOS 7** – konkrét kiadások a MikroTik változásnaplójából, a legújabbal kezdve,
+  csatornával (Stabil, Hosszú távú) és megjelenési dátummal.
+- **Archív (6.x, már nem támogatott)** – RouterOS 6 kiadások 6.30-tól.
+- **Egyéni verzió…** – írj be egy verziót (pl. `7.20.8` vagy `6.49.23`); az alkalmazás
+  ellenőrzi, hogy a download.mikrotik.com közzéteszi-e (**elérhető** / **nincs a
+  download.mikrotik.com-on**).
+
+A lista a mikrotik.com-ról jön, és egy napig érvényes; alatta látszik, milyen régi, a
+**Frissítés** gomb újra letölti. Internet nélkül az utolsó lista (vagy egy rövid beépített
+lista) látszik.
+
+### RouterOS 6 (archív verziók)
+
+RouterOS 6 (6.30-tól 6.49.x-ig) is telepíthető. Amit érdemes tudni:
+
+- **A RouterOS 6 életciklusa véget ért.** Csak akkor használd, ha okod van rá (pl. régi
+  eszköz vagy v6-ot igénylő konfiguráció).
+- **Soha ne telepíts az eszköz minimális (gyári) verziójánál régebbit.** Ettől az eszköz
+  használhatatlanná válhat. Az eszköz a felismeréskor jelzi a minimális verzióját; az
+  alkalmazás a régebbit **megtagadja**, mielőtt bármit törölne: **„A RouterOS …
+  régebbi, mint az eszköz minimális verziója …”**. Újabb eszközök a v6-ot sokszor
+  egyáltalán nem támogatják.
+- Régi kiadások nem minden architektúrára jelentek meg (pl. a 6.30.4-hez nincs `arm` és
+  `mmips` csomag; `arm64` nagyjából 6.45-től van): **„A RouterOS … nem jelent meg …
+  architektúrára.”**
+- Az eszköz a jelenlegi RouterOS 7 netinstall kernelével indul, amely a v6 csomagokat is
+  telepíti.
+- A v6 fő csomagja magában foglalja a `system`, `ipv6`, `wireless`, `hotspot`, `mpls`,
+  `routing`, `ppp`, `dhcp`, `security` és `advanced-tools` csomagot; a további csomagok
+  listája csak a valódi kiegészítőket mutatja.
+- A módszkripthez RouterOS 7.22 vagy újabb kell, ezért v6-tal nem használható.
+
+Javaslat az első próbához: telepítsd a `6.49.23`-at egy hEX-re, amelyet helyre tudsz
+állítani.
+
+### Telepítés saját .npk fájlokból
+
+A **Csomagok forrása** sorban válaszd a **Saját csomagfájlok (.npk)** lehetőséget, majd a
+**Válassz .npk fájlokat…** gombot (egyszerre többet is kijelölhetsz). A lista mutatja
+minden fájl csomagnevét, architektúráját és verzióját, ahogy a fájlból kiolvasható. A ×
+gombbal eltávolíthatsz egyet.
+
+- Az egyik fájlnak fő (`system`/`routeros`) csomagnak kell lennie; ez települ elsőként.
+- Minden fájlnak az eszköz architektúrájára kell készülnie; ezt az eszköz formázása előtt
+  ellenőrizzük.
+- A telepített verziót a fő csomagból olvassuk ki („ismeretlen verzió”, ha nem
+  olvasható; ekkor a módszkript nem használható).
+- A boot kernelek ekkor is a jelenlegi stabil RouterOS 7 netinstallból jönnek: ehhez
+  egyszer internetkapcsolat kell, vagy megtartott letöltések (lásd
+  [Beállítások](#8-beállítások)).
+- A fájlokat az alkalmazás a saját mappájába másolja; ha ott törlöd, válaszd ki újra.
 
 ### Konfigurációs módok
 
@@ -172,13 +238,18 @@ módosíthatod. A profillista elemei „név · verzió” formában jelennek me
 - **Módszkript (mode.scr)** – kiegészítő RouterOS-szkript, amely `mode.scr` néven kerül
   az eszközre (a hivatalos eszköz `-sm` kapcsolója). A MikroTik leírása szerint
   egyszer, az első indításkor fut a többi konfigurációs szkript előtt, és RouterOS 7.22
-  vagy újabb kell hozzá. A meglévő konfiguráció megtartásával nem használható.
+  vagy újabb kell hozzá. A meglévő konfiguráció megtartásával és 7.22 előtti verzióval
+  (így RouterOS 6-tal sem) nem használható.
 - **Márkajelzés (branding) eltávolítása** – a hivatalos eszköz `-b` kapcsolójának
   megfelelő jelzést küldi. Hogy az eszköz mit tesz vele, még nem ellenőriztük.
 - **Licenckulcs:** – **Kulcsfájl kiválasztása…**. Csak szoftverkulcsot igénylő
   eszközökhöz (pl. x86) kell, a hivatalos eszköz `-k` kapcsolója. A RouterBOARD-ok
   licence az eszközön van, ezt a mezőt általában üresen hagyod. A kulcsot a profilfájl
   tárolja, amelyet csak a te felhasználód olvashat.
+- **Telepítés az eszköz minimális verziója alá is (kockázatos)** – alapból kikapcsolva.
+  Az eszköz által jelzett minimális verziónál régebbit az alkalmazás nem telepíti, és
+  semmit sem töröl, mert az eszköz használhatatlanná válhat. Csak akkor kapcsold be, ha
+  biztosan tudod, hogy az eszköz támogatja az adott verziót.
 
 A **Mentés** elmenti, a **Mégse** bezárja a szerkesztőt (mentetlen módosításoknál
 rákérdez). Meglévő profil a **Törlés…** gombbal törölhető.
@@ -192,7 +263,9 @@ rákérdez). Meglévő profil a **Törlés…** gombbal törölhető.
    profilt. Ha olyan eszközt telepítesz, amelyet az alkalmazás magától kezdjen el, kapcsold
    be az **Automatikus ismétlés** jelölőt (lásd [7. fejezet](#7-több-eszköz-és-automatikus-ismétlés)).
 3. Várd meg, amíg az állapotsor ezt mutatja: **✓ Indításra kész**, majd kattints az
-   **Indítás** gombra. Ha kell, az alkalmazás ekkor tölti le a boot kerneleket. Az
+   **Indítás** gombra. Első alkalommal megjelenik a **Felelősség kizárása** ablak: jelöld
+   be a **Megértettem, és saját felelősségemre használom** négyzetet, majd kattints az
+   **Elfogadom** gombra (a **Mégse** semmit sem indít el). Ha kell, az alkalmazás ekkor tölti le a boot kerneleket. Az
    állapotsor jobb oldalán a **Boot kernelek:** felirat mutatja az állapotukat (pl.
    `RouterOS 7.25.1`, letöltés közben százalékkal). Futás közben a bal oldalon a
    **Kiszolgálás: en7 (192.168.88.1)** jellegű sor látszik.
@@ -320,6 +393,15 @@ Az eszköztár **Beállítások** gombjával nyílik.
   használt verziót nem lehet törölni: **„A RouterOS … épp használatban van (kiszolgálás
   vagy telepítés alatt). Előbb állítsd le, vagy más fájlt törölj.”**
 
+- **Letöltött fájlok megtartása kilépés után** (a **Letöltött RouterOS fájlok** alatt) –
+  alapból kikapcsolva: a letöltött kernelek és csomagok **kilépéskor törlődnek** (a
+  maradékuk a következő indításkor). A saját fájljaidat (szkriptek, csomagok) és a
+  verziólistákat mindig megtartjuk. Kapcsold be, ha internet nélkül dolgozol, vagy több
+  napon át sok eszközt telepítesz: megtartott fájlok nélkül internet nélkül nem lehet az
+  utoljára használt verzióra visszaállni.
+- **Névjegy** – az alkalmazás verziója, licence (GNU GPL v3), a felelősségkizárás, és
+  hivatkozások a GitHub-oldalra, a teljes felelősségkizárásra és a licencre.
+
 A **Mentés** gomb menti a beállításokat, a **Mégse** elveti a módosításokat.
 
 ## 9. Napló és hibaelhárítás
@@ -383,7 +465,9 @@ cargo build --release -p ni-cli
 # a bináris: target/release/ni-cli
 ```
 
-Fő parancsok: `interfaces`, `preflight`, `assets`, `profiles`, `flash`. A profilokat és a
+Fő parancsok: `interfaces`, `preflight`, `assets`, `profiles`, `flash`. A `flash` kiírja a
+felelősségkizárást, és csak akkor fut, ha a `--accept-disclaimer` kapcsolóval (vagy a
+`MAC_NETINSTALL_ACCEPT_DISCLAIMER=1` környezeti változóval) elfogadod. A profilokat és a
 letöltött fájlokat az alkalmazással közösen használja. Példák:
 
 ```sh
@@ -394,11 +478,11 @@ ni-cli interfaces
 ni-cli preflight --iface en7 --profile "hAP alap"
 
 # Egy eszköz: stabil RouterOS, meglévő konfiguráció megtartásával
-ni-cli flash --iface en7 --version stable --config keep
+ni-cli flash --accept-disclaimer --iface en7 --version stable --config keep
 
 # Sorozat: saját szkripttel, minden új eszközre, Ctrl-C-ig;
 # újraküldés nélkül (lásd Ismert korlátok)
-ni-cli flash --iface en7 --version 7.25.1 --package wifi-qcom \
+ni-cli flash --accept-disclaimer --iface en7 --version 7.25.1 --package wifi-qcom \
   --script alap.rsc --auto-repeat --retransmits 0
 ```
 
@@ -419,7 +503,9 @@ megszakít. Minden opció: `ni-cli --help` és `ni-cli <parancs> --help`.
   valódi eszközök ezt jól kezelik-e, még nem ellenőrzött. Ha egy telepítés egy lépésnél
   megakad, az `ni-cli` `--retransmits 0` kapcsolójával kikapcsolható.
 - Csak Apple Silicon Mac, macOS 13 vagy újabb.
-- x86 (PXE) és ARM64 UEFI eszközök nem támogatottak; csak RouterOS 7 telepíthető.
+- x86 (PXE) és ARM64 UEFI eszközök nem támogatottak. RouterOS 7 és 6.30-tól RouterOS 6
+  telepíthető; a v6 telepítése a RouterOS 7 netinstall kernelével valódi hardveren még
+  nem kipróbált, ahogy a legrégebbi PowerPC-s eszközök és az arm64 v6-tal sem.
 - Ad-hoc aláírás, nincs notarizálva: az első indítást engedélyezni kell (lásd
   [3. fejezet](#3-telepítés)).
 - Helyi hálózat engedély nélkül az alkalmazás nem éri el az eszközöket.
@@ -439,3 +525,23 @@ Csatold:
 - a profil beállításait (verzió, csomagok, konfigurációs mód, telepítés után) –
   **licenckulcsot ne küldj**;
 - a Mac típusát, a macOS-verziót és az Ethernet-adapter típusát.
+
+## 13. Felelősség kizárása
+
+- A Mac Netinstall szabad szoftver, amelyet **„ahogy van” alapon, mindenféle garancia
+  nélkül** biztosítunk, a [GNU General Public License v3](../LICENSE) 15–16. pontja
+  szerint.
+- A Netinstall **törli az eszköz tárolóját**, és újratelepíti a RouterOS-t. **Saját
+  felelősségedre használd.**
+- A szerzők és közreműködők **semmilyen kárért vagy veszteségért nem vállalnak
+  felelősséget**, beleértve azt is, ha az eszköz használhatatlanná válik („téglásodás”),
+  elvész a konfiguráció vagy adat, leáll a szolgáltatás, vagy kár keletkezik régi, archív
+  vagy már nem támogatott RouterOS-verzió, az eszköz minimális verziójánál régebbi verzió
+  vagy rossz csomag telepítéséből.
+- Éles használat előtt próbáld ki olyan eszközön, amelyet helyre tudsz állítani (pl. a
+  MikroTik hivatalos Netinstalljával).
+- A Mac Netinstall a MikroTikhez nem kapcsolódik, a MikroTik nem támogatja és nem hagyta
+  jóvá. A MikroTik, a RouterOS és a RouterBOARD a tulajdonosuk védjegyei.
+
+Az alkalmazás az első **Indítás** előtt egyszer kéri ennek elfogadását (és újra, ha a
+szöveg megváltozik).
