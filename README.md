@@ -146,6 +146,10 @@ test fails if they differ, or if `CHANGELOG.md` has no section for it.
    **draft** GitHub Release with the `.dmg`, its `.sha256` and the changelog
    section as notes (a version with `-`, e.g. `0.2.0-rc.1`, is marked as a
    pre-release). Review it and publish.
+5. Only the newest release stays downloadable: delete the previous one with
+   `gh release delete v<old> --cleanup-tag --yes`, and in `CHANGELOG.md` point
+   that version's compare link at its merge-commit SHA instead of the deleted
+   tag.
 
 Signing is ad-hoc; `.github/workflows/release.yml` has commented-out hooks
 for Developer ID signing and notarization secrets.
