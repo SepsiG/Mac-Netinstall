@@ -137,9 +137,8 @@ twopkg, mips, fmtdelay, resend, macok, hello6, wrongarch, -m, fsrc, pkg order); 
 y02/y03 TFTP blksize/tsize; y04 format reply RETR; c01/c02 concurrency without/with -c; hp_* hello-field probes;
 probe_zero/probe_fsrc strace; t_s_retr first script-delivery run.
 
-Artifacts in this directory: `sim.py` (device simulator), `setup.sh`/`cleanup.sh`/`run.sh`/`matrix.sh`/`xmatrix.sh`/`probe_hello.sh`/`pinger.py`,
-decoders `dec.py`/`strace_dec.py`/`pack.py`, logs `matrix.log`/`xmatrix*.log`, `inputs/`, `runs/<run>/` (ni.out, transcript.txt,
-frames.txt, cap.snap160.pcap.gz, files/), `ext/pynetinstall/` (upstream clone, GPL-3.0, for reference).
-VM: `~/spike5` (2.5 GB: downloads + full pcaps) may be deleted.
+Raw artifacts (simulator and probe scripts, decoders, per-run transcripts, frame dumps and pcaps)
+lived in a temporary session directory and on the Linux test VM; both were deleted on 2026-11-11.
+This document is the retained record of the findings.
 
 Sources: pyNetinstall upstream https://github.com/dvtirol/pynetinstall (mirror: https://github.com/rfdrake/pynetinstall).
